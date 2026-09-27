@@ -84,12 +84,12 @@ export const workspaceRouter = createTRPCRouter({
       z.object({
         workspaceId: z.string(),
         email: z.string().email().optional(),
-        role: z.enum(["MEMBER", "VIEWER"]).default("MEMBER"),
+        role: z.enum(["ADMIN", "MEMBER", "VIEWER"]).default("MEMBER"),
         expiresInDays: z.number().min(1).max(30).default(7),
       })
     )
     .mutation(async ({ ctx, input }) => {
-      // Only owners can invite — FR-AUTH-06
+      // Owners and Admins can invite
       const membership = await ctx.db.workspaceMember.findUnique({
         where: {
           workspaceId_userId: {
@@ -98,8 +98,8 @@ export const workspaceRouter = createTRPCRouter({
           },
         },
       });
-      if (!membership || membership.role !== "OWNER") {
-        throw new TRPCError({ code: "FORBIDDEN" });
+      if (!membership || (membership.role !== "OWNER" && membership.role !== "ADMIN")) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Only workspace owners and admins can invite members" });
       }
 
       const invite = await ctx.db.workspaceInvite.create({
@@ -125,7 +125,7 @@ export const workspaceRouter = createTRPCRouter({
       return invite;
     }),
 
-  /** Get audit log for a workspace — owners only */
+  /** Get audit log for a workspace — owners & admins */
   auditLog: protectedProcedure
     .input(z.object({ workspaceId: z.string(), limit: z.number().default(50) }))
     .query(async ({ ctx, input }) => {
@@ -137,7 +137,7 @@ export const workspaceRouter = createTRPCRouter({
           },
         },
       });
-      if (!membership || membership.role !== "OWNER") {
+      if (!membership || (membership.role !== "OWNER" && membership.role !== "ADMIN")) {
         throw new TRPCError({ code: "FORBIDDEN" });
       }
 
@@ -149,7 +149,7 @@ export const workspaceRouter = createTRPCRouter({
       });
     }),
 
-  /** Update workspace spending cap — owners only (FR-WRK-05) */
+  /** Update workspace spending cap — owners and admins (FR-WRK-05) */
   updateSpendingCap: protectedProcedure
     .input(
       z.object({
@@ -166,8 +166,8 @@ export const workspaceRouter = createTRPCRouter({
           },
         },
       });
-      if (!membership || membership.role !== "OWNER") {
-        throw new TRPCError({ code: "FORBIDDEN", message: "Only workspace owners can modify spending caps" });
+      if (!membership || (membership.role !== "OWNER" && membership.role !== "ADMIN")) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Only workspace owners and admins can modify spending caps" });
       }
 
       const updated = await ctx.db.workspace.update({
@@ -205,8 +205,22 @@ export const workspaceRouter = createTRPCRouter({
           },
         },
       });
-      if (!callerMembership || callerMembership.role !== "OWNER") {
+      if (!callerMembership || (callerMembership.role !== "OWNER" && callerMembership.role !== "ADMIN")) {
         throw new TRPCError({ code: "FORBIDDEN" });
+      }
+
+      const targetMember = await ctx.db.workspaceMember.findUnique({
+        where: {
+          workspaceId_userId: {
+            workspaceId: input.workspaceId,
+            userId: input.userId,
+          },
+        },
+      });
+      if (!targetMember) throw new TRPCError({ code: "NOT_FOUND" });
+
+      if (callerMembership.role === "ADMIN" && (targetMember.role === "OWNER" || input.role === "OWNER")) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Only workspace owners can promote to or demote owner" });
       }
 
       // Prevent accidental lockout: cannot demote the only owner
@@ -226,7 +240,7 @@ export const workspaceRouter = createTRPCRouter({
         }
       }
 
-      return ctx.db.workspaceMember.update({
+      const updated = await ctx.db.workspaceMember.update({
         where: {
           workspaceId_userId: {
             workspaceId: input.workspaceId,
@@ -235,9 +249,20 @@ export const workspaceRouter = createTRPCRouter({
         },
         data: { role: input.role },
       });
+
+      await ctx.db.auditLogEntry.create({
+        data: {
+          workspaceId: input.workspaceId,
+          actorUserId: ctx.session.user.id,
+          action: "member.role_updated",
+          metadata: { targetUserId: input.userId, newRole: input.role },
+        },
+      });
+
+      return updated;
     }),
 
-  /** Remove a member from workspace — owners only */
+  /** Remove a member from workspace — owners and admins */
   removeMember: protectedProcedure
     .input(
       z.object({
@@ -254,7 +279,7 @@ export const workspaceRouter = createTRPCRouter({
           },
         },
       });
-      if (!callerMembership || callerMembership.role !== "OWNER") {
+      if (!callerMembership || (callerMembership.role !== "OWNER" && callerMembership.role !== "ADMIN")) {
         throw new TRPCError({ code: "FORBIDDEN" });
       }
 
@@ -262,7 +287,7 @@ export const workspaceRouter = createTRPCRouter({
         throw new TRPCError({ code: "BAD_REQUEST", message: "Cannot remove yourself from workspace" });
       }
 
-      return ctx.db.workspaceMember.delete({
+      const targetMember = await ctx.db.workspaceMember.findUnique({
         where: {
           workspaceId_userId: {
             workspaceId: input.workspaceId,
@@ -270,6 +295,31 @@ export const workspaceRouter = createTRPCRouter({
           },
         },
       });
+      if (!targetMember) throw new TRPCError({ code: "NOT_FOUND" });
+
+      if (callerMembership.role === "ADMIN" && targetMember.role === "OWNER") {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Admins cannot remove workspace owners" });
+      }
+
+      const deleted = await ctx.db.workspaceMember.delete({
+        where: {
+          workspaceId_userId: {
+            workspaceId: input.workspaceId,
+            userId: input.userId,
+          },
+        },
+      });
+
+      await ctx.db.auditLogEntry.create({
+        data: {
+          workspaceId: input.workspaceId,
+          actorUserId: ctx.session.user.id,
+          action: "member.removed",
+          metadata: { removedUserId: input.userId },
+        },
+      });
+
+      return deleted;
     }),
 
   /** List pending invites for a workspace */
@@ -313,13 +363,24 @@ export const workspaceRouter = createTRPCRouter({
           },
         },
       });
-      if (!member || member.role !== "OWNER") {
+      if (!member || (member.role !== "OWNER" && member.role !== "ADMIN")) {
         throw new TRPCError({ code: "FORBIDDEN" });
       }
 
-      return ctx.db.workspaceInvite.delete({
+      const deleted = await ctx.db.workspaceInvite.delete({
         where: { id: input.inviteId },
       });
+
+      await ctx.db.auditLogEntry.create({
+        data: {
+          workspaceId: invite.workspaceId,
+          actorUserId: ctx.session.user.id,
+          action: "invite.revoked",
+          metadata: { inviteId: input.inviteId },
+        },
+      });
+
+      return deleted;
     }),
 
   /** Get invite details by token (public procedure allowing invite preview before sign in) */

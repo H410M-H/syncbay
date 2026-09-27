@@ -104,7 +104,7 @@ export const bucketRouter = createTRPCRouter({
             members: {
               some: {
                 userId: ctx.session.user.id,
-                role: { in: ["OWNER", "MEMBER"] },
+                role: { in: ["OWNER", "ADMIN", "MEMBER"] },
               },
             },
           },
@@ -209,7 +209,7 @@ export const bucketRouter = createTRPCRouter({
               members: {
                 some: {
                   userId: ctx.session.user.id,
-                  role: { in: ["OWNER", "MEMBER"] },
+                  role: { in: ["OWNER", "ADMIN", "MEMBER"] },
                 },
               },
             },

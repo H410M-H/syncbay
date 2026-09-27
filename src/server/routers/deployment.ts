@@ -2,6 +2,8 @@ import { z } from "zod";
 import { createTRPCRouter, protectedProcedure } from "@/server/trpc";
 import { TRPCError } from "@trpc/server";
 import { executeDeployment } from "@/lib/orchestrator/engine";
+import { purgeEdgeCache } from "@/lib/edge/edge-router";
+import { executeInstantRollback } from "@/lib/devops/instant-rollback";
 import { logEventBus } from "@/lib/telemetry/event-bus";
 
 export const deploymentRouter = createTRPCRouter({
@@ -112,7 +114,7 @@ export const deploymentRouter = createTRPCRouter({
                 members: {
                   some: {
                     userId: ctx.session.user.id,
-                    role: { in: ["OWNER", "MEMBER"] },
+                    role: { in: ["OWNER", "ADMIN", "MEMBER"] },
                   },
                 },
               },
@@ -170,7 +172,7 @@ export const deploymentRouter = createTRPCRouter({
                   members: {
                     some: {
                       userId: ctx.session.user.id,
-                      role: { in: ["OWNER", "MEMBER"] },
+                      role: { in: ["OWNER", "ADMIN", "MEMBER"] },
                     },
                   },
                 },
@@ -204,6 +206,13 @@ export const deploymentRouter = createTRPCRouter({
       return deployment;
     }),
 
+  /** Sub-second Instant Rollback shifting edge traffic without full rebuild — M5 F14 */
+  instantRollback: protectedProcedure
+    .input(z.object({ deploymentId: z.string(), serviceId: z.string().optional() }))
+    .mutation(async ({ ctx, input }) => {
+      return executeInstantRollback(ctx.db, ctx.session.user.id, input);
+    }),
+
   /** Cancel a running/queued deployment */
   cancel: protectedProcedure
     .input(z.object({ deploymentId: z.string() }))
@@ -219,7 +228,7 @@ export const deploymentRouter = createTRPCRouter({
                   members: {
                     some: {
                       userId: ctx.session.user.id,
-                      role: { in: ["OWNER", "MEMBER"] },
+                      role: { in: ["OWNER", "ADMIN", "MEMBER"] },
                     },
                   },
                 },

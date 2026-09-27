@@ -20,6 +20,7 @@ export default function MembersPage() {
 
   const currentMember = activeWorkspace?.members?.find((m: any) => m.userId === dashboard?.user?.id);
   const isOwner = currentMember?.role === "OWNER" || activeWorkspace?.isPersonal;
+  const canManageMembers = isOwner || currentMember?.role === "ADMIN";
 
   // Pending invites
   const {
@@ -39,7 +40,7 @@ export default function MembersPage() {
 
   // Invite form state
   const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteRole, setInviteRole] = useState<"MEMBER" | "VIEWER">("MEMBER");
+  const [inviteRole, setInviteRole] = useState<"ADMIN" | "MEMBER" | "VIEWER">("MEMBER");
   const [inviteDays, setInviteDays] = useState(7);
   const [inviteSuccess, setInviteSuccess] = useState<string | null>(null);
   const [inviteError, setInviteError] = useState<string | null>(null);
@@ -62,7 +63,7 @@ export default function MembersPage() {
       setInviteEmail("");
       await refetchInvites();
     } catch (err: any) {
-      setInviteError(err.message || "Failed to send invitation. Verify you have OWNER role.");
+      setInviteError(err.message || "Failed to send invitation. Verify you have OWNER or ADMIN role.");
     }
   };
 
@@ -172,6 +173,8 @@ export default function MembersPage() {
                 const roleClass =
                   m.role === "OWNER"
                     ? "badge-sleeping"
+                    : m.role === "ADMIN"
+                    ? "badge-building"
                     : m.role === "MEMBER"
                     ? "badge-active"
                     : "badge-queued";
@@ -220,7 +223,7 @@ export default function MembersPage() {
                           {m.role}
                         </span>
 
-                        {isOwner && !isSelf && (
+                        {canManageMembers && !isSelf && (m.role !== "OWNER" || isOwner) && (
                           <select
                             className="input"
                             style={{
@@ -232,7 +235,8 @@ export default function MembersPage() {
                             value={m.role}
                             onChange={(e) => handleUpdateRole(m.userId, e.target.value as WorkspaceRole)}
                           >
-                            <option value="OWNER">OWNER</option>
+                            {isOwner && <option value="OWNER">OWNER</option>}
+                            <option value="ADMIN">ADMIN</option>
                             <option value="MEMBER">MEMBER</option>
                             <option value="VIEWER">VIEWER</option>
                           </select>
@@ -245,7 +249,7 @@ export default function MembersPage() {
                     </td>
 
                     <td style={{ textAlign: "right" }}>
-                      {!isSelf && isOwner && (
+                      {!isSelf && canManageMembers && (m.role !== "OWNER" || isOwner) && (
                         <button
                           onClick={() => handleRemoveMember(m.userId, m.user?.name || m.user?.email || "member")}
                           className="btn btn-danger btn-sm"
@@ -321,8 +325,9 @@ export default function MembersPage() {
               <select
                 className="input"
                 value={inviteRole}
-                onChange={(e) => setInviteRole(e.target.value as "MEMBER" | "VIEWER")}
+                onChange={(e) => setInviteRole(e.target.value as "ADMIN" | "MEMBER" | "VIEWER")}
               >
+                <option value="ADMIN">ADMIN — Full management of team, services &amp; deployments</option>
                 <option value="MEMBER">MEMBER — Deploy &amp; manage services</option>
                 <option value="VIEWER">VIEWER — Read-only access to metrics &amp; logs</option>
               </select>

@@ -414,6 +414,8 @@ export default function WorkspaceSlugPage() {
               const roleClass =
                 member.role === "OWNER"
                   ? "badge-sleeping"
+                  : member.role === "ADMIN"
+                  ? "badge-deploying"
                   : member.role === "MEMBER"
                   ? "badge-active"
                   : "badge-queued";

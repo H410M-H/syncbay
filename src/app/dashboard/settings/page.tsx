@@ -213,12 +213,14 @@ export default function SettingsPage() {
                   <div style={{ fontSize: "0.8125rem", color: "var(--text-muted)", marginTop: "2px" }}>
                     {userRole === "OWNER"
                       ? "Grants full administrative permissions across services, secrets, billing, and team members."
+                      : userRole === "ADMIN"
+                      ? "Grants administrative permissions to manage services, deployments, and team collaborators."
                       : userRole === "MEMBER"
                       ? "Grants operational permissions to build, deploy, and configure services and databases."
                       : "Read-only access to view logs, metrics, and deployment statuses."}
                   </div>
                 </div>
-                <span className={`badge ${userRole === "OWNER" ? "badge-sleeping" : userRole === "MEMBER" ? "badge-active" : "badge-queued"}`}>
+                <span className={`badge ${userRole === "OWNER" ? "badge-sleeping" : userRole === "ADMIN" ? "badge-building" : userRole === "MEMBER" ? "badge-active" : "badge-queued"}`}>
                   {userRole}
                 </span>
               </div>
@@ -616,7 +618,7 @@ export default function SettingsPage() {
               Syncbay Technologies Inc.
             </div>
             <div style={{ fontSize: "0.8125rem", color: "var(--text-secondary)" }}>
-              100 Montgomery St, Suite 1400<br />
+              548 Market St, Suite 82194<br />
               San Francisco, CA 94104, United States
             </div>
           </div>

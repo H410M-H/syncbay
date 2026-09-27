@@ -16,6 +16,7 @@ import { LandingFooter } from "@/components/marketing/landing-footer";
 
 export default function HomePage() {
   const [sessionUser, setSessionUser] = useState<{ name?: string | null; email?: string | null } | null>(null);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   useEffect(() => {
     fetch("/api/auth/session")
@@ -95,7 +96,7 @@ export default function HomePage() {
           </nav>
 
           {/* User Auth Buttons */}
-          <div className="flex items-center space-x-3 font-mono text-xs">
+          <div className="hidden sm:flex items-center space-x-3 font-mono text-xs">
             {sessionUser ? (
               <Link
                 href="/dashboard"
@@ -135,7 +136,115 @@ export default function HomePage() {
               </>
             )}
           </div>
+
+          {/* Mobile Hamburger Toggle Button */}
+          <div className="flex items-center lg:hidden">
+            <button
+              type="button"
+              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+              className="flex items-center justify-center p-2 rounded-lg text-slate-300 hover:text-white"
+              style={{ minWidth: "44px", minHeight: "44px" }}
+              aria-label="Toggle navigation menu"
+            >
+              <span style={{ fontSize: "1.35rem" }}>{mobileMenuOpen ? "✕" : "☰"}</span>
+            </button>
+          </div>
         </div>
+
+        {/* Mobile Navigation Drawer Sheet */}
+        {mobileMenuOpen && (
+          <div
+            className="fixed inset-0 z-50 lg:hidden"
+            style={{ background: "rgba(0,0,0,0.8)", backdropFilter: "blur(8px)" }}
+            onClick={() => setMobileMenuOpen(false)}
+          >
+            <div
+              className="fixed inset-y-0 right-0 w-full max-w-xs flex flex-col p-6 shadow-2xl"
+              style={{
+                background: "rgba(10, 10, 26, 0.98)",
+                borderLeft: "1px solid rgba(6, 182, 212, 0.3)",
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between pb-4 border-b border-white/10">
+                <div className="flex items-center space-x-2">
+                  <span className="text-cyan-400 font-bold text-lg font-mono">⚡ SYNCBAY</span>
+                </div>
+                <button
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="flex items-center justify-center text-slate-400 hover:text-white text-xl"
+                  style={{ minWidth: "44px", minHeight: "44px" }}
+                  aria-label="Close menu"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <nav className="flex flex-col space-y-1 mt-4 overflow-y-auto flex-1">
+                {[
+                  { href: "#services", label: "Featured Services" },
+                  { href: "#workflow", label: "How It Works" },
+                  { href: "#cli-manifest", label: "Developer CLI" },
+                  { href: "#latency", label: "Edge Network" },
+                  { href: "#comparison", label: "Compare" },
+                  { href: "/templates", label: "Templates" },
+                  { href: "/enterprise", label: "Enterprise" },
+                  { href: "/roadmap", label: "R&D Roadmap" },
+                  { href: "/pricing", label: "Plans & Pricing" },
+                  { href: "#faq", label: "FAQ" },
+                ].map((item) => (
+                  <a
+                    key={item.href}
+                    href={item.href}
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="flex items-center px-4 rounded-lg text-sm font-semibold text-slate-300 hover:text-cyan-400 hover:bg-white/5 transition-colors"
+                    style={{ minHeight: "44px" }}
+                  >
+                    {item.label}
+                  </a>
+                ))}
+              </nav>
+
+              <div className="pt-4 border-t border-white/10 flex flex-col gap-2 mt-auto">
+                {sessionUser ? (
+                  <Link
+                    href="/dashboard"
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="flex items-center justify-center rounded-xl font-bold text-sm shadow-lg text-slate-950"
+                    style={{
+                      minHeight: "44px",
+                      background: "linear-gradient(135deg, #06B6D4, #3B82F6)",
+                    }}
+                  >
+                    Console Dashboard →
+                  </Link>
+                ) : (
+                  <>
+                    <Link
+                      href="/auth/signin"
+                      onClick={() => setMobileMenuOpen(false)}
+                      className="flex items-center justify-center rounded-xl font-semibold text-sm border border-white/20 text-slate-200 hover:border-cyan-400"
+                      style={{ minHeight: "44px" }}
+                    >
+                      Sign In
+                    </Link>
+                    <Link
+                      href="/auth/signin"
+                      onClick={() => setMobileMenuOpen(false)}
+                      className="flex items-center justify-center rounded-xl font-bold text-sm text-slate-950 shadow-lg"
+                      style={{
+                        minHeight: "44px",
+                        background: "linear-gradient(135deg, #06B6D4, #3B82F6)",
+                      }}
+                    >
+                      Deploy Free
+                    </Link>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </header>
 
       {/* Main Sections with Generous Spacing and Proper Padding */}

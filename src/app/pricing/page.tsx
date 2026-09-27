@@ -13,11 +13,10 @@ export default function PricingPage() {
   const [calcEgressGb, setCalcEgressGb] = useState<number>(300);
 
   // Compute estimates:
-  // Syncbay: Pro plan $12 (or $10 annual) includes 5 seats, 500GB egress. Extra seats: $5, extra egress: $0.04/GB
-  const syncbayBase = billingCycle === "annual" ? 10 : 12;
-  const syncbayExtraSeats = Math.max(0, calcSeats - 5) * 5;
+  // Syncbay: Pro plan $18 (or $15 annual) includes unlimited seats, 500GB egress. Extra egress: $0.04/GB
+  const syncbayBase = billingCycle === "annual" ? 15 : 18;
   const syncbayExtraEgress = Math.max(0, calcEgressGb - 500) * 0.04;
-  const syncbayMonthly = syncbayBase + syncbayExtraSeats + syncbayExtraEgress;
+  const syncbayMonthly = syncbayBase + syncbayExtraEgress;
 
   // Vercel Pro: $20 / seat / month + $0.15 / GB egress over 1TB (or 100GB on standard)
   const vercelMonthly = calcSeats * 20 + Math.max(0, calcEgressGb - 100) * 0.15;
@@ -127,7 +126,7 @@ export default function PricingPage() {
         </div>
 
         {/* ── PRICING CARDS ── */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 font-mono">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 font-mono">
           {/* 1. HOBBY */}
           <div className="rounded-2xl border border-zinc-800 bg-zinc-950/80 backdrop-blur-xl p-6 flex flex-col justify-between hover:border-zinc-700 transition-colors">
             <div>
@@ -177,7 +176,7 @@ export default function PricingPage() {
               <div className="text-xs uppercase tracking-widest text-cyan-400 mb-1">Pro Developer</div>
               <div className="flex items-baseline gap-1 mb-2">
                 <span className="text-4xl font-black text-white font-sans">
-                  ${billingCycle === "annual" ? "10" : "12"}
+                  ${billingCycle === "annual" ? "15" : "18"}
                 </span>
                 <span className="text-xs text-zinc-400">/ month</span>
               </div>
@@ -190,7 +189,10 @@ export default function PricingPage() {
                   <span className="text-cyan-400">✓</span> Unlimited Services &amp; Projects
                 </div>
                 <div className="flex items-center gap-2 font-bold text-cyan-300">
-                  <span className="text-cyan-400">✓</span> 5 Team Seats Included (Free!)
+                  <span className="text-cyan-400">✓</span> Unlimited Team Seats (Zero Seat Tax!)
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-cyan-400">✓</span> 0ms Cold Start Latency (Edge Containers)
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-cyan-400">✓</span> 500 GB Fast Edge Egress ($0.04/GB)
@@ -199,7 +201,7 @@ export default function PricingPage() {
                   <span className="text-cyan-400">✓</span> Scale-to-Zero Auto-Sleep (0 vCPU idle)
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-cyan-400">✓</span> Managed Postgres, Redis &amp; MySQL
+                  <span className="text-cyan-400">✓</span> Attached Managed PostgreSQL + Redis + MySQL
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-cyan-400">✓</span> Interactive Web Shell &amp; SQL Studio
@@ -224,61 +226,16 @@ export default function PricingPage() {
             </Link>
           </div>
 
-          {/* 3. TEAM / SCALE */}
-          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/80 backdrop-blur-xl p-6 flex flex-col justify-between hover:border-zinc-700 transition-colors">
-            <div>
-              <div className="text-xs uppercase tracking-widest text-indigo-400 mb-1">Team &amp; Scale</div>
-              <div className="flex items-baseline gap-1 mb-2">
-                <span className="text-4xl font-black text-white font-sans">
-                  ${billingCycle === "annual" ? "32" : "39"}
-                </span>
-                <span className="text-xs text-zinc-400">/ month</span>
-              </div>
-              <p className="text-xs text-zinc-400 font-sans leading-relaxed mb-6">
-                Full RBAC permissions, priority compute, and automated Edge WAF defense for engineering teams.
-              </p>
-
-              <div className="border-t border-zinc-800/80 pt-6 space-y-3 text-xs text-zinc-300 font-sans">
-                <div className="flex items-center gap-2 font-bold text-white">
-                  <span className="text-indigo-400">✓</span> Unlimited Team Members &amp; RBAC
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-indigo-400">✓</span> 2 TB Edge Network Egress
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-indigo-400">✓</span> Edge WAF &amp; Sliding Rate Limiting
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-indigo-400">✓</span> Canary Traffic Shifting &amp; 5xx Tripwire
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-indigo-400">✓</span> AI Deploy Diagnoser &amp; Auto-Fixes
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-indigo-400">✓</span> Multi-Region Database Read Replicas
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-indigo-400">✓</span> S3-Compatible R2 Object Buckets
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-indigo-400">✓</span> 99.95% High Availability SLA
-                </div>
-              </div>
-            </div>
-
-            <Link
-              href="/auth/signin"
-              className="mt-8 block text-center py-3 px-4 rounded-xl border border-indigo-500/50 hover:bg-indigo-950/30 text-indigo-300 text-xs font-bold transition-colors"
-            >
-              Start Team Trial
-            </Link>
-          </div>
-
-          {/* 4. ENTERPRISE */}
+          {/* 3. ENTERPRISE */}
           <div className="rounded-2xl border border-zinc-800 bg-zinc-950/80 backdrop-blur-xl p-6 flex flex-col justify-between hover:border-zinc-700 transition-colors">
             <div>
               <div className="text-xs uppercase tracking-widest text-fuchsia-400 mb-1">Enterprise</div>
-              <div className="text-4xl font-black text-white font-sans mb-2">$199<span className="text-xs font-normal text-zinc-400"> /mo+</span></div>
+              <div className="flex items-baseline gap-1 mb-2">
+                <span className="text-4xl font-black text-white font-sans">
+                  ${billingCycle === "annual" ? "360" : "450"}
+                </span>
+                <span className="text-xs text-zinc-400">/ month</span>
+              </div>
               <p className="text-xs text-zinc-400 font-sans leading-relaxed mb-6">
                 Isolated infrastructure, custom SLAs, and American regulatory compliance guarantees.
               </p>
@@ -291,16 +248,22 @@ export default function PricingPage() {
                   <span className="text-fuchsia-400">✓</span> 99.99% Uptime Guarantee SLA
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-fuchsia-400">✓</span> SOC2 Type II &amp; HIPAA Documents
+                  <span className="text-fuchsia-400">✓</span> Immutable Audit Log Streaming
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-fuchsia-400">✓</span> 24/7 Dedicated DevOps Engineer Support
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-fuchsia-400">✓</span> 5,000 GB Edge Network Egress
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-fuchsia-400">✓</span> Custom VPC Peering &amp; Private IP
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-fuchsia-400">✓</span> Dedicated Solutions Architect
+                  <span className="text-fuchsia-400">✓</span> SOC2 Type II &amp; HIPAA Documents
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-fuchsia-400">✓</span> Invoiced Billing &amp; Custom Caps
+                  <span className="text-fuchsia-400">✓</span> Invoiced Billing &amp; Custom Spending Caps
                 </div>
               </div>
             </div>
@@ -539,8 +502,8 @@ export default function PricingPage() {
               <div className="p-4 rounded-xl bg-zinc-900/80 border border-zinc-800">
                 <div className="text-zinc-500 uppercase text-[10px] mb-1">Corporate Headquarters</div>
                 <div className="text-white font-bold">Syncbay Technologies Inc.</div>
-                <div className="text-zinc-400">100 Montgomery St, Suite 1400</div>
-                <div className="text-zinc-400">San Francisco, CA 94104, USA</div>
+                <div className="text-zinc-400">548 Market St, Suite 82194</div>
+                <div className="text-zinc-400">San Francisco, CA 94104, United States</div>
               </div>
 
               <div className="p-4 rounded-xl bg-zinc-900/80 border border-zinc-800">

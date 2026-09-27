@@ -90,6 +90,25 @@ export const authOptions: NextAuthOptions = {
     }),
   ],
   callbacks: {
+    async redirect({ url, baseUrl }) {
+      // Allows relative callback URLs starting with "/" while preventing protocol-relative bypasses
+      if (url.startsWith("/")) {
+        if (!url.startsWith("//") && !url.startsWith("/\\")) {
+          return `${baseUrl}${url}`;
+        }
+        return baseUrl;
+      }
+      // Allows callback URLs on the exact same origin
+      try {
+        const parsedUrl = new URL(url);
+        if (parsedUrl.origin === baseUrl) {
+          return url;
+        }
+      } catch {
+        // Fallback on malformed URL
+      }
+      return baseUrl;
+    },
     async jwt({ token, user, account }) {
       if (user) {
         token.id = user.id;

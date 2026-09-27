@@ -137,8 +137,8 @@ export const projectRouter = createTRPCRouter({
       );
 
       const callerMember = project.workspace.members.find((m) => m.userId === ctx.session.user.id);
-      if (!callerMember || callerMember.role === "VIEWER") {
-        throw new TRPCError({ code: "FORBIDDEN", message: "Viewers cannot delete projects" });
+      if (!callerMember || (callerMember.role !== "OWNER" && callerMember.role !== "ADMIN")) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Only workspace owners and admins can delete projects" });
       }
 
       if (input.confirmName !== project.name) {

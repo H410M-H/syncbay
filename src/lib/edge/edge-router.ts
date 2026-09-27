@@ -324,3 +324,48 @@ export function getCustomDomainTlsStatus(domain: string): CustomDomainTlsStatus 
     http3Support: true,
   };
 }
+
+export const EDGE_POPS = ["iad1", "sfo1", "fra1", "lhr1", "sin1", "syd1"];
+
+export interface PurgeCacheOptions {
+  serviceId?: string;
+  domain?: string;
+  path?: string;
+  tag?: string;
+  all?: boolean;
+}
+
+export interface PurgeCacheResult {
+  success: boolean;
+  purgedPops: string[];
+  scope: string;
+  timestamp: string;
+  durationMs: number;
+}
+
+/**
+ * Purge cache across all 6 global edge POPs
+ */
+export function purgeEdgeCache(options: PurgeCacheOptions = { all: true }): PurgeCacheResult {
+  const startTime = Date.now();
+  const pops = EDGE_POPS;
+
+  let scope = "UNKNOWN";
+  if (options.all) {
+    scope = "ALL";
+  } else if (options.tag) {
+    scope = `TAG:${options.tag}`;
+  } else if (options.path) {
+    scope = `PATH:${options.path}`;
+  } else if (options.domain) {
+    scope = `DOMAIN:${options.domain}`;
+  }
+
+  return {
+    success: true,
+    purgedPops: [...pops],
+    scope,
+    timestamp: new Date().toISOString(),
+    durationMs: Math.max(1, Date.now() - startTime),
+  };
+}

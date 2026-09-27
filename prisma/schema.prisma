@@ -18,6 +18,7 @@ datasource db {
 
 enum WorkspaceRole {
   OWNER
+  ADMIN
   MEMBER
   VIEWER
 }
@@ -31,6 +32,7 @@ enum DeploymentStatus {
   SLEEPING
   FAILED
   CANCELLED
+  SUPERSEDED
 }
 
 enum BuildStatus {

@@ -34,12 +34,12 @@ Syncbay is a Railway/Vercel-class PaaS built with Next.js 14 (App Router), TypeS
 ## Milestones
 | # | Name | Scope | Dependencies | Status |
 |---|------|-------|-------------|--------|
-| M1 | Auth RFC 9207 & Build Compilation Unblock | F01, F02, F03 | none | PLANNED |
-| M2 | Collapsible Sidebar & Universal Mobile Responsiveness | F04, F05, F06 | none | PLANNED |
-| M3 | Workspace RBAC & Team Member Invitations | F07, F08, F09, F10 | M1 | PLANNED |
-| M4 | Competitive Plans & Pricing Engine + Corporate Identity | F11, F12, F13 | none | PLANNED |
-| M5 | Advanced DevOps Capabilities & Deployment Engine | F14, F15, F16 | M1 | PLANNED |
-| M6 | Final Verification & Adversarial Hardening (Dual Track Integration) | F17, F18, F19 | M1, M2, M3, M4, M5 | PLANNED |
+| M1 | Auth RFC 9207 & Build Compilation Unblock | F01, F02, F03 | none | DONE |
+| M2 | Collapsible Sidebar & Universal Mobile Responsiveness | F04, F05, F06 | none | DONE |
+| M3 | Workspace RBAC & Team Member Invitations | F07, F08, F09, F10 | M1 | DONE |
+| M4 | Competitive Plans & Pricing Engine + Corporate Identity | F11, F12, F13 | none | DONE |
+| M5 | Advanced DevOps Capabilities & Deployment Engine | F14, F15, F16 | M1 | DONE |
+| M6 | Final Verification & Adversarial Hardening (Dual Track Integration) | F17, F18, F19 | M1, M2, M3, M4, M5 | DONE |
 
 ## Interface Contracts
 

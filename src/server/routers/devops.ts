@@ -24,6 +24,9 @@ import {
 import { autoTuneFramework } from "@/lib/devops/auto-tuner";
 import { diagnoseBuildLogs } from "@/lib/devops/ai-diagnostics";
 import { parseVercelConfig, applyVercelMigration } from "@/lib/devops/vercel-migrator";
+import { purgeEdgeCache } from "@/lib/edge/edge-router";
+import { executeInstantRollback } from "@/lib/devops/instant-rollback";
+import { executeSyncVariables } from "@/lib/devops/env-sync";
 
 /**
  * RBAC Helper: Asserts caller has access to the workspace containing the service
@@ -32,7 +35,7 @@ async function assertDevopsAccess(
   db: any,
   userId: string,
   serviceId: string,
-  allowedRoles: ("OWNER" | "MEMBER" | "VIEWER")[] = ["OWNER", "MEMBER"]
+  allowedRoles: ("OWNER" | "ADMIN" | "MEMBER" | "VIEWER")[] = ["OWNER", "ADMIN", "MEMBER"]
 ) {
   const service = await db.service.findFirst({
     where: {
@@ -82,7 +85,7 @@ async function assertCronAccess(
   db: any,
   userId: string,
   cronId: string,
-  allowedRoles: ("OWNER" | "MEMBER" | "VIEWER")[] = ["OWNER", "MEMBER"]
+  allowedRoles: ("OWNER" | "ADMIN" | "MEMBER" | "VIEWER")[] = ["OWNER", "ADMIN", "MEMBER"]
 ) {
   const cron = getCronJobById(cronId);
   if (!cron) {
@@ -97,7 +100,7 @@ export const devopsRouter = createTRPCRouter({
   listCrons: protectedProcedure
     .input(z.object({ serviceId: z.string() }))
     .query(async ({ ctx, input }) => {
-      await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "MEMBER", "VIEWER"]);
+      await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "ADMIN", "MEMBER", "VIEWER"]);
       return listCronsForService(input.serviceId);
     }),
 
@@ -112,7 +115,7 @@ export const devopsRouter = createTRPCRouter({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "MEMBER"]);
+      await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "ADMIN", "MEMBER"]);
       try {
         return createCronJob(input);
       } catch (err: any) {
@@ -123,7 +126,7 @@ export const devopsRouter = createTRPCRouter({
   toggleCron: protectedProcedure
     .input(z.object({ cronId: z.string(), enabled: z.boolean() }))
     .mutation(async ({ ctx, input }) => {
-      await assertCronAccess(ctx.db, ctx.session.user.id, input.cronId, ["OWNER", "MEMBER"]);
+      await assertCronAccess(ctx.db, ctx.session.user.id, input.cronId, ["OWNER", "ADMIN", "MEMBER"]);
       try {
         return toggleCronJob(input.cronId, input.enabled);
       } catch (err: any) {
@@ -134,7 +137,7 @@ export const devopsRouter = createTRPCRouter({
   triggerCron: protectedProcedure
     .input(z.object({ cronId: z.string() }))
     .mutation(async ({ ctx, input }) => {
-      await assertCronAccess(ctx.db, ctx.session.user.id, input.cronId, ["OWNER", "MEMBER"]);
+      await assertCronAccess(ctx.db, ctx.session.user.id, input.cronId, ["OWNER", "ADMIN", "MEMBER"]);
       try {
         return await executeCronJob(input.cronId);
       } catch (err: any) {
@@ -145,14 +148,14 @@ export const devopsRouter = createTRPCRouter({
   deleteCron: protectedProcedure
     .input(z.object({ cronId: z.string() }))
     .mutation(async ({ ctx, input }) => {
-      await assertCronAccess(ctx.db, ctx.session.user.id, input.cronId, ["OWNER", "MEMBER"]);
+      await assertCronAccess(ctx.db, ctx.session.user.id, input.cronId, ["OWNER", "ADMIN", "MEMBER"]);
       return { success: deleteCronJob(input.cronId) };
     }),
 
   getCronLogs: protectedProcedure
     .input(z.object({ cronId: z.string() }))
     .query(async ({ ctx, input }) => {
-      await assertCronAccess(ctx.db, ctx.session.user.id, input.cronId, ["OWNER", "MEMBER", "VIEWER"]);
+      await assertCronAccess(ctx.db, ctx.session.user.id, input.cronId, ["OWNER", "ADMIN", "MEMBER", "VIEWER"]);
       return getCronRunLogs(input.cronId);
     }),
 
@@ -160,7 +163,7 @@ export const devopsRouter = createTRPCRouter({
   getWafConfig: protectedProcedure
     .input(z.object({ serviceId: z.string() }))
     .query(async ({ ctx, input }) => {
-      await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "MEMBER", "VIEWER"]);
+      await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "ADMIN", "MEMBER", "VIEWER"]);
       return getDefaultWafConfig(input.serviceId);
     }),
 
@@ -179,7 +182,7 @@ export const devopsRouter = createTRPCRouter({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "MEMBER"]);
+      await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "ADMIN", "MEMBER"]);
       const { serviceId, ...partial } = input;
       return updateWafConfig(serviceId, partial);
     }),
@@ -187,7 +190,7 @@ export const devopsRouter = createTRPCRouter({
   getSecurityEvents: protectedProcedure
     .input(z.object({ serviceId: z.string() }))
     .query(async ({ ctx, input }) => {
-      await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "MEMBER", "VIEWER"]);
+      await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "ADMIN", "MEMBER", "VIEWER"]);
       return getSecurityEvents(input.serviceId);
     }),
 
@@ -195,7 +198,7 @@ export const devopsRouter = createTRPCRouter({
   getCanaryConfig: protectedProcedure
     .input(z.object({ serviceId: z.string() }))
     .query(async ({ ctx, input }) => {
-      await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "MEMBER", "VIEWER"]);
+      await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "ADMIN", "MEMBER", "VIEWER"]);
       return getCanaryConfig(input.serviceId);
     }),
 
@@ -207,21 +210,21 @@ export const devopsRouter = createTRPCRouter({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "MEMBER"]);
+      await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "ADMIN", "MEMBER"]);
       return updateCanaryWeight(input.serviceId, input.weightPercent);
     }),
 
   promoteCanary: protectedProcedure
     .input(z.object({ serviceId: z.string() }))
     .mutation(async ({ ctx, input }) => {
-      await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "MEMBER"]);
+      await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "ADMIN", "MEMBER"]);
       return promoteCanary(input.serviceId);
     }),
 
   rollbackCanary: protectedProcedure
     .input(z.object({ serviceId: z.string() }))
     .mutation(async ({ ctx, input }) => {
-      await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "MEMBER"]);
+      await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "ADMIN", "MEMBER"]);
       return rollbackCanary(input.serviceId);
     }),
 
@@ -246,7 +249,7 @@ export const devopsRouter = createTRPCRouter({
       })
     )
     .query(async ({ ctx, input }) => {
-      await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "MEMBER", "VIEWER"]);
+      await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "ADMIN", "MEMBER", "VIEWER"]);
       return diagnoseBuildLogs(input.logLines);
     }),
 
@@ -269,7 +272,7 @@ export const devopsRouter = createTRPCRouter({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "MEMBER"]);
+      await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "ADMIN", "MEMBER"]);
       try {
         const plan = parseVercelConfig(input.rawJson);
         const result = applyVercelMigration(input.serviceId, plan);
@@ -281,5 +284,67 @@ export const devopsRouter = createTRPCRouter({
       } catch (err: any) {
         throw new TRPCError({ code: "BAD_REQUEST", message: err.message });
       }
+    }),
+
+  // ─── INSTANT ROLLBACK (M5 F14) ─────────────────────────────────────────────
+  instantRollback: protectedProcedure
+    .input(z.object({ deploymentId: z.string(), serviceId: z.string().optional() }))
+    .mutation(async ({ ctx, input }) => {
+      return executeInstantRollback(ctx.db, ctx.session.user.id, input);
+    }),
+
+  // ─── ENVIRONMENT VARIABLE SYNCHRONIZATION (M5 F15) ─────────────────────────
+  syncVariables: protectedProcedure
+    .input(
+      z.object({
+        serviceId: z.string(),
+        variables: z.record(z.string(), z.string()).optional(),
+        rawEnv: z.string().optional(),
+        mode: z.enum(["merge", "overwrite"]).default("merge"),
+        includeWorkspaceShared: z.boolean().default(false),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      return executeSyncVariables(ctx.db, ctx.session.user.id, input);
+    }),
+
+  // ─── EDGE CACHE PURGE (M5 F16) ─────────────────────────────────────────────
+  purgeEdgeCache: protectedProcedure
+    .input(
+      z.object({
+        serviceId: z.string().optional(),
+        domain: z.string().optional(),
+        path: z.string().optional(),
+        tag: z.string().optional(),
+        all: z.boolean().optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      if (input.serviceId) {
+        await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "ADMIN"]);
+      }
+      return purgeEdgeCache(input);
+    }),
+
+  purgeCache: protectedProcedure
+    .input(
+      z.object({
+        serviceId: z.string().optional(),
+        domain: z.string().optional(),
+        path: z.string().optional(),
+        tag: z.string().optional(),
+        all: z.boolean().default(true),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      if (input.serviceId) {
+        await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "ADMIN"]);
+      }
+      return purgeEdgeCache({
+        domain: input.domain,
+        path: input.path,
+        tag: input.tag,
+        all: input.all,
+      });
     }),
 });

@@ -82,6 +82,14 @@ const FEATURES: ComparisonFeature[] = [
     highlight: true,
   },
   {
+    name: "Team Collaborator Seats",
+    category: "Cost & Transparency",
+    syncbay: "Unlimited Seats (Free on Pro)",
+    vercel: "$20 / seat / month tax",
+    railway: "$20 / seat on Pro",
+    highlight: true,
+  },
+  {
     name: "Egress Bandwidth Pricing",
     category: "Cost & Transparency",
     syncbay: "Included Free (0 egress fees)",
@@ -161,7 +169,7 @@ export function ComparisonTable() {
           </div>
 
           <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse text-xs" style={{ fontFamily: "'Inter', sans-serif" }}>
+            <table className="w-full text-left border-collapse text-xs" style={{ fontFamily: "'Inter', sans-serif", minWidth: "620px" }}>
               <thead>
                 <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.12)" }}>
                   <th

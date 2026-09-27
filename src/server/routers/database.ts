@@ -128,7 +128,7 @@ export const databaseRouter = createTRPCRouter({
             members: {
               some: {
                 userId: ctx.session.user.id,
-                role: { in: ["OWNER", "MEMBER"] },
+                role: { in: ["OWNER", "ADMIN", "MEMBER"] },
               },
             },
           },

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { createTRPCRouter, protectedProcedure } from "@/server/trpc";
 import { TRPCError } from "@trpc/server";
 import { domainService } from "@/lib/domain-service";
+import { executeSyncVariables } from "@/lib/devops/env-sync";
 
 export const serviceRouter = createTRPCRouter({
   /** List services in an environment */
@@ -115,7 +116,7 @@ export const serviceRouter = createTRPCRouter({
           project: {
             deletedAt: null,
             workspace: {
-              members: { some: { userId: ctx.session.user.id, role: { in: ["OWNER", "MEMBER"] } } },
+              members: { some: { userId: ctx.session.user.id, role: { in: ["OWNER", "ADMIN", "MEMBER"] } } },
             },
           },
         },
@@ -186,7 +187,7 @@ export const serviceRouter = createTRPCRouter({
           deletedAt: null,
           environment: {
             project: {
-              workspace: { members: { some: { userId: ctx.session.user.id, role: { in: ["OWNER", "MEMBER"] } } } },
+              workspace: { members: { some: { userId: ctx.session.user.id, role: { in: ["OWNER", "ADMIN", "MEMBER"] } } } },
             },
           },
         },
@@ -219,7 +220,7 @@ export const serviceRouter = createTRPCRouter({
           deletedAt: null,
           environment: {
             project: {
-              workspace: { members: { some: { userId: ctx.session.user.id, role: { in: ["OWNER", "MEMBER"] } } } },
+              workspace: { members: { some: { userId: ctx.session.user.id, role: { in: ["OWNER", "ADMIN", "MEMBER"] } } } },
             },
           },
         },
@@ -246,7 +247,7 @@ export const serviceRouter = createTRPCRouter({
                 members: {
                   some: {
                     userId: ctx.session.user.id,
-                    role: { in: ["OWNER", "MEMBER"] },
+                    role: { in: ["OWNER", "ADMIN", "MEMBER"] },
                   },
                 },
               },
@@ -289,7 +290,7 @@ export const serviceRouter = createTRPCRouter({
                 members: {
                   some: {
                     userId: ctx.session.user.id,
-                    role: { in: ["OWNER", "MEMBER"] },
+                    role: { in: ["OWNER", "ADMIN", "MEMBER"] },
                   },
                 },
               },
@@ -326,7 +327,7 @@ export const serviceRouter = createTRPCRouter({
           deletedAt: null,
           environment: {
             project: {
-              workspace: { members: { some: { userId: ctx.session.user.id, role: { in: ["OWNER", "MEMBER"] } } } },
+              workspace: { members: { some: { userId: ctx.session.user.id, role: { in: ["OWNER", "ADMIN", "MEMBER"] } } } },
             },
           },
         },
@@ -389,13 +390,30 @@ export const serviceRouter = createTRPCRouter({
           },
         },
       });
-      if (!member) throw new TRPCError({ code: "FORBIDDEN" });
+      if (!member || member.role === "VIEWER") {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Viewers cannot delete environment variables" });
+      }
 
       await ctx.db.environmentVariable.delete({
         where: { id: input.variableId },
       });
 
       return { success: true };
+    }),
+
+  /** Bulk environment variable synchronization — M5 F15 */
+  syncVariables: protectedProcedure
+    .input(
+      z.object({
+        serviceId: z.string(),
+        variables: z.record(z.string(), z.string()).optional(),
+        rawEnv: z.string().optional(),
+        mode: z.enum(["merge", "overwrite"]).default("merge"),
+        includeWorkspaceShared: z.boolean().default(false),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      return executeSyncVariables(ctx.db, ctx.session.user.id, input);
     }),
 
   /** Soft-delete a service — FR-SVC-08 */
@@ -412,7 +430,7 @@ export const serviceRouter = createTRPCRouter({
                 members: {
                   some: {
                     userId: ctx.session.user.id,
-                    role: { in: ["OWNER", "MEMBER"] },
+                    role: { in: ["OWNER", "ADMIN", "MEMBER"] },
                   },
                 },
               },

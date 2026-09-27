@@ -1,6 +1,14 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { TRPCProvider } from "@/lib/trpc-client";
+
+export const viewport: Viewport = {
+  themeColor: "#050510",
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 5,
+  colorScheme: "dark",
+};
 
 function getBaseUrl() {
   const appUrl = process.env.NEXT_PUBLIC_APP_URL?.trim();
@@ -37,8 +45,8 @@ export const metadata: Metadata = {
     "Cloudflare Containers",
   ],
   authors: [{ name: "Syncbay Engineering", url: "https://www.syncbay.app" }],
-  creator: "MSNS-DEV™",
-  publisher: "Syncbay Inc.",
+  creator: "Syncbay Technologies Inc.",
+  publisher: "Syncbay Technologies Inc.",
   metadataBase: new URL(getBaseUrl()),
   openGraph: {
     type: "website",
@@ -104,7 +112,7 @@ const jsonLd = {
         },
         {
           "@type": "Offer",
-          "price": "12",
+          "price": "18",
           "priceCurrency": "USD",
           "name": "Pro Plan"
         },

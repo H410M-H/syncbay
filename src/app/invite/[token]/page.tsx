@@ -3,12 +3,15 @@
 import { useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
+import { useSession } from "next-auth/react";
 import { trpc } from "@/lib/trpc-client";
 
 export default function DynamicInvitePage() {
   const params = useParams();
   const router = useRouter();
   const token = (params?.token as string) || "";
+  const { data: session, status } = useSession();
+  const isAuthenticated = status === "authenticated" || !!session;
 
   const [accepting, setAccepting] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
@@ -171,15 +174,25 @@ export default function DynamicInvitePage() {
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-          <button
-            onClick={handleAccept}
-            className="btn btn-primary"
-            style={{ width: "100%", justifyContent: "center", padding: "12px" }}
-            disabled={accepting}
-          >
-            {accepting ? "Joining Workspace..." : `Accept & Join ${invite.workspaceName}`}
-          </button>
-          <Link href="/dashboard" className="btn btn-ghost" style={{ width: "100%", justifyContent: "center" }}>
+          {!isAuthenticated ? (
+            <Link
+              href={`/auth/signin?callbackUrl=/invite/${encodeURIComponent(token)}`}
+              className="btn btn-primary"
+              style={{ width: "100%", justifyContent: "center", padding: "12px", minHeight: "44px", display: "flex", alignItems: "center" }}
+            >
+              Sign in to Accept
+            </Link>
+          ) : (
+            <button
+              onClick={handleAccept}
+              className="btn btn-primary"
+              style={{ width: "100%", justifyContent: "center", padding: "12px", minHeight: "44px" }}
+              disabled={accepting}
+            >
+              {accepting ? "Joining Workspace..." : `Accept & Join ${invite.workspaceName}`}
+            </button>
+          )}
+          <Link href="/dashboard" className="btn btn-ghost" style={{ width: "100%", justifyContent: "center", minHeight: "44px", display: "flex", alignItems: "center" }}>
             Decline / Later
           </Link>
         </div>

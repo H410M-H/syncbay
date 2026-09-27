@@ -26,6 +26,9 @@ export default function DatabasesPage() {
     { enabled: !!workspaceId }
   );
 
+  const currentMember = activeWorkspace?.members?.find((m: any) => m.userId === dashboard?.user?.id);
+  const canDeleteDb = currentMember?.role === "OWNER" || currentMember?.role === "ADMIN" || activeWorkspace?.isPersonal;
+
   const [providerFilter, setProviderFilter] = useState<string>("ALL");
   const [revealedPasswords, setRevealedPasswords] = useState<Record<string, boolean>>({});
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -245,14 +248,16 @@ export default function DatabasesPage() {
                         📊 Query Studio
                       </Link>
                     )}
-                    <button
-                      onClick={() => handleDelete(db.id, db.name)}
-                      disabled={deletingId === db.id}
-                      className="btn btn-danger btn-sm"
-                      style={{ fontSize: "0.75rem" }}
-                    >
-                      {deletingId === db.id ? "Wiping..." : "Delete"}
-                    </button>
+                    {canDeleteDb && (
+                      <button
+                        onClick={() => handleDelete(db.id, db.name)}
+                        disabled={deletingId === db.id}
+                        className="btn btn-danger btn-sm"
+                        style={{ fontSize: "0.75rem" }}
+                      >
+                        {deletingId === db.id ? "Wiping..." : "Delete"}
+                      </button>
+                    )}
                   </div>
                 </div>
 

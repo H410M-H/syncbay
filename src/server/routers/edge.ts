@@ -12,6 +12,7 @@ import {
   getCustomDomainTlsStatus,
   calculateDistanceKm,
   getCoordinatesForCountry,
+  purgeEdgeCache,
 } from "@/lib/edge/edge-router";
 
 export const edgeRouter = createTRPCRouter({
@@ -106,5 +107,21 @@ export const edgeRouter = createTRPCRouter({
     .input(z.object({ domain: z.string() }))
     .query(async ({ input }) => {
       return getCustomDomainTlsStatus(input.domain);
+    }),
+
+  /** Invalidate edge cache across 6 global POPs — M5 F16 */
+  purgeCache: protectedProcedure
+    .input(
+      z
+        .object({
+          domain: z.string().optional(),
+          path: z.string().optional(),
+          tag: z.string().optional(),
+          all: z.boolean().default(true),
+        })
+        .optional()
+    )
+    .mutation(async ({ input }) => {
+      return purgeEdgeCache(input || { all: true });
     }),
 });

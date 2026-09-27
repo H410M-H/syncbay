@@ -52,7 +52,7 @@ export function DashboardShell({ user, children }: DashboardShellProps) {
 
   // Invite modal state
   const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteRole, setInviteRole] = useState<"MEMBER" | "VIEWER">("MEMBER");
+  const [inviteRole, setInviteRole] = useState<"ADMIN" | "MEMBER" | "VIEWER">("MEMBER");
   const [inviteDays, setInviteDays] = useState(7);
   const [inviteResult, setInviteResult] = useState<{ token: string; link: string } | null>(null);
   const [inviteError, setInviteError] = useState("");
@@ -257,7 +257,7 @@ export function DashboardShell({ user, children }: DashboardShellProps) {
       setInviteResult({ token: res.token, link });
       setInviteEmail("");
     } catch (err: any) {
-      setInviteError(err.message || "Failed to create invitation. Only workspace OWNER can invite.");
+      setInviteError(err.message || "Failed to create invitation. Only workspace OWNER or ADMIN can invite.");
     }
   };
 
@@ -274,6 +274,9 @@ export function DashboardShell({ user, children }: DashboardShellProps) {
   const isNavActive = (href: string) => {
     if (href === "/dashboard") {
       return pathname === "/dashboard" || !!slugInPath;
+    }
+    if (href === "/dashboard/members") {
+      return pathname.startsWith("/dashboard/members") || pathname.startsWith("/dashboard/team");
     }
     return pathname.startsWith(href);
   };
@@ -894,7 +897,7 @@ export function DashboardShell({ user, children }: DashboardShellProps) {
             <button
               onClick={() => setMobileOpen(false)}
               className="btn btn-ghost btn-sm"
-              style={{ fontSize: "1.2rem", padding: "4px 8px" }}
+              style={{ fontSize: "1.2rem", padding: "4px 8px", minWidth: "44px", minHeight: "44px", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
               aria-label="Close Navigation"
             >
               ✕
@@ -990,7 +993,7 @@ export function DashboardShell({ user, children }: DashboardShellProps) {
                 setInviteModalOpen(true);
               }}
               className="btn btn-primary btn-sm"
-              style={{ width: "100%", justifyContent: "center" }}
+              style={{ width: "100%", justifyContent: "center", minHeight: "44px", display: "flex", alignItems: "center" }}
             >
               ✉️ Invite Collaborator
             </button>
@@ -1216,8 +1219,9 @@ export function DashboardShell({ user, children }: DashboardShellProps) {
                       <select
                         className="input"
                         value={inviteRole}
-                        onChange={(e) => setInviteRole(e.target.value as "MEMBER" | "VIEWER")}
+                        onChange={(e) => setInviteRole(e.target.value as "ADMIN" | "MEMBER" | "VIEWER")}
                       >
+                        <option value="ADMIN">ADMIN (Full Management)</option>
                         <option value="MEMBER">MEMBER (Deploy &amp; Manage)</option>
                         <option value="VIEWER">VIEWER (Read-only)</option>
                       </select>

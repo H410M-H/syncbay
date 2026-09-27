@@ -1,6 +1,7 @@
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { redirect } from "next/navigation";
+import { headers } from "next/headers";
 import { DashboardShell } from "./dashboard-shell";
 
 export default async function DashboardLayout({
@@ -9,7 +10,11 @@ export default async function DashboardLayout({
   children: React.ReactNode;
 }) {
   const session = await getServerSession(authOptions);
-  if (!session) redirect("/auth/signin");
+  if (!session) {
+    const headersList = await headers();
+    const pathname = headersList.get("x-pathname") || "/dashboard";
+    redirect(`/auth/signin?callbackUrl=${encodeURIComponent(pathname)}`);
+  }
 
   return (
     <DashboardShell

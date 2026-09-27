@@ -373,7 +373,7 @@ registerTest("PRICING-VALUE-01", "Pricing", 6, "Syncbay eliminates Vercel seat t
 
 registerTest("LEGAL-USA-01", "Legal", 6, "Official corporate location and US cloud sovereignty disclosure verified", () => {
   const companyName = "Syncbay Technologies Inc.";
-  const address = "100 Montgomery St, Suite 1400, San Francisco, CA 94104, USA";
+  const address = "548 Market St, Suite 82194, San Francisco, CA 94104, United States";
   const state = "State of Delaware, United States";
 
   assertEqual(companyName, "Syncbay Technologies Inc.");
