@@ -40,6 +40,12 @@ export default function SettingsPage() {
     { enabled: !!workspaceId }
   );
 
+  // Fetch billing overview for payment method preview
+  const { data: billingSummary } = trpc.billing.getBillingSummary.useQuery(
+    { workspaceId: workspaceId! },
+    { enabled: !!workspaceId }
+  );
+
   // Mutations
   const createTokenMutation = trpc.token.create.useMutation();
   const revokeTokenMutation = trpc.token.revoke.useMutation();
@@ -589,6 +595,43 @@ export default function SettingsPage() {
             {updateCapMutation.isPending ? "Saving..." : "Save Spending Cap"}
           </button>
         </form>
+
+        {/* Payment Card & Prepaid Balance Summary Widget */}
+        <div
+          style={{
+            marginTop: "24px",
+            paddingTop: "20px",
+            borderTop: "1px solid var(--border-subtle)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            flexWrap: "wrap",
+            gap: "16px",
+          }}
+        >
+          <div>
+            <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 600 }}>
+              Payment Method &amp; Prepaid Balance
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "4px" }}>
+              <span style={{ fontSize: "1.25rem" }}>💳</span>
+              <div>
+                <span style={{ fontWeight: 600, fontSize: "0.875rem" }}>
+                  {billingSummary?.defaultCard
+                    ? `${billingSummary.defaultCard.brand.toUpperCase()} ending in •••• ${billingSummary.defaultCard.last4}`
+                    : "No payment card on file"}
+                </span>
+                <span style={{ color: "var(--text-muted)", fontSize: "0.8125rem", marginLeft: "8px" }}>
+                  · Cloud Balance: ${( (billingSummary?.creditBalanceCents ?? 0) / 100 ).toFixed(2)}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <Link href="/dashboard/usage" className="btn btn-secondary btn-sm">
+            Manage Cards, Invoices &amp; Top-Up →
+          </Link>
+        </div>
       </div>
 
       {/* ── Official American Company & Cloud Compliance Card ── */}

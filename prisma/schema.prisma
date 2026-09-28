@@ -150,18 +150,20 @@ model Workspace {
   name             String
   slug             String   @unique
   isPersonal       Boolean  @default(false)
-  spendingCapCents Int?
-  stripeCustomerId String?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  spendingCapCents   Int?
+  stripeCustomerId   String?
+  creditBalanceCents Int      @default(0)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
-  members      WorkspaceMember[]
-  projects     Project[]
-  invites      WorkspaceInvite[]
-  apiTokens    ApiToken[]
-  auditLogs    AuditLogEntry[]
-  usageRecords UsageRecord[]
-  invoices     Invoice[]
+  members        WorkspaceMember[]
+  projects       Project[]
+  invites        WorkspaceInvite[]
+  apiTokens      ApiToken[]
+  auditLogs      AuditLogEntry[]
+  usageRecords   UsageRecord[]
+  invoices       Invoice[]
+  paymentMethods PaymentMethod[]
 
   @@map("workspaces")
 }
@@ -448,17 +450,38 @@ model Invoice {
   id              String        @id @default(cuid())
   workspaceId     String
   stripeInvoiceId String?
+  paymentMethodId String?
   periodStart     DateTime
   periodEnd       DateTime
   amountCents     Int
   infraCostCents  Int
   status          InvoiceStatus @default(OPEN)
   pdfUrl          String?
+  paidAt          DateTime?
   createdAt       DateTime      @default(now())
 
   workspace Workspace @relation(fields: [workspaceId], references: [id])
 
   @@map("invoices")
+}
+
+model PaymentMethod {
+  id                    String    @id @default(cuid())
+  workspaceId           String
+  brand                 String    // "visa" | "mastercard" | "amex" | "discover"
+  last4                 String    // e.g. "4242"
+  expMonth              Int       // 1-12
+  expYear               Int       // e.g. 2028
+  cardholderName        String?
+  isDefault             Boolean   @default(false)
+  stripePaymentMethodId String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  workspace             Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@map("payment_methods")
 }
 
 // ─── AUDIT LOG ────────────────────────────────────────────────────────────────
