@@ -13,6 +13,7 @@ import { SecurityCompliance } from "@/components/marketing/security-compliance";
 import { SocialProof } from "@/components/marketing/social-proof";
 import { LandingFaq } from "@/components/marketing/landing-faq";
 import { LandingFooter } from "@/components/marketing/landing-footer";
+import { BrandLogo } from "@/components/ui/brand-logo";
 
 export default function HomePage() {
   const [sessionUser, setSessionUser] = useState<{ name?: string | null; email?: string | null } | null>(null);
@@ -44,22 +45,7 @@ export default function HomePage() {
         }}
       >
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <Link href="/" className="flex items-center space-x-3 group">
-            <div
-              className="w-9 h-9 rounded-xl flex items-center justify-center text-base font-black transition-all duration-300 group-hover:scale-110 shadow-lg"
-              style={{
-                background: "linear-gradient(135deg, #06B6D4, #7C3AED)",
-                color: "#050510",
-                boxShadow: "0 0 25px rgba(6,182,212,0.4), inset 0 1px 0 rgba(255,255,255,0.4)",
-              }}
-            >
-              ⚡
-            </div>
-            <span className="font-extrabold text-xl tracking-tight font-mono">
-              <span className="text-white">SYNCBAY</span>
-              <span style={{ color: "#06B6D4" }}>.APP</span>
-            </span>
-          </Link>
+          <BrandLogo size="md" href="/" priority />
 
           {/* Desktop Nav Links */}
           <nav className="hidden lg:flex items-center space-x-7 text-xs font-semibold" style={{ color: "#94a3b8" }}>
@@ -167,9 +153,7 @@ export default function HomePage() {
               onClick={(e) => e.stopPropagation()}
             >
               <div className="flex items-center justify-between pb-4 border-b border-white/10">
-                <div className="flex items-center space-x-2">
-                  <span className="text-cyan-400 font-bold text-lg font-mono">⚡ SYNCBAY</span>
-                </div>
+                <BrandLogo size="sm" href="/" />
                 <button
                   onClick={() => setMobileMenuOpen(false)}
                   className="flex items-center justify-center text-slate-400 hover:text-white text-xl"

@@ -2,6 +2,7 @@
 
 import React, { useState } from "react";
 import Link from "next/link";
+import { BrandLogo } from "@/components/ui/brand-logo";
 
 const FOOTER_COLUMNS = [
   {
@@ -108,22 +109,7 @@ export function LandingFooter() {
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-12 pb-16 border-b border-white/10">
           {/* Brand Info & Mission Statement */}
           <div className="lg:col-span-6 space-y-4">
-            <Link href="/" className="inline-flex items-center space-x-3 group">
-              <div
-                className="w-10 h-10 rounded-xl flex items-center justify-center text-lg font-black transition-all duration-300 group-hover:scale-110 shadow-lg"
-                style={{
-                  background: "linear-gradient(135deg, #06B6D4, #7C3AED)",
-                  color: "#050510",
-                  boxShadow: "0 0 25px rgba(6,182,212,0.4), inset 0 1px 0 rgba(255,255,255,0.4)",
-                }}
-              >
-                ⚡
-              </div>
-              <span className="font-extrabold text-2xl tracking-tight font-mono">
-                <span className="text-white">SYNCBAY</span>
-                <span style={{ color: "#06B6D4" }}>.APP</span>
-              </span>
-            </Link>
+            <BrandLogo size="lg" href="/" />
 
             <p className="text-sm font-medium leading-relaxed max-w-lg text-slate-300">
               The Cloud Hyper-Plane for Modern Developers. Next-Gen PaaS engineered to surpass Vercel and Railway with 6 global edge POPs, 0ms cold starts, attached managed PostgreSQL, live interactive Web Shell, and SQL Query Studio.

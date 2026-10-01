@@ -34,7 +34,7 @@ export const PasswordResetEmail = ({
                 </Button>
               </Section>
               <Text className="text-[#a1a1aa] leading-relaxed text-sm">
-                If you didn't request a password reset, you can safely ignore this email. The link will expire in 1 hour.
+                If you didn&apos;t request a password reset, you can safely ignore this email. The link will expire in 1 hour.
               </Text>
             </Section>
             <Section className="mt-8 text-center">

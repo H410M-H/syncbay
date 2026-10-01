@@ -4,6 +4,7 @@ import React, { useState } from "react";
 import Link from "next/link";
 import { getTrendingStacks, TrendingStack } from "@/lib/rd/trending-engine";
 import { AsciiBackground } from "@/components/ui/ascii-background";
+import { BrandLogo } from "@/components/ui/brand-logo";
 
 export default function TemplatesPage() {
   const [selectedCategory, setSelectedCategory] = useState<string>("ALL");
@@ -21,14 +22,7 @@ export default function TemplatesPage() {
       {/* Topbar */}
       <header className="sticky top-0 z-40 border-b border-zinc-800/80 bg-black/80 backdrop-blur-xl">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
-          <Link href="/" className="flex items-center space-x-3 group">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-400 via-fuchsia-500 to-indigo-600 flex items-center justify-center text-black font-black text-sm shadow-[0_0_15px_rgba(6,182,212,0.5)] group-hover:scale-105 transition-transform">
-              ⚡
-            </div>
-            <span className="font-extrabold text-lg tracking-tight text-white font-mono">
-              SYNCBAY<span className="text-cyan-400">.TEMPLATES</span>
-            </span>
-          </Link>
+          <BrandLogo size="sm" suffix=".TEMPLATES" href="/" priority />
 
           <nav className="hidden md:flex items-center space-x-6 text-xs text-zinc-400 font-medium">
             <Link href="/" className="hover:text-white transition-colors">Platform</Link>

@@ -30,6 +30,7 @@ import "./tier6-devops-pricing-rbac.test";
 import "./tier-enterprise.test";
 import "./tier7-all-modules-seo-geo-crons-rd.test";
 import "./tier8-card-payments-billing.test";
+import "./tier9-brand-logo-and-seo.test";
 
 // Parse CLI arguments
 const args = process.argv.slice(2);
@@ -48,6 +49,7 @@ const TIER_TITLES: Record<number, string> = {
   6: "Tier 6 — DevOps Hyper-Plane, WAF, Crons, Canary, RBAC, Plans & US Compliance",
   7: "Tier 7 — Sub-Services & Modules, SEO/GEO Ranking, Smart Crons & Weekly R&D Strategy",
   8: "Tier 8 — Credit/Debit Card Payments, PCI Tokenization, Invoice Settlement & Cloud Credits",
+  9: "Tier 9 — Brand Logo, Vercel Avatar Integration, PWA & Global SEO Rankings",
 };
 
 async function runSuite() {

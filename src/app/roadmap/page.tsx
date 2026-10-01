@@ -5,6 +5,7 @@ import Link from "next/link";
 import { getWeeklyVersionDrops, getStrategicInsights, WeeklyVersionDrop } from "@/lib/rd/trending-engine";
 import { AsciiBackground } from "@/components/ui/ascii-background";
 import { trpc } from "@/lib/trpc-client";
+import { BrandLogo } from "@/components/ui/brand-logo";
 
 export default function RoadmapPage() {
   const weeklyDrops: WeeklyVersionDrop[] = getWeeklyVersionDrops();
@@ -34,14 +35,7 @@ export default function RoadmapPage() {
       {/* Topbar */}
       <header className="sticky top-0 z-40 border-b border-zinc-800/80 bg-black/80 backdrop-blur-xl">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
-          <Link href="/" className="flex items-center space-x-3 group">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-400 via-fuchsia-500 to-indigo-600 flex items-center justify-center text-black font-black text-sm shadow-[0_0_15px_rgba(6,182,212,0.5)] group-hover:scale-105 transition-transform">
-              ⚡
-            </div>
-            <span className="font-extrabold text-lg tracking-tight text-white font-mono">
-              SYNCBAY<span className="text-cyan-400">.ROADMAP</span>
-            </span>
-          </Link>
+          <BrandLogo size="sm" suffix=".ROADMAP" href="/" priority />
 
           <nav className="hidden md:flex items-center space-x-6 text-xs text-zinc-400 font-medium">
             <Link href="/" className="hover:text-white transition-colors">Platform</Link>
@@ -107,7 +101,7 @@ export default function RoadmapPage() {
                   <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
                     <div className="flex items-center gap-3">
                       <span className="text-xl font-black font-mono text-white">{drop.version}</span>
-                      <span className="text-xs font-mono text-zinc-400">"{drop.codename}"</span>
+                      <span className="text-xs font-mono text-zinc-400">&ldquo;{drop.codename}&rdquo;</span>
                     </div>
 
                     <div className="flex items-center gap-2">

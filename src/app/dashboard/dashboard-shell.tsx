@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
 import { trpc } from "@/lib/trpc-client";
 import { useState, useRef, useEffect, createContext, useContext } from "react";
@@ -324,7 +325,9 @@ export function DashboardShell({ user, children }: DashboardShellProps) {
           `}</style>
 
           <Link href="/dashboard" className="logo">
-            <div className="logo-icon">⚡</div>
+            <div className="logo-icon">
+              <Image src="/brand-icon-tight.png" alt="Syncbay" width={22} height={12} priority />
+            </div>
             <span style={{ fontWeight: 800 }}>Syncbay</span>
           </Link>
 
@@ -891,7 +894,9 @@ export function DashboardShell({ user, children }: DashboardShellProps) {
         >
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", paddingBottom: "12px", borderBottom: "1px solid var(--border-subtle)" }}>
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-              <div className="logo-icon" style={{ width: "28px", height: "28px", fontSize: "14px" }}>⚡</div>
+              <div className="logo-icon" style={{ width: "28px", height: "28px" }}>
+                <Image src="/brand-icon-tight.png" alt="Syncbay" width={20} height={11} />
+              </div>
               <strong style={{ fontSize: "1.1rem" }}>Syncbay</strong>
             </div>
             <button

@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import Image from "next/image";
 import { TiltCard } from "@/components/ui/tilt-card";
 
 interface ComparisonFeature {
@@ -187,7 +188,10 @@ export function ComparisonTable() {
                       borderRight: "1px solid rgba(6,182,212,0.3)",
                     }}
                   >
-                    ⚡ Syncbay
+                    <span className="inline-flex items-center gap-2">
+                      <Image src="/brand-icon-tight.png" alt="Syncbay" width={18} height={10} className="inline-block" />
+                      <span>Syncbay</span>
+                    </span>
                   </th>
                   <th className="py-4 px-6 font-bold w-1/5" style={{ color: "#94a3b8" }}>
                     ▲ Vercel
@@ -213,7 +217,7 @@ export function ComparisonTable() {
                           className="py-2.5 px-6 font-mono font-bold text-[11px] uppercase tracking-wider"
                           style={{ color: "#38bdf8" }}
                         >
-                          // {cat}
+                          {"// "}{cat}
                         </td>
                       </tr>
                       {catFeatures.map((feat) => (

@@ -27,7 +27,7 @@ export const BillingAlertEmail = ({
             <Section className="bg-[#18181b] border border-[#27272a] rounded-lg p-8">
               <Text className="text-xl font-semibold mb-4 text-white">Payment Receipt</Text>
               <Text className="text-[#a1a1aa] mb-6 leading-relaxed">
-                Thank you for your continued support! We've successfully processed your payment.
+                Thank you for your continued support! We&apos;ve successfully processed your payment.
               </Text>
               
               <Section className="bg-[#09090b] rounded p-6 mb-6 border border-[#27272a]">
