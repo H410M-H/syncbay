@@ -74,6 +74,9 @@ export const metadata: Metadata = {
       "max-snippet": -1,
     },
   },
+  verification: {
+    google: "qVvnSnZjUZ8x-pkUnZD5ZQJ9-YbWL51GUgHE30sgNSs",
+  },
 };
 
 import { GlobalSpaceBackground } from "@/components/ui/global-space-background";
