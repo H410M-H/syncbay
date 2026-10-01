@@ -212,6 +212,60 @@ const jsonLd = {
         "Automated GitHub CI/CD and Ephemeral Previews",
         "Cloudflare Enterprise WAF and DDoS Protection"
       ]
+    },
+    {
+      "@type": "FAQPage",
+      "@id": "https://www.syncbay.app/#faq",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "How does Syncbay compare to Vercel and Railway?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Unlike Vercel (which is constrained to serverless Lambda functions with cold starts and aggressive timeout limits) and Railway (which isolates each service to a single cloud region), Syncbay deploys full OCI containers simultaneously across 6 global edge POPs with 0ms cold starts, attached serverless PostgreSQL, an in-browser VT100 web terminal shell, and an embedded SQL query studio."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Do I need to write a Dockerfile to deploy?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "No! While custom Dockerfiles are fully supported, Syncbay incorporates the Nixpacks buildpack engine. It automatically detects your codebase (Node.js, Python, Go, Rust, Ruby, PHP, and more), identifies package managers, installs required system packages, and compiles optimized OCI images with smart 4-phase caching in seconds."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "How do managed PostgreSQL and Redis work?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "You can provision managed databases in 1 click. Syncbay provisions serverless PostgreSQL instances with integrated connection pooling (pgbouncer) and high-throughput Redis/Valkey caches. Connection strings are automatically encrypted and injected into your services as environment variables."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Are there bandwidth egress fees for Object Storage?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Zero! Unlike AWS S3 and GCP Cloud Storage which charge punitive egress transfer fees of $0.09/GB, Syncbay Object Storage offers a strict $0 egress policy with full S3 API compatibility."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "How does blue/green deployment and automated rollback work?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "When a new build completes, Syncbay launches the new container revision alongside your active deployment and runs automated HTTP health probes. If any probe fails, traffic is instantly reverted in under 500ms without dropping active connections."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Can I bring my own custom domains and wildcard subdomains?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Yes. Syncbay provides automatic wildcard subdomains (*.syncbay.app) for instant sharing and testing, and full support for apex domains, subdomains, and wildcards with automated TLS/SSL certificates."
+          }
+        }
+      ]
     }
   ]
 };

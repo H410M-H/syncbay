@@ -17,6 +17,8 @@ export const metadata: Metadata = {
     canonical: "https://www.syncbay.app/enterprise",
   },
   openGraph: {
+    type: "website",
+    siteName: "Syncbay",
     title: "Syncbay Enterprise — Sovereign Mesh & Dedicated Global Edge",
     description:
       "Enterprise cloud infrastructure at a fraction of hyperscaler lock-in costs. Dedicated POPs, 99.999% SLA, and custom VPC peering.",
@@ -27,6 +29,7 @@ export const metadata: Metadata = {
         width: 1200,
         height: 630,
         alt: "Syncbay Enterprise Infrastructure",
+        type: "image/png",
       },
     ],
   },
@@ -38,10 +41,41 @@ export const metadata: Metadata = {
   },
 };
 
+const enterpriseJsonLd = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "BreadcrumbList",
+      "itemListElement": [
+        {
+          "@type": "ListItem",
+          "position": 1,
+          "name": "Home",
+          "item": "https://www.syncbay.app",
+        },
+        {
+          "@type": "ListItem",
+          "position": 2,
+          "name": "Enterprise",
+          "item": "https://www.syncbay.app/enterprise",
+        },
+      ],
+    },
+  ],
+};
+
 export default function EnterpriseLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  return <>{children}</>;
+  return (
+    <>
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(enterpriseJsonLd) }}
+      />
+      {children}
+    </>
+  );
 }

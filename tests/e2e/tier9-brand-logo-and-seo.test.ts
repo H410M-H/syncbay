@@ -123,3 +123,68 @@ registerTest("SEO-04", "SEO_METADATA", 9, "BrandLogo component exists and is ref
   const signinContent = fs.readFileSync(signinPath, "utf-8");
   assertTrue(signinContent.includes("brand-icon-tight.png"), "Sign in page must use brand-icon-tight.png");
 });
+
+registerTest("BRAND-03", "BRAND_ASSETS", 9, "Brand vector SVG contains real vector path without embedded raster images", () => {
+  const svgPath = path.join(process.cwd(), "public/brand-icon.svg");
+  const content = fs.readFileSync(svgPath, "utf-8");
+  assertTrue(content.includes("<svg"), "Must be a valid SVG");
+  assertTrue(content.includes("<path"), "Must contain vector path elements");
+  assertTrue(!content.includes("<image"), "Must NOT rely on embedded raster <image> elements");
+});
+
+registerTest("BRAND-04", "BRAND_ASSETS", 9, "Invite and container preview pages use BrandLogo or official brand icons", () => {
+  const invitePath = path.join(process.cwd(), "src/app/invite/page.tsx");
+  const inviteTokenPath = path.join(process.cwd(), "src/app/invite/[token]/page.tsx");
+  const previewPath = path.join(process.cwd(), "src/app/service-preview/[subdomain]/page.tsx");
+
+  const inviteContent = fs.readFileSync(invitePath, "utf-8");
+  const inviteTokenContent = fs.readFileSync(inviteTokenPath, "utf-8");
+  const previewContent = fs.readFileSync(previewPath, "utf-8");
+
+  assertTrue(inviteContent.includes("<BrandLogo"), "Invite page must use BrandLogo");
+  assertTrue(!inviteContent.includes("⚓"), "Invite page must not contain raw anchor emoji");
+
+  assertTrue(inviteTokenContent.includes("<BrandLogo"), "Invite token page must use BrandLogo");
+  assertTrue(!inviteTokenContent.includes("⚓"), "Invite token page must not contain raw anchor emoji");
+
+  assertTrue(previewContent.includes("<BrandLogo"), "Container preview must use BrandLogo");
+});
+
+registerTest("SEO-05", "SEO_METADATA", 9, "Root layout includes FAQPage rich snippet schema and subpages include BreadcrumbList", () => {
+  const layoutPath = path.join(process.cwd(), "src/app/layout.tsx");
+  const content = fs.readFileSync(layoutPath, "utf-8");
+  assertTrue(content.includes("\"@type\": \"FAQPage\""), "Root layout must contain FAQPage schema");
+  assertTrue(content.includes("\"@type\": \"Question\""), "Root layout must define questions");
+
+  const pricingPath = path.join(process.cwd(), "src/app/pricing/layout.tsx");
+  const enterprisePath = path.join(process.cwd(), "src/app/enterprise/layout.tsx");
+  assertTrue(fs.readFileSync(pricingPath, "utf-8").includes("BreadcrumbList"), "Pricing must have BreadcrumbList");
+  assertTrue(fs.readFileSync(enterprisePath, "utf-8").includes("BreadcrumbList"), "Enterprise must have BreadcrumbList");
+});
+
+registerTest("SEO-06", "SEO_METADATA", 9, "Custom branded 404 page exists and features BrandLogo and edge status", () => {
+  const notFoundPath = path.join(process.cwd(), "src/app/not-found.tsx");
+  assertTrue(fs.existsSync(notFoundPath), "Custom 404 page must exist");
+  const content = fs.readFileSync(notFoundPath, "utf-8");
+  assertTrue(content.includes("<BrandLogo"), "404 page must feature BrandLogo");
+  assertTrue(content.includes("404"), "404 page must indicate error");
+});
+
+registerTest("EMAIL-01", "EMAIL_TEMPLATES", 9, "All transactional email templates include official Syncbay brand logo", () => {
+  const root = process.cwd();
+  const emailTemplates = [
+    "src/lib/email/templates/welcome.tsx",
+    "src/lib/email/templates/invitation.tsx",
+    "src/lib/email/templates/billing-alert.tsx",
+    "src/lib/email/templates/password-reset.tsx",
+    "src/lib/email/templates/deployment-notification.tsx",
+    "src/lib/email/templates/usage-warning.tsx",
+  ];
+
+  for (const tpl of emailTemplates) {
+    const p = path.join(root, tpl);
+    assertTrue(fs.existsSync(p), `Email template exists: ${tpl}`);
+    const content = fs.readFileSync(p, "utf-8");
+    assertTrue(content.includes("brand-logo.png"), `${tpl} must feature brand-logo.png`);
+  }
+});

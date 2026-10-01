@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Html, Head, Body, Container, Section, Text, Button, Hr, Preview, Tailwind } from '@react-email/components';
+import { Html, Head, Body, Container, Section, Text, Button, Hr, Preview, Tailwind, Img } from '@react-email/components';
 
 export interface DeploymentNotificationEmailProps {
   projectName: string;
@@ -29,7 +29,14 @@ export const DeploymentNotificationEmail = ({
         <Body className="bg-[#09090b] text-[#fafafa] font-sans">
           <Container className="mx-auto p-4 max-w-2xl">
             <Section className="mt-8 mb-8 text-center">
-              <Text className="text-3xl font-bold tracking-tight m-0">SyncBay</Text>
+              <Img
+                src="https://www.syncbay.app/brand-logo.png"
+                alt="Syncbay"
+                width="220"
+                height="59"
+                className="mx-auto"
+                style={{ margin: "0 auto", display: "block" }}
+              />
             </Section>
             <Section className="bg-[#18181b] border border-[#27272a] rounded-lg p-8">
               <Text className="text-xl font-semibold mb-2 text-white">

@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useSession } from "next-auth/react";
 import { trpc } from "@/lib/trpc-client";
+import { BrandLogo } from "@/components/ui/brand-logo";
 
 function InviteContent() {
   const searchParams = useSearchParams();
@@ -107,19 +108,8 @@ function InviteContent() {
     <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: "24px" }}>
       <div className="card fade-in" style={{ width: "100%", maxWidth: "480px", padding: "36px" }}>
         <div style={{ textAlign: "center", marginBottom: "24px" }}>
-          <div
-            style={{
-              width: "56px",
-              height: "56px",
-              background: "linear-gradient(135deg, var(--brand-primary), var(--brand-secondary))",
-              borderRadius: "var(--radius-md)",
-              display: "grid",
-              placeItems: "center",
-              fontSize: "28px",
-              margin: "0 auto 16px",
-            }}
-          >
-            ⚓
+          <div style={{ display: "flex", justifyContent: "center", marginBottom: "16px" }}>
+            <BrandLogo size="lg" showText={false} href="/" />
           </div>
           <h2 style={{ fontSize: "1.5rem", marginBottom: "6px" }}>Workspace Invitation</h2>
           <p style={{ fontSize: "0.875rem", color: "var(--text-secondary)" }}>

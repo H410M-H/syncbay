@@ -1,8 +1,8 @@
 import React from "react";
-import Link from "next/link";
 import { db } from "@/lib/db";
-import { routeClientRequest, getEdgeRegions } from "@/lib/edge/edge-router";
+import { routeClientRequest } from "@/lib/edge/edge-router";
 import { headers } from "next/headers";
+import { BrandLogo } from "@/components/ui/brand-logo";
 
 export const dynamic = "force-dynamic";
 
@@ -95,26 +95,8 @@ export default async function ServicePreviewPage({ params }: ServicePreviewProps
           backdropFilter: "blur(8px)",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-          <div
-            style={{
-              width: "28px",
-              height: "28px",
-              borderRadius: "6px",
-              background: "linear-gradient(135deg, #06b6d4 0%, #3b82f6 100%)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontWeight: 800,
-              fontSize: "14px",
-              color: "#fff",
-            }}
-          >
-            S
-          </div>
-          <span style={{ fontWeight: 700, fontSize: "16px", letterSpacing: "-0.02em" }}>
-            Syncbay Edge
-          </span>
+        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+          <BrandLogo size="sm" suffix=".EDGE" href="https://www.syncbay.app" priority />
           <span
             style={{
               fontSize: "11px",

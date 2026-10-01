@@ -15,6 +15,8 @@ export const metadata: Metadata = {
     canonical: "https://www.syncbay.app/roadmap",
   },
   openGraph: {
+    type: "website",
+    siteName: "Syncbay",
     title: "Syncbay Public R&D Roadmap & Feature Voting",
     description:
       "See what we are building next. Vote on upcoming edge primitives, database enhancements, and developer tooling.",
@@ -25,6 +27,7 @@ export const metadata: Metadata = {
         width: 1200,
         height: 630,
         alt: "Syncbay R&D Roadmap",
+        type: "image/png",
       },
     ],
   },
@@ -36,10 +39,41 @@ export const metadata: Metadata = {
   },
 };
 
+const roadmapJsonLd = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "BreadcrumbList",
+      "itemListElement": [
+        {
+          "@type": "ListItem",
+          "position": 1,
+          "name": "Home",
+          "item": "https://www.syncbay.app",
+        },
+        {
+          "@type": "ListItem",
+          "position": 2,
+          "name": "Roadmap",
+          "item": "https://www.syncbay.app/roadmap",
+        },
+      ],
+    },
+  ],
+};
+
 export default function RoadmapLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  return <>{children}</>;
+  return (
+    <>
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(roadmapJsonLd) }}
+      />
+      {children}
+    </>
+  );
 }

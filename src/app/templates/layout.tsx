@@ -17,6 +17,8 @@ export const metadata: Metadata = {
     canonical: "https://www.syncbay.app/templates",
   },
   openGraph: {
+    type: "website",
+    siteName: "Syncbay",
     title: "1-Click Full-Stack Templates Catalog — Syncbay Edge Platform",
     description:
       "Instant architecture templates for Next.js, FastAPI, Go, and PostgreSQL. Launch in seconds with automated CI/CD and attached storage.",
@@ -27,6 +29,7 @@ export const metadata: Metadata = {
         width: 1200,
         height: 630,
         alt: "Syncbay 1-Click Templates",
+        type: "image/png",
       },
     ],
   },
@@ -38,10 +41,41 @@ export const metadata: Metadata = {
   },
 };
 
+const templatesJsonLd = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "BreadcrumbList",
+      "itemListElement": [
+        {
+          "@type": "ListItem",
+          "position": 1,
+          "name": "Home",
+          "item": "https://www.syncbay.app",
+        },
+        {
+          "@type": "ListItem",
+          "position": 2,
+          "name": "Templates",
+          "item": "https://www.syncbay.app/templates",
+        },
+      ],
+    },
+  ],
+};
+
 export default function TemplatesLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  return <>{children}</>;
+  return (
+    <>
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(templatesJsonLd) }}
+      />
+      {children}
+    </>
+  );
 }

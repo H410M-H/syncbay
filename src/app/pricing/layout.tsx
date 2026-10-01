@@ -17,6 +17,8 @@ export const metadata: Metadata = {
     canonical: "https://www.syncbay.app/pricing",
   },
   openGraph: {
+    type: "website",
+    siteName: "Syncbay",
     title: "Syncbay Pricing — Beat Vercel & Railway on Speed & Cost",
     description:
       "Save up to 80% compared to Vercel seat penalties. Unlimited seats, 6 edge POPs, 0ms cold starts, and attached managed Postgres.",
@@ -27,6 +29,7 @@ export const metadata: Metadata = {
         width: 1200,
         height: 630,
         alt: "Syncbay Pricing & Plans",
+        type: "image/png",
       },
     ],
   },
@@ -38,10 +41,58 @@ export const metadata: Metadata = {
   },
 };
 
+const pricingJsonLd = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "BreadcrumbList",
+      "itemListElement": [
+        {
+          "@type": "ListItem",
+          "position": 1,
+          "name": "Home",
+          "item": "https://www.syncbay.app",
+        },
+        {
+          "@type": "ListItem",
+          "position": 2,
+          "name": "Pricing",
+          "item": "https://www.syncbay.app/pricing",
+        },
+      ],
+    },
+    {
+      "@type": "Product",
+      "name": "Syncbay Cloud Platform",
+      "description": "Next-Gen developer PaaS with attached PostgreSQL, edge containers, and 0ms cold starts.",
+      "image": "https://www.syncbay.app/brand-logo.png",
+      "brand": {
+        "@type": "Brand",
+        "name": "Syncbay",
+      },
+      "offers": {
+        "@type": "AggregateOffer",
+        "priceCurrency": "USD",
+        "lowPrice": "0",
+        "highPrice": "450",
+        "offerCount": "3",
+      },
+    },
+  ],
+};
+
 export default function PricingLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  return <>{children}</>;
+  return (
+    <>
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(pricingJsonLd) }}
+      />
+      {children}
+    </>
+  );
 }
