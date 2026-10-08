@@ -398,26 +398,51 @@ export class WebhookRunnerDriver implements RunnerDriver {
     const now = Date.now().toString();
     const { headerValue } = generateHmacSignature(bodyStr, this.webhookSecret, now);
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
-
     try {
-      const response = await this.fetchFn(`${this.runnerUrl}/api/builds`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Syncbay-Signature": headerValue,
-          "X-Syncbay-Timestamp": now,
-        },
-        body: bodyStr,
-        signal: controller.signal,
-      });
+      let response: Response | undefined;
+      let lastError = "";
 
+      // Runners can briefly return 502 while a tunnel/worker is being allocated.
+      // Retry only transient gateway failures so real build and auth errors fail fast.
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+        try {
+          response = await this.fetchFn(`${this.runnerUrl}/api/builds`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Syncbay-Signature": headerValue,
+              "X-Syncbay-Timestamp": now,
+            },
+            body: bodyStr,
+            signal: controller.signal,
+          });
+
+          if (response.ok || response.status === 401 || response.status === 403 || ![502, 503, 504].includes(response.status)) {
+            break;
+          }
+          lastError = await response.text().catch(() => "");
+        } catch (err: any) {
+          if (err.name === "AbortError" && attempt === 2) {
+            throw new TimeoutError(`Webhook dispatch timed out after ${this.timeoutMs}ms`);
+          }
+          if (err.name !== "AbortError") throw err;
+          lastError = "runner request timed out";
+        } finally {
+          clearTimeout(timeout);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+      }
+
+      if (!response) {
+        throw new RunnerDriverError(`Runner dispatch failed: ${lastError || "no response"}`, "DISPATCH_FAILED", "webhook");
+      }
       if (!response.ok) {
         if (response.status === 401 || response.status === 403) {
           throw new AuthenticationError(`Runner rejected HMAC authentication (HTTP ${response.status})`);
         }
-        const errText = await response.text().catch(() => "");
+        const errText = lastError || await response.text().catch(() => "");
         throw new RunnerDriverError(
           `Runner dispatch failed (HTTP ${response.status}): ${errText}`,
           "DISPATCH_FAILED",
@@ -446,8 +471,6 @@ export class WebhookRunnerDriver implements RunnerDriver {
         throw err;
       }
       throw new RunnerDriverError(`Webhook dispatch error: ${err.message}`, "DISPATCH_FAILED", "webhook");
-    } finally {
-      clearTimeout(timeout);
     }
   }
 

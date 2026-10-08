@@ -122,6 +122,8 @@ a:hover { color: #67e8f9; }
   position: sticky;
   top: 0;
   z-index: 100;
+  align-self: start;
+  min-height: 60px;
   gap: 16px;
 }
 
