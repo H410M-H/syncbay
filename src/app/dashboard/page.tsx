@@ -87,6 +87,32 @@ export default async function DashboardPage() {
         </div>
       </div>
 
+      {/* Command center */}
+      <section className="card" aria-labelledby="command-center-title" style={{ marginBottom: "32px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "16px", flexWrap: "wrap", marginBottom: "16px" }}>
+          <div>
+            <h2 id="command-center-title" style={{ marginBottom: "4px" }}>Command center</h2>
+            <p style={{ color: "var(--text-secondary)", fontSize: "0.875rem" }}>Jump into the modules you use to ship, operate, and scale your projects.</p>
+          </div>
+          <Link href="/dashboard/projects/new" className="btn btn-secondary btn-sm">Deploy from Git</Link>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "10px" }}>
+          {[
+            ["Projects", "Deployments, environments, and releases", "/dashboard/projects", "◫"],
+            ["Services", "Restart, pause, inspect logs", "/dashboard/services", "⚡"],
+            ["Databases", "Provision and manage Postgres", "/dashboard/databases", "◉"],
+            ["Buckets", "Object storage and file assets", "/dashboard/buckets", "▣"],
+            ["Smart Crons", "Automated scheduled jobs", "/dashboard/crons", "◷"],
+            ["Usage & Billing", "Spend, limits, and plan", "/dashboard/usage", "◈"],
+          ].map(([title, description, href, icon]) => (
+            <Link key={href} href={href} className="btn btn-ghost" style={{ display: "flex", alignItems: "flex-start", gap: "10px", textAlign: "left", padding: "14px", border: "1px solid var(--border-subtle)", minHeight: "84px" }}>
+              <span aria-hidden="true" style={{ fontSize: "1.15rem", color: "var(--brand-accent)" }}>{icon}</span>
+              <span style={{ display: "flex", flexDirection: "column", gap: "4px" }}><strong>{title}</strong><small style={{ color: "var(--text-muted)", lineHeight: 1.35 }}>{description}</small></span>
+            </Link>
+          ))}
+        </div>
+      </section>
+
       {/* Workspaces */}
       <h2 style={{ marginBottom: "16px" }}>Your Workspaces</h2>
       {workspaces.length === 0 ? (

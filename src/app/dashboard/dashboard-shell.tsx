@@ -776,6 +776,25 @@ export function DashboardShell({ user, children }: DashboardShellProps) {
           </Link>
 
           <span className="nav-section-label" style={{ marginTop: "12px" }}>
+            Modules
+          </span>
+          <Link href="/dashboard/projects" className={`nav-item ${isNavActive("/dashboard/projects") ? "active" : ""}`}>
+            <span className="nav-icon">◫</span>
+            <span className="sidebar-label-text">Deployments</span>
+            {isCollapsed && <span className="sidebar-tooltip">Deployments</span>}
+          </Link>
+          <Link href="/dashboard/services" className={`nav-item ${isNavActive("/dashboard/services") ? "active" : ""}`}>
+            <span className="nav-icon">⌁</span>
+            <span className="sidebar-label-text">Logs &amp; Activity</span>
+            {isCollapsed && <span className="sidebar-tooltip">Logs &amp; Activity</span>}
+          </Link>
+          <Link href="/dashboard/databases" className={`nav-item ${isNavActive("/dashboard/databases") ? "active" : ""}`}>
+            <span className="nav-icon">◉</span>
+            <span className="sidebar-label-text">Data &amp; Storage</span>
+            {isCollapsed && <span className="sidebar-tooltip">Data &amp; Storage</span>}
+          </Link>
+
+          <span className="nav-section-label" style={{ marginTop: "12px" }}>
             Workspace
           </span>
           <Link
