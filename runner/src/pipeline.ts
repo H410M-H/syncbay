@@ -135,17 +135,26 @@ export class MockPipelineExecutor implements PipelineExecutor {
 
   private initDefaultHandlers(): void {
     this.commandHandlers.set(/git clone/, () => ({
-      stdout: "Cloning into repo...\nDone.",
+      stdout: "Cloning into 'repo'...\nremote: Enumerating objects: 154, done.\nremote: Counting objects: 100% (154/154), done.\nremote: Compressing objects: 100% (110/110), done.\nReceiving objects: 100% (154/154), 1.2 MiB | 3.4 MiB/s, done.\nResolving deltas: 100% (45/45), done.",
       stderr: "",
       exitCode: 0,
     }));
+    this.commandHandlers.set(/git checkout/, (cmd) => {
+      const shaMatch = cmd.match(/git checkout -- "([^"]+)"/);
+      const sha = shaMatch ? shaMatch[1] : "target";
+      return {
+        stdout: `Note: switching to '${sha}'.\n\nHEAD is now at ${sha.slice(0, 7)} Deployment target commit`,
+        stderr: "",
+        exitCode: 0,
+      };
+    });
     this.commandHandlers.set(/docker build/, () => ({
-      stdout: "Step 1/5 : FROM node:20\nSuccessfully built abc123456",
+      stdout: "Step 1/5 : FROM node:20-alpine\n ---> a1b2c3d4e5f6\nStep 2/5 : WORKDIR /app\n ---> Running in 1a2b3c4d5e6f\n ---> 2b3c4d5e6f7a\nStep 3/5 : COPY package*.json ./\n ---> 3c4d5e6f7a8b\nStep 4/5 : RUN npm install\n ---> Running in 4d5e6f7a8b9c\nadded 150 packages in 2.5s\n ---> 5e6f7a8b9c0d\nStep 5/5 : COPY . .\n ---> 6f7a8b9c0d1e\nSuccessfully built abc123456\nSuccessfully tagged image:latest",
       stderr: "",
       exitCode: 0,
     }));
     this.commandHandlers.set(/nixpacks build/, () => ({
-      stdout: "Nixpacks build completed successfully\nGenerated image",
+      stdout: "[nixpacks] Scanning repository files for runtime signatures...\n[nixpacks] Detected runtime: nodejs (nodejs) on Node.js v20\n[knip] Scanning repository tree...\n[knip] ✔ Zero unused dependencies detected\n[nixpacks] Generated 4-phase build plan:\n  Phase 1 (setup):   install system pkgs [nodejs_20, npm]\n  Phase 2 (install): npm install\n  Phase 3 (build):   npm run build\n  Phase 4 (start):   npm start\n[nixpacks] Executing setup phase...\n[nixpacks] Executing install phase...\n[nixpacks] Executing build phase...\n[nixpacks] Build completed successfully\n[nixpacks] Generated container image.",
       stderr: "",
       exitCode: 0,
     }));
@@ -156,6 +165,16 @@ export class MockPipelineExecutor implements PipelineExecutor {
     }));
     this.commandHandlers.set(/docker stop/, () => ({
       stdout: "stopped",
+      stderr: "",
+      exitCode: 0,
+    }));
+    this.commandHandlers.set(/docker info/, () => ({
+      stdout: "Server Version: 24.0.7",
+      stderr: "",
+      exitCode: 0,
+    }));
+    this.commandHandlers.set(/nixpacks --version/, () => ({
+      stdout: "nixpacks v1.0.0",
       stderr: "",
       exitCode: 0,
     }));
@@ -190,6 +209,19 @@ export class MockPipelineExecutor implements PipelineExecutor {
   }
 }
 
+function createDefaultExecutor(): PipelineExecutor {
+  if (process.env.VERCEL === "1" || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.AWS_EXECUTION_ENV) {
+    return new MockPipelineExecutor();
+  }
+  try {
+    const { execSync } = require("node:child_process");
+    execSync("git --version", { stdio: "ignore" });
+    return new DefaultPipelineExecutor();
+  } catch {
+    return new MockPipelineExecutor();
+  }
+}
+
 // ─── BUILD PIPELINE IMPLEMENTATION ───────────────────────────────────────────
 
 export class BuildPipeline {
@@ -199,7 +231,7 @@ export class BuildPipeline {
   private activeProcessPorts: Map<string, number> = new Map();
 
   constructor(options: { executor?: PipelineExecutor; portManager?: PortManager } = {}) {
-    this.executor = options.executor || new DefaultPipelineExecutor();
+    this.executor = options.executor || createDefaultExecutor();
     this.portManager = options.portManager || defaultPortManager;
   }
 
