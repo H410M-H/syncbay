@@ -9,10 +9,10 @@
  * 5. Daemon health monitoring (/health).
  */
 
-import http from "node:http";
-import crypto from "node:crypto";
-import { BuildPipeline, type PipelineResult } from "./pipeline";
-import { PortManager, defaultPortManager } from "./port-manager";
+import * as http from "node:http";
+import * as crypto from "node:crypto";
+import { BuildPipeline, type PipelineResult } from "./pipeline.ts";
+import { PortManager, defaultPortManager } from "./port-manager.ts";
 
 export interface DaemonConfig {
   port?: number;
@@ -345,7 +345,7 @@ export class RunnerDaemon {
         buildCommand: params.buildCommand,
         startCommand: params.startCommand,
         dockerfile: params.dockerfile,
-        targetPort: params.port,
+        targetPort: params.targetPort || params.port || 3000,
         environmentVariables: params.environmentVariables,
         onLog: log,
       });
@@ -394,9 +394,11 @@ export class RunnerDaemon {
         status: job.status,
         containerId: job.containerId,
         assignedPort: job.assignedPort,
+        port: job.assignedPort,
         startedAt: job.startedAt,
         completedAt: job.completedAt,
         error: job.error,
+        errorMessage: job.error,
       })
     );
   }
@@ -459,6 +461,9 @@ export class RunnerDaemon {
 
     // Release port associated with container/service
     this.portManager.releaseJobPort(containerId);
+
+    // Stop container or process via pipeline
+    await this.pipeline.stopContainer(containerId).catch(() => null);
 
     // Mark job cancelled if found
     for (const job of this.jobs.values()) {

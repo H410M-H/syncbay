@@ -57,7 +57,8 @@ The Syncbay PaaS Platform provides a hybrid compute execution layer and an autom
 | M3 | Global Edge Ingress & Tunnel Routing | Features 11, 12, 13: `tunnel-config.ts`, `service-registry.ts`, and `src/middleware.ts` | M1 | DONE (worker_m3) |
 | M4 | Knip Code Quality & Dead-Code Analyzer | Features 14, 15: `knip-analyzer.ts` and non-blocking integration in `engine.ts` | None | DONE (worker_m4) |
 | M5 | Cold-Start UX & Health Probe Splash Screen | Features 16, 17, 18: Live pulsing splash screen, SSE log console, `/health` auto-redirection in `service-preview` | M1 | DONE (worker_m5) |
-| M6 | Final Verification: 100% E2E Test Pass & Adversarial Hardening | Features 19, 20: Tiers 1-4 test suite pass + Tier 5 adversarial hardening | M1, M2, M3, M4, M5 | DONE (PASS) |
+| M6 | Final Verification: 100% E2E Test Pass | M6 | Final Verification: 100% E2E Test Pass & Adversarial Hardening | Features 19, 20: Tiers 1-4 test suite pass + Tier 5 adversarial hardening | M1, M2, M3, M4, M5 | DONE (PASS) | Adversarial Hardening | Features 19, 20: Tiers 1-4 test suite pass + Tier 5 adversarial hardening | M1, M2, M3, M4, M5 | DONE (PASS) |
+| M7 | Live Runner Orchestrator Wiring | Connect `engine.ts` to `RunnerDriver`, execute real Git clones, native build pipelines, strict health checks, and register live Edge proxying in `service-registry.ts` | M2, M3, M5 | DONE (RESOLVED) |
 
 ---
 

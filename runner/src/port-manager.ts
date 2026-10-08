@@ -5,7 +5,7 @@
  * for isolated application containers within the pool (e.g. 10000 - 60000).
  */
 
-import net from "node:net";
+import * as net from "node:net";
 
 export interface PortManagerOptions {
   rangeStart?: number;
@@ -234,6 +234,13 @@ export class PortManager {
    */
   public getPortForService(serviceId: string): number | undefined {
     return this.serviceToPort.get(serviceId);
+  }
+
+  /**
+   * Returns port assigned to a job, if any.
+   */
+  public getPortForJob(jobId: string): number | undefined {
+    return this.jobToPort.get(jobId);
   }
 
   /**

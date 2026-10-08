@@ -17,18 +17,32 @@ export function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
-  // Check if this is a platform service subdomain (e.g. web-production-nuu9.syncbay.app)
+  // Check if this is a platform service subdomain or registered customer domain
+  const isControlPlane =
+    host === "syncbay.app" ||
+    host === "www.syncbay.app" ||
+    host === "cname.syncbay.app" ||
+    host === "localhost" ||
+    host === "127.0.0.1";
+
+  const registeredRoute = !isControlPlane ? getServiceRoute(host) : null;
   const isSyncbaySubdomain =
-    host.endsWith(".syncbay.app") &&
-    host !== "syncbay.app" &&
-    host !== "www.syncbay.app" &&
-    host !== "cname.syncbay.app";
+    !isControlPlane &&
+    ((host.endsWith(".syncbay.app") &&
+      host !== "syncbay.app" &&
+      host !== "www.syncbay.app" &&
+      host !== "cname.syncbay.app") ||
+      !!registeredRoute);
 
   if (isSyncbaySubdomain) {
-    const subdomain = host.endsWith(".syncbay.app") ? host.slice(0, -".syncbay.app".length) : host;
+    const subdomain = host.endsWith(".syncbay.app")
+      ? host.slice(0, -".syncbay.app".length)
+      : host.endsWith(".localhost")
+      ? host.slice(0, -".localhost".length)
+      : host;
 
     // Resolve service route from Edge-safe registry
-    const route = getServiceRoute(host);
+    const route = registeredRoute || getServiceRoute(host);
 
     // Return health check response for container probes reflecting real service status
     if (pathname === "/health" || pathname === "/healthz") {
@@ -87,9 +101,10 @@ export function middleware(req: NextRequest) {
 
     // If active: transparently proxy/forward to upstream origin container
     if (route && route.status === "ACTIVE") {
-      if (route.upstreamUrl) {
+      const upstreamBase = route.upstreamUrl || (route.targetPort ? `http://127.0.0.1:${route.targetPort}` : undefined);
+      if (upstreamBase) {
         try {
-          const upstream = new URL(route.upstreamUrl);
+          const upstream = new URL(upstreamBase);
           const target = new URL(req.url);
           target.protocol = upstream.protocol;
           target.hostname = upstream.hostname;
@@ -100,6 +115,10 @@ export function middleware(req: NextRequest) {
           const requestHeaders = new Headers(req.headers);
           requestHeaders.set("x-forwarded-host", host);
           requestHeaders.set("x-pathname", pathname);
+          requestHeaders.set("x-syncbay-upstream", upstreamBase);
+          if (route.targetPort) {
+            requestHeaders.set("x-syncbay-port", String(route.targetPort));
+          }
 
           return NextResponse.rewrite(target, {
             request: {

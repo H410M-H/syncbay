@@ -84,8 +84,23 @@ export class EdgeServiceRegistry {
     const normalized = normalizeHostname(hostname);
     if (!normalized) return null;
     const entry = this.routes.get(normalized);
-    if (!entry) return null;
-    return { ...entry };
+    if (entry) return { ...entry };
+
+    // Fallback: Check if .localhost alias maps to .syncbay.app or direct name
+    if (normalized.endsWith(".localhost")) {
+      const prefix = normalized.slice(0, -".localhost".length);
+      const alias = this.routes.get(`${prefix}.syncbay.app`) || this.routes.get(prefix);
+      if (alias) return { ...alias };
+    }
+
+    // Fallback: Check first subdomain label
+    if (normalized.includes(".")) {
+      const firstLabel = normalized.split(".")[0];
+      const direct = this.routes.get(firstLabel);
+      if (direct) return { ...direct };
+    }
+
+    return null;
   }
 
   /**
@@ -113,7 +128,11 @@ export class EdgeServiceRegistry {
 }
 
 // ─── Default Edge Singleton Registry ──────────────────────────────────────────
-const defaultRegistry = new EdgeServiceRegistry();
+const globalForRegistry = globalThis as unknown as {
+  __syncbay_edge_registry?: EdgeServiceRegistry;
+};
+const defaultRegistry = globalForRegistry.__syncbay_edge_registry ?? new EdgeServiceRegistry();
+globalForRegistry.__syncbay_edge_registry = defaultRegistry;
 
 /**
  * Registers a service route in the default Edge registry.

@@ -137,9 +137,9 @@ export function DeepSpaceScene({
 
     // --- 3D Cloud Services Themed Elements (When in 'hero' or 'full' mode) ---
     const cloudClusterGroup = new THREE.Group();
-    let serverRacks: THREE.Mesh[] = [];
-    let satellites: { mesh: THREE.Group; orbitRadius: number; speed: number; angle: number; tilt: number }[] = [];
-    let databasePods: THREE.Group[] = [];
+    const serverRacks: THREE.Mesh[] = [];
+    const satellites: { mesh: THREE.Group; orbitRadius: number; speed: number; angle: number; tilt: number }[] = [];
+    const databasePods: THREE.Group[] = [];
 
     if (mode === "hero" || mode === "full") {
       // 1. Central Hyper-Plane Core Node (Metallic Server Rack Cluster)
@@ -298,7 +298,7 @@ export function DeepSpaceScene({
 
     // --- Animation Loop ---
     let animId: number;
-    let clock = new THREE.Clock();
+    const clock = new THREE.Clock();
 
     const animate = () => {
       animId = requestAnimationFrame(animate);

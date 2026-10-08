@@ -78,3 +78,46 @@ test("RunnerDaemon: HTTP dispatch, HMAC authentication, health check", async () 
     await daemon.stop();
   }
 });
+
+test("BuildPipeline: native process execution and clean shutdown", async () => {
+  const pm = new PortManager({ rangeStart: 33000, rangeEnd: 33050 });
+  const pipeline = new BuildPipeline({ portManager: pm });
+
+  const result = await pipeline.execute({
+    jobId: "native_test_job",
+    serviceName: "native-demo",
+    targetPort: 33000,
+  });
+
+  assert.strictEqual(result.success, true);
+  assert.ok(result.assignedPort! >= 33000);
+  assert.ok(result.containerId?.startsWith("proc_"));
+
+  // Probe the live running application
+  const res = await fetch(`http://127.0.0.1:${result.assignedPort}/health`);
+  assert.strictEqual(res.status, 200);
+  const data = await res.json();
+  assert.strictEqual(data.status, "ok");
+
+  // Cleanly stop process
+  const stopRes = await pipeline.stopContainer(result.containerId!);
+  assert.strictEqual(stopRes.stopped, true);
+  assert.strictEqual(pm.isPortAllocated(result.assignedPort!), false);
+});
+
+test("BuildPipeline: failure enforcement when process fails to start", async () => {
+  const pm = new PortManager({ rangeStart: 34000, rangeEnd: 34050 });
+  const pipeline = new BuildPipeline({ portManager: pm });
+
+  const result = await pipeline.execute({
+    jobId: "failing_job",
+    serviceName: "broken-app",
+    startCommand: "node -e 'process.exit(1)'",
+    targetPort: 34000,
+    healthCheckTimeoutMs: 1500,
+  });
+
+  // MUST report failure, NOT success!
+  assert.strictEqual(result.success, false);
+  assert.ok(result.error);
+});

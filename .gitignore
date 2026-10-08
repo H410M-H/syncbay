@@ -45,3 +45,6 @@ next-env.d.ts
 
 # graphify cache
 graphify-out/cache/
+
+# runner workspaces
+.runner_workspace/

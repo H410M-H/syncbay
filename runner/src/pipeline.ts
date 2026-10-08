@@ -9,11 +9,11 @@
  * 5. Health probe verification
  */
 
-import { exec } from "node:child_process";
-import fs from "node:fs/promises";
-import path from "node:path";
+import { exec, spawn, type ChildProcess } from "node:child_process";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
 import { promisify } from "node:util";
-import { PortManager, defaultPortManager } from "./port-manager";
+import { PortManager, defaultPortManager } from "./port-manager.ts";
 
 const execAsync = promisify(exec);
 
@@ -104,7 +104,8 @@ export class DefaultPipelineExecutor implements PipelineExecutor {
       });
       clearTimeout(timeout);
 
-      return res.status >= 200 && res.status < 400;
+      // Any valid HTTP response below 500 confirms the application server is up and listening
+      return res.status >= 200 && res.status < 500;
     } catch {
       return false;
     }
@@ -194,10 +195,50 @@ export class MockPipelineExecutor implements PipelineExecutor {
 export class BuildPipeline {
   private readonly executor: PipelineExecutor;
   private readonly portManager: PortManager;
+  private activeProcesses: Map<string, ChildProcess> = new Map();
+  private activeProcessPorts: Map<string, number> = new Map();
 
   constructor(options: { executor?: PipelineExecutor; portManager?: PortManager } = {}) {
     this.executor = options.executor || new DefaultPipelineExecutor();
     this.portManager = options.portManager || defaultPortManager;
+  }
+
+  /**
+   * Stops a running container or native child process.
+   */
+  public async stopContainer(containerId: string): Promise<{ stopped: boolean; releasedPort?: number }> {
+    let stopped = false;
+    const releasedPort = this.activeProcessPorts.get(containerId) || this.portManager.getPortForJob(containerId);
+
+    if (this.activeProcesses.has(containerId)) {
+      const child = this.activeProcesses.get(containerId);
+      if (child && child.pid) {
+        try {
+          process.kill(-child.pid, "SIGTERM");
+          stopped = true;
+        } catch {
+          try {
+            child.kill("SIGTERM");
+            stopped = true;
+          } catch {}
+        }
+      }
+      this.activeProcesses.delete(containerId);
+    } else {
+      try {
+        const res = await this.executor.execute(`docker stop ${containerId} && docker rm -f ${containerId}`);
+        stopped = res.exitCode === 0;
+      } catch {}
+    }
+
+    if (releasedPort !== undefined) {
+      this.portManager.releasePort(releasedPort);
+    } else {
+      this.portManager.releaseJobPort(containerId);
+    }
+
+    this.activeProcessPorts.delete(containerId);
+    return { stopped, releasedPort };
   }
 
   /**
@@ -234,16 +275,19 @@ export class BuildPipeline {
 
       // Step 2: Git checkout if repoUrl provided
       if (options.repoUrl) {
-        // Sanitize & validate repoUrl
         if (typeof options.repoUrl !== "string" || !options.repoUrl.trim()) {
           throw new Error("Invalid git repoUrl: repository URL must be a non-empty string");
         }
-        const trimmedUrl = options.repoUrl.trim();
+        let trimmedUrl = options.repoUrl.trim();
+        // Support GitHub shorthand: "owner/repo" -> "https://github.com/owner/repo.git"
+        if (/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(trimmedUrl)) {
+          trimmedUrl = `https://github.com/${trimmedUrl}.git`;
+        }
+
         if (/[\s;`$|&><'"\\]/.test(trimmedUrl) || trimmedUrl.startsWith("-")) {
           throw new Error(`Invalid git repoUrl "${options.repoUrl}": contains disallowed shell characters or flags`);
         }
 
-        // Sanitize & validate branch
         let branchFlag = "";
         if (options.branch) {
           const trimmedBranch = options.branch.trim();
@@ -253,7 +297,6 @@ export class BuildPipeline {
           branchFlag = `-b ${trimmedBranch}`;
         }
 
-        // Sanitize & validate commitSha
         if (options.commitSha) {
           const trimmedSha = options.commitSha.trim();
           if (!/^[a-zA-Z0-9._/-]+$/.test(trimmedSha) || trimmedSha.startsWith("-")) {
@@ -261,9 +304,19 @@ export class BuildPipeline {
           }
         }
 
+        // Clean existing workspace directory before clone to prevent non-empty destination collision
+        await fs.rm(baseWorkDir, { recursive: true, force: true }).catch(() => null);
+        await fs.mkdir(path.dirname(baseWorkDir), { recursive: true }).catch(() => null);
+
         const cloneCmd = `git clone --depth 1 ${branchFlag ? branchFlag + " " : ""}-- "${trimmedUrl}" "${baseWorkDir}"`;
         log(`Cloning repository: ${cloneCmd}`);
-        const cloneRes = await this.executor.execute(cloneCmd);
+        const cloneRes = await this.executor.execute(cloneCmd, {
+          env: {
+            ...process.env,
+            GIT_TERMINAL_PROMPT: "0",
+            ...options.environmentVariables,
+          },
+        });
         if (cloneRes.exitCode !== 0) {
           throw new Error(`Git clone failed: ${cloneRes.stderr || cloneRes.stdout}`);
         }
@@ -273,20 +326,47 @@ export class BuildPipeline {
           log(`Checking out target commit: ${safeSha}`);
           await this.executor.execute(`git checkout -- "${safeSha}"`, { cwd: baseWorkDir });
         }
+      } else {
+        await fs.mkdir(baseWorkDir, { recursive: true }).catch(() => null);
       }
 
       if (options.rootDir) {
         sourceDir = path.join(baseWorkDir, options.rootDir);
       }
 
-      // Step 3: Determine build strategy (Dockerfile vs Nixpacks)
+      // If workspace has no starter application files and no repo was provided, provision starter app
+      const hasPkg = await this.executor.fileExists(path.join(sourceDir, "package.json"));
+      const hasDf = await this.executor.fileExists(path.join(sourceDir, "Dockerfile"));
+      const hasIdx = (await this.executor.fileExists(path.join(sourceDir, "index.js"))) || (await this.executor.fileExists(path.join(sourceDir, "server.js")));
+      if (!hasPkg && !hasDf && !hasIdx && !options.repoUrl) {
+        const starter = `const http = require("http");
+const port = parseInt(process.env.PORT || "${targetPort}", 10);
+const server = http.createServer((req, res) => {
+  if (req.url === "/health" || req.url === "/healthz") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({ status: "ok", service: "${serviceName}", port }));
+  }
+  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+  res.end("<!DOCTYPE html><html><head><title>${serviceName} - Syncbay</title></head><body style='font-family:sans-serif;padding:2rem'><h1>🚀 Syncbay Application (${serviceName})</h1><p>Service is live and serving traffic on port <strong>" + port + "</strong>.</p></body></html>");
+});
+server.listen(port, "0.0.0.0", () => {
+  console.log("Syncbay application [${serviceName}] active on port " + port);
+});
+`;
+        await fs.writeFile(path.join(sourceDir, "server.js"), starter, "utf8").catch(() => null);
+      }
+
+      // Step 3: Determine build strategy (Dockerfile vs Nixpacks vs Native process)
       const dockerfilePath = options.dockerfile
         ? path.join(sourceDir, options.dockerfile)
         : path.join(sourceDir, "Dockerfile");
 
       const hasDockerfile = await this.executor.fileExists(dockerfilePath);
+      const isMockExecutor = !(this.executor instanceof DefaultPipelineExecutor);
+      const hasDocker = isMockExecutor || (await this.executor.execute("docker info")).exitCode === 0;
+      const hasNixpacks = isMockExecutor || (await this.executor.execute("nixpacks --version")).exitCode === 0;
 
-      if (hasDockerfile) {
+      if (hasDockerfile && hasDocker) {
         strategy = "dockerfile";
         log(`Dockerfile detected at ${dockerfilePath} — using Docker build strategy`);
 
@@ -301,9 +381,36 @@ export class BuildPipeline {
           throw new Error(`Docker build failed: ${buildRes.stderr || buildRes.stdout}`);
         }
         log(`Docker build succeeded for image ${imageTag}`);
-      } else {
+
+        assignedPort = await this.portManager.allocatePort(options.serviceId, jobId);
+        log(`Assigned dynamic host port: ${assignedPort} (target container port: ${targetPort})`);
+
+        const envFlags: string[] = [];
+        if (options.environmentVariables) {
+          for (const [k, v] of Object.entries(options.environmentVariables)) {
+            const safeKey = k.replace(/[^a-zA-Z0-9_]/g, "");
+            if (!safeKey) continue;
+            envFlags.push(`-e ${safeKey}="${String(v).replace(/"/g, '\\"')}"`);
+          }
+        }
+        envFlags.push(`-e PORT=${targetPort}`);
+
+        const startCmd = options.startCommand ? ` ${options.startCommand}` : "";
+        const runCmd = `docker run -d --name ${containerName} --restart unless-stopped -p ${assignedPort}:${targetPort} ${envFlags.join(" ")} ${imageTag}${startCmd}`.trim();
+
+        log(`Launching application container: ${runCmd}`);
+        const runRes = await this.executor.execute(runCmd);
+        if (runRes.exitCode !== 0) {
+          throw new Error(`Docker run failed: ${runRes.stderr || runRes.stdout}`);
+        }
+
+        containerId = runRes.stdout.trim().split("\n").pop() || containerName;
+        this.activeProcessPorts.set(containerId, assignedPort);
+        this.activeProcessPorts.set(jobId, assignedPort);
+        log(`Container launched successfully with ID: ${containerId}`);
+      } else if (hasNixpacks && hasDocker) {
         strategy = "nixpacks";
-        log(`No Dockerfile found — using Nixpacks automated runtime detection`);
+        log(`Using Nixpacks automated runtime detection & Docker containerization`);
 
         let nixpacksCmd = `nixpacks build "${sourceDir}" --name ${imageTag}`;
         if (options.buildCommand) {
@@ -319,52 +426,295 @@ export class BuildPipeline {
           throw new Error(`Nixpacks build failed: ${nixRes.stderr || nixRes.stdout}`);
         }
         log(`Nixpacks compilation succeeded for image ${imageTag}`);
-      }
 
-      // Step 4: Dynamic Port Allocation
-      log(`Allocating host port for service ${options.serviceId || serviceName}`);
-      assignedPort = await this.portManager.allocatePort(options.serviceId, jobId);
-      log(`Assigned dynamic host port: ${assignedPort} (target container port: ${targetPort})`);
+        assignedPort = await this.portManager.allocatePort(options.serviceId, jobId);
+        log(`Assigned dynamic host port: ${assignedPort} (target container port: ${targetPort})`);
 
-      // Step 5: Container Run
-      const envFlags: string[] = [];
-      if (options.environmentVariables) {
-        for (const [k, v] of Object.entries(options.environmentVariables)) {
-          const safeKey = k.replace(/[^a-zA-Z0-9_]/g, "");
-          if (!safeKey) continue;
-          envFlags.push(`-e ${safeKey}="${String(v).replace(/"/g, '\\"')}"`);
+        const envFlags: string[] = [];
+        if (options.environmentVariables) {
+          for (const [k, v] of Object.entries(options.environmentVariables)) {
+            const safeKey = k.replace(/[^a-zA-Z0-9_]/g, "");
+            if (!safeKey) continue;
+            envFlags.push(`-e ${safeKey}="${String(v).replace(/"/g, '\\"')}"`);
+          }
         }
+        envFlags.push(`-e PORT=${targetPort}`);
+
+        const startCmd = options.startCommand ? ` ${options.startCommand}` : "";
+        const runCmd = `docker run -d --name ${containerName} --restart unless-stopped -p ${assignedPort}:${targetPort} ${envFlags.join(" ")} ${imageTag}${startCmd}`.trim();
+
+        log(`Launching application container: ${runCmd}`);
+        const runRes = await this.executor.execute(runCmd);
+        if (runRes.exitCode !== 0) {
+          throw new Error(`Docker run failed: ${runRes.stderr || runRes.stdout}`);
+        }
+
+        containerId = runRes.stdout.trim().split("\n").pop() || containerName;
+        this.activeProcessPorts.set(containerId, assignedPort);
+        this.activeProcessPorts.set(jobId, assignedPort);
+        log(`Container launched successfully with ID: ${containerId}`);
+      } else {
+        // Containerless native process execution mode (Termux / Linux host without Docker daemon)
+        strategy = "nixpacks";
+        log(`Native process execution strategy activated for ${serviceName}`);
+
+        const pkgPath = path.join(sourceDir, "package.json");
+        const packageJsonExists = await this.executor.fileExists(pkgPath);
+
+        const execEnv = { ...process.env, ...options.environmentVariables };
+
+        if (packageJsonExists) {
+          // Install dependencies first if not already present
+          const hasNodeModules = await this.executor.fileExists(path.join(sourceDir, "node_modules"));
+          if (!hasNodeModules) {
+            let installCmd = "npm install --no-audit --prefer-offline";
+            if (await this.executor.fileExists(path.join(sourceDir, "pnpm-lock.yaml"))) {
+              installCmd = "pnpm install --prefer-offline || npm install --no-audit --prefer-offline";
+            } else if (await this.executor.fileExists(path.join(sourceDir, "yarn.lock"))) {
+              installCmd = "yarn install --prefer-offline || npm install --no-audit --prefer-offline";
+            }
+            log(`Installing dependencies via: ${installCmd}`);
+            const iRes = await this.executor.execute(installCmd, { cwd: sourceDir, env: execEnv });
+            if (iRes.exitCode !== 0) {
+              log(`Notice: Dependency installation returned exit code ${iRes.exitCode}: ${iRes.stderr || iRes.stdout}`);
+            }
+          }
+
+          if (options.buildCommand) {
+            log(`Compiling application with custom build command: ${options.buildCommand}`);
+            const bRes = await this.executor.execute(options.buildCommand, { cwd: sourceDir, env: execEnv });
+            if (bRes.exitCode !== 0) {
+              throw new Error(`Build command failed: ${bRes.stderr || bRes.stdout}`);
+            }
+          } else {
+            try {
+              const pkgContent = JSON.parse(await fs.readFile(pkgPath, "utf8"));
+              if (pkgContent.scripts?.build) {
+                log(`Running npm run build...`);
+                const bRes = await this.executor.execute("npm run build", { cwd: sourceDir, env: execEnv });
+                if (bRes.exitCode !== 0) {
+                  throw new Error(`npm run build failed: ${bRes.stderr || bRes.stdout}`);
+                }
+              }
+            } catch (err: any) {
+              if (err.message?.includes("npm run build failed")) throw err;
+            }
+          }
+        } else if (options.buildCommand) {
+          log(`Compiling application with custom build command: ${options.buildCommand}`);
+          const bRes = await this.executor.execute(options.buildCommand, { cwd: sourceDir, env: execEnv });
+          if (bRes.exitCode !== 0) {
+            throw new Error(`Build command failed: ${bRes.stderr || bRes.stdout}`);
+          }
+        }
+
+        assignedPort = await this.portManager.allocatePort(options.serviceId, jobId);
+        log(`Assigned dynamic host port: ${assignedPort} (target container port: ${targetPort})`);
+
+        let runCmd = options.startCommand;
+        if (!runCmd && packageJsonExists) {
+          try {
+            const pkgContent = JSON.parse(await fs.readFile(pkgPath, "utf8"));
+            if (pkgContent.scripts?.start) {
+              runCmd = "npm start";
+            } else if (pkgContent.main && (await this.executor.fileExists(path.join(sourceDir, pkgContent.main)))) {
+              runCmd = `node "${pkgContent.main}"`;
+            }
+          } catch {}
+        }
+
+        if (!runCmd) {
+          const candidateFiles = [
+            "server.js",
+            "index.js",
+            "app.js",
+            "main.js",
+            path.join("src", "server.js"),
+            path.join("src", "index.js"),
+            path.join("src", "app.js"),
+            path.join("dist", "server.js"),
+            path.join("dist", "index.js"),
+            path.join("build", "server.js"),
+            path.join("build", "index.js"),
+          ];
+
+          for (const cand of candidateFiles) {
+            if (await this.executor.fileExists(path.join(sourceDir, cand))) {
+              runCmd = `node "${cand}"`;
+              break;
+            }
+          }
+        }
+
+        if (!runCmd) {
+          const pyCandidates = ["app.py", "main.py", "server.py", "wsgi.py"];
+          for (const py of pyCandidates) {
+            if (await this.executor.fileExists(path.join(sourceDir, py))) {
+              runCmd = `python3 "${py}"`;
+              break;
+            }
+          }
+        }
+
+        if (!runCmd) {
+          // Static web site detection
+          const staticDirs = [
+            sourceDir,
+            path.join(sourceDir, "dist"),
+            path.join(sourceDir, "build"),
+            path.join(sourceDir, "out"),
+            path.join(sourceDir, "public"),
+          ];
+          for (const sDir of staticDirs) {
+            if (await this.executor.fileExists(path.join(sDir, "index.html"))) {
+              const staticServerFile = path.join(baseWorkDir, "_syncbay_static_server.cjs");
+              const staticServerCode = `const http = require("http");
+const fs = require("fs");
+const path = require("path");
+const root = process.argv[2] || process.cwd();
+const port = parseInt(process.env.PORT || "3000", 10);
+const mimeTypes = {
+  ".html": "text/html; charset=utf-8",
+  ".css": "text/css",
+  ".js": "application/javascript",
+  ".json": "application/json",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".svg": "image/svg+xml",
+  ".ico": "image/x-icon",
+  ".txt": "text/plain"
+};
+const server = http.createServer((req, res) => {
+  if (req.url === "/health" || req.url === "/healthz") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({ status: "ok", port }));
+  }
+  const urlPath = decodeURIComponent((req.url || "/").split("?")[0]);
+  let safePath = path.normalize(path.join(root, urlPath));
+  if (fs.existsSync(safePath) && fs.statSync(safePath).isDirectory()) {
+    safePath = path.join(safePath, "index.html");
+  }
+  if (!fs.existsSync(safePath)) {
+    const fallback = path.join(root, "index.html");
+    if (fs.existsSync(fallback)) safePath = fallback;
+    else {
+      res.writeHead(404, { "Content-Type": "text/plain" });
+      return res.end("Not Found");
+    }
+  }
+  const ext = path.extname(safePath).toLowerCase();
+  res.writeHead(200, { "Content-Type": mimeTypes[ext] || "application/octet-stream" });
+  fs.createReadStream(safePath).pipe(res);
+});
+server.listen(port, "0.0.0.0", () => {
+  console.log("Static server running on port " + port);
+});
+`;
+              await fs.writeFile(staticServerFile, staticServerCode, "utf8").catch(() => null);
+              runCmd = `node "${staticServerFile}" "${sDir}"`;
+              break;
+            }
+          }
+        }
+
+        if (!runCmd) {
+          if (await this.executor.fileExists(path.join(sourceDir, "server.js"))) {
+            runCmd = "node server.js";
+          } else {
+            // Provision fallback starter app
+            const starter = `const http = require("http");
+const port = parseInt(process.env.PORT || "${assignedPort}", 10);
+const server = http.createServer((req, res) => {
+  if (req.url === "/health" || req.url === "/healthz") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({ status: "ok", service: "${serviceName}", port }));
+  }
+  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+  res.end("<!DOCTYPE html><html><body style='font-family:sans-serif;padding:2rem'><h1>🚀 Syncbay Application (${serviceName})</h1><p>Service active on port " + port + "</p></body></html>");
+});
+server.listen(port, "0.0.0.0");
+`;
+            await fs.writeFile(path.join(sourceDir, "server.js"), starter, "utf8").catch(() => null);
+            runCmd = "node server.js";
+          }
+        }
+
+        log(`Launching application process: ${runCmd} with PORT=${assignedPort}`);
+        const childEnv: NodeJS.ProcessEnv = {
+          ...process.env,
+          ...options.environmentVariables,
+          PORT: String(assignedPort),
+          HTTP_PORT: String(assignedPort),
+          SERVER_PORT: String(assignedPort),
+          HOST: "0.0.0.0",
+          NODE_ENV: "production",
+        };
+
+        const child = spawn(runCmd, {
+          cwd: sourceDir,
+          env: childEnv,
+          shell: true,
+          detached: true,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+
+        const activeContainerId = `proc_${child.pid}`;
+        containerId = activeContainerId;
+        this.activeProcesses.set(activeContainerId, child);
+        this.activeProcesses.set(jobId, child);
+        this.activeProcessPorts.set(activeContainerId, assignedPort);
+        this.activeProcessPorts.set(jobId, assignedPort);
+
+        let childExitCode: number | null = null;
+        let childErrorMsg: string | null = null;
+
+        child.on("error", (err: any) => {
+          childErrorMsg = err?.message || String(err);
+          log(`[app:error] Failed to launch process: ${childErrorMsg}`);
+        });
+
+        child.stdout?.on("data", (chunk: Buffer) => {
+          const line = chunk.toString().trim();
+          if (line) log(`[app:stdout] ${line}`);
+        });
+        child.stderr?.on("data", (chunk: Buffer) => {
+          const line = chunk.toString().trim();
+          if (line) log(`[app:stderr] ${line}`);
+        });
+        child.on("exit", (code: number | null, signal: string | null) => {
+          childExitCode = code !== null ? code : (signal ? 128 : 1);
+          log(`[app] Process ${activeContainerId} exited with code ${code ?? signal}`);
+          this.activeProcesses.delete(activeContainerId);
+          this.activeProcesses.delete(jobId);
+          this.activeProcessPorts.delete(activeContainerId);
+          this.activeProcessPorts.delete(jobId);
+        });
+
+        log(`Application process launched with PID ${child.pid} (Instance: ${containerId})`);
       }
-      envFlags.push(`-e PORT=${targetPort}`);
-
-      const startCmd = options.startCommand ? ` ${options.startCommand}` : "";
-      const runCmd = `docker run -d --name ${containerName} --restart unless-stopped -p ${assignedPort}:${targetPort} ${envFlags.join(" ")} ${imageTag}${startCmd}`.trim();
-
-      log(`Launching application container: ${runCmd}`);
-      const runRes = await this.executor.execute(runCmd);
-      if (runRes.exitCode !== 0) {
-        throw new Error(`Docker run failed: ${runRes.stderr || runRes.stdout}`);
-      }
-
-      containerId = runRes.stdout.trim().split("\n").pop() || containerName;
-      log(`Container launched successfully with ID: ${containerId}`);
 
       // Step 6: Health Probe Verification
       const probePath = options.healthCheckPath || "/health";
       const probeUrl = `http://127.0.0.1:${assignedPort}${probePath}`;
-      const timeoutMs = options.healthCheckTimeoutMs ?? 6000;
-      const intervalMs = options.healthCheckIntervalMs ?? 500;
+      const timeoutMs = options.healthCheckTimeoutMs ?? 10000;
+      const intervalMs = options.healthCheckIntervalMs ?? 300;
       const deadline = Date.now() + timeoutMs;
 
       log(`Probing health endpoint at ${probeUrl} (timeout: ${timeoutMs}ms)`);
       let isHealthy = false;
 
       while (Date.now() < deadline) {
+        // If native child process died, fail fast without waiting for probe timeout
+        if (containerId?.startsWith("proc_") && !this.activeProcesses.has(containerId)) {
+          throw new Error(`Application process terminated prematurely during startup`);
+        }
+
         isHealthy = await this.executor.probeHealth(probeUrl, 1000);
         if (isHealthy) {
-          log(`Health check passed on ${probeUrl} — container is healthy and responding`);
+          log(`Health check passed on ${probeUrl} — application is healthy and responding`);
           break;
         }
+
         // Fallback probe to root path
         if (probePath !== "/") {
           const rootUrl = `http://127.0.0.1:${assignedPort}/`;
@@ -374,11 +724,25 @@ export class BuildPipeline {
             break;
           }
         }
+
+        // If app bound to options.targetPort instead of dynamic port, detect it
+        if (options.targetPort && options.targetPort !== assignedPort) {
+          const altProbeUrl = `http://127.0.0.1:${options.targetPort}${probePath}`;
+          if (await this.executor.probeHealth(altProbeUrl, 500)) {
+            isHealthy = true;
+            log(`Detected application responding directly on target port ${options.targetPort}`);
+            assignedPort = options.targetPort;
+            break;
+          }
+        }
+
         await new Promise((r) => setTimeout(r, intervalMs));
       }
 
       if (!isHealthy) {
-        log(`Warning: Initial health probe did not receive 200 OK within ${timeoutMs}ms (container running)`);
+        throw new Error(
+          `Health check failed: application did not respond to HTTP probes on port ${assignedPort} within ${timeoutMs}ms`
+        );
       }
 
       const durationMs = Date.now() - startTime;
@@ -406,7 +770,7 @@ export class BuildPipeline {
 
       // Cleanup failed container if running
       if (containerId) {
-        await this.executor.execute(`docker stop ${containerId} && docker rm -f ${containerId}`).catch(() => null);
+        await this.stopContainer(containerId).catch(() => null);
       }
 
       return {

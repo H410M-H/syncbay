@@ -77,9 +77,11 @@ export interface BuildDispatchParams {
   port?: number;
   hostPort?: number;
   containerPort?: number;
+  targetPort?: number;
   environmentVariables?: Record<string, string>;
   subdomain?: string;
   callbackUrl?: string;
+  onLog?: (line: string) => void;
 }
 
 export interface BuildDispatchResult {
@@ -1136,22 +1138,101 @@ export class SshRunnerDriver implements RunnerDriver {
 
 export class LocalRunnerDriver implements RunnerDriver {
   public readonly type: RunnerDriverType = "local";
-  private containers: Map<string, { status: RunnerBuildStatus; port: number }> = new Map();
+  private containers: Map<string, { status: RunnerBuildStatus; port: number; containerId?: string }> = new Map();
+  private pipeline?: any;
+
+  constructor(config?: { pipeline?: any }) {
+    this.pipeline = config?.pipeline;
+  }
+
+  private async getPipeline(): Promise<any> {
+    if (!this.pipeline) {
+      try {
+        const pipelinePath = "../../../runner/src/pipeline.ts";
+        const pipelineModule = await import(/* webpackIgnore: true */ pipelinePath);
+        this.pipeline = pipelineModule.defaultPipeline || new pipelineModule.BuildPipeline();
+      } catch (err1) {
+        try {
+          const fallbackPath = "../../../runner/src/pipeline";
+          const pipelineModule = await import(/* webpackIgnore: true */ fallbackPath);
+          this.pipeline = pipelineModule.defaultPipeline || new pipelineModule.BuildPipeline();
+        } catch (err2) {
+          console.warn("[LocalRunnerDriver] Warning: Could not import runner/src/pipeline:", err1, err2);
+        }
+      }
+    }
+    return this.pipeline;
+  }
 
   public async dispatchBuild(params: BuildDispatchParams): Promise<BuildDispatchResult> {
     const jobId = params.buildId || params.deploymentId;
-    const containerId = "c_local_" + jobId.slice(0, 8);
-    const assignedPort = params.port || 3000;
+    const defaultAssignedPort = params.targetPort || params.port || 3000;
+    const defaultContainerId = "c_local_" + jobId.slice(0, 8);
 
-    this.containers.set(jobId, { status: "ACTIVE", port: assignedPort });
-    this.containers.set(containerId, { status: "ACTIVE", port: assignedPort });
+    const pipeline = await this.getPipeline();
+    if (pipeline) {
+      params.onLog?.(`[local-runner] Dispatching build ${jobId} to local execution pipeline...`);
+      const result = await pipeline.execute({
+        jobId,
+        deploymentId: params.deploymentId,
+        serviceId: params.serviceId,
+        serviceName: params.serviceName,
+        repoUrl: params.repoUrl,
+        branch: params.branch,
+        commitSha: params.commitSha,
+        rootDir: params.rootDir,
+        buildCommand: params.buildCommand,
+        startCommand: params.startCommand,
+        dockerfile: params.dockerfile,
+        targetPort: params.targetPort || params.port || 3000,
+        environmentVariables: params.environmentVariables,
+        onLog: params.onLog,
+      });
+
+      if (!result.success) {
+        this.containers.set(jobId, { status: "FAILED", port: defaultAssignedPort, containerId: defaultContainerId });
+        throw new RunnerDriverError(result.error || "Build pipeline execution failed", "PIPELINE_FAILED", "local");
+      }
+
+      const assignedPort = result.assignedPort || defaultAssignedPort;
+      const containerId = result.containerId || defaultContainerId;
+
+      this.containers.set(jobId, { status: "ACTIVE", port: assignedPort, containerId });
+      this.containers.set(containerId, { status: "ACTIVE", port: assignedPort, containerId });
+
+      return {
+        jobId,
+        driverType: "local",
+        status: "ACTIVE",
+        containerId,
+        assignedPort,
+        streamUrl: `/api/deployments/${params.deploymentId}/logs/stream`,
+        metadata: {
+          strategy: result.strategy,
+          imageTag: result.imageTag,
+        },
+      };
+    }
+
+    // If a real repo or build/start commands were specified, we must not falsely pretend the build succeeded
+    if (params.repoUrl || params.buildCommand || params.startCommand) {
+      throw new RunnerDriverError(
+        "Local runner execution pipeline is not available on this host to build repository",
+        "PIPELINE_UNAVAILABLE",
+        "local"
+      );
+    }
+
+    // Fast-path / simulation for empty harness services without commands or repositories
+    this.containers.set(jobId, { status: "ACTIVE", port: defaultAssignedPort, containerId: defaultContainerId });
+    this.containers.set(defaultContainerId, { status: "ACTIVE", port: defaultAssignedPort, containerId: defaultContainerId });
 
     return {
       jobId,
       driverType: "local",
       status: "ACTIVE",
-      containerId,
-      assignedPort,
+      containerId: defaultContainerId,
+      assignedPort: defaultAssignedPort,
       streamUrl: `/api/deployments/${params.deploymentId}/logs/stream`,
     };
   }
@@ -1170,6 +1251,7 @@ export class LocalRunnerDriver implements RunnerDriver {
       jobId,
       status: item.status,
       port: item.port,
+      containerId: item.containerId,
     };
   }
 
@@ -1182,10 +1264,20 @@ export class LocalRunnerDriver implements RunnerDriver {
       item.status = "CANCELLED";
     }
 
+    let releasedPort = item?.port;
+    const pipeline = await this.getPipeline();
+    if (pipeline && typeof pipeline.stopContainer === "function") {
+      const pRes = await pipeline.stopContainer(containerId).catch(() => null);
+      if (pRes?.releasedPort !== undefined) {
+        releasedPort = pRes.releasedPort;
+      }
+    }
+
     return {
       containerId,
       stopped: true,
-      message: "Local simulated container stopped",
+      releasedPort,
+      message: "Local container stopped",
     };
   }
 }
@@ -1199,7 +1291,7 @@ export class RunnerDriverFactory {
     ["webhook", (config) => new WebhookRunnerDriver(config)],
     ["queue", (config) => new QueueRunnerDriver(config)],
     ["ssh", (config) => new SshRunnerDriver(config)],
-    ["local", () => new LocalRunnerDriver()],
+    ["local", (config) => new LocalRunnerDriver(config)],
   ]);
 
   public static registerDriver(type: RunnerDriverType, factory: DriverFactoryFn): void {
@@ -1220,4 +1312,34 @@ export class RunnerDriverFactory {
   public static getAvailableDrivers(): RunnerDriverType[] {
     return Array.from(RunnerDriverFactory.registry.keys());
   }
+}
+
+/**
+ * Resolves appropriate runner driver instance based on deployment options and environment.
+ */
+export function getRunnerDriver(
+  driverType?: "LOCAL" | "CLOUD" | "webhook" | "queue" | "ssh" | "local",
+  options?: any
+): RunnerDriver {
+  const normalized = (driverType || "").toLowerCase();
+  if (normalized === "webhook" || (process.env.RUNNER_URL && normalized !== "local" && normalized !== "queue" && normalized !== "ssh")) {
+    return RunnerDriverFactory.createDriver("webhook", {
+      runnerUrl: process.env.RUNNER_URL || "http://localhost:8080",
+      webhookSecret: process.env.RUNNER_SECRET || process.env.SYNCBAY_WEBHOOK_SECRET || "syncbay-runner-secret",
+      ...options,
+    });
+  }
+  if (normalized === "queue" || (process.env.RUNNER_QUEUE_MODE === "true" && normalized !== "local")) {
+    return RunnerDriverFactory.createDriver("queue", options);
+  }
+  if (normalized === "ssh") {
+    return RunnerDriverFactory.createDriver("ssh", {
+      host: process.env.RUNNER_SSH_HOST || "127.0.0.1",
+      port: process.env.RUNNER_SSH_PORT ? parseInt(process.env.RUNNER_SSH_PORT, 10) : 22,
+      username: process.env.RUNNER_SSH_USER || "root",
+      privateKeyPath: process.env.RUNNER_SSH_KEY_PATH,
+      ...options,
+    });
+  }
+  return RunnerDriverFactory.createDriver("local", options);
 }
