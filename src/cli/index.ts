@@ -258,7 +258,10 @@ export async function runCli(argv: string[] = process.argv.slice(2)): Promise<nu
              for (const line of lines) {
                 if (line.startsWith('data: ')) {
                   const data = JSON.parse(line.slice(6));
-                  console.log(`\x1b[90m${new Date(data.timestamp || Date.now()).toISOString().slice(11, 19)} [${data.source}]\x1b[0m ${data.line}`);
+                  const timestamp = new Date(data.timestamp || Date.now()).toISOString().slice(11, 19);
+                  const source = data.stream || data.source || 'system';
+                  const message = data.message || data.line || '';
+                  console.log(`\x1b[90m${timestamp} [${source}]\x1b[0m ${message}`);
                 }
              }
           });
@@ -275,7 +278,10 @@ export async function runCli(argv: string[] = process.argv.slice(2)): Promise<nu
             if (line.startsWith('data: ')) {
               try {
                 const data = JSON.parse(line.slice(6));
-                console.log(`\x1b[90m${new Date(data.timestamp || Date.now()).toISOString().slice(11, 19)} [${data.source || 'system'}]\x1b[0m ${data.line}`);
+                const timestamp = new Date(data.timestamp || Date.now()).toISOString().slice(11, 19);
+                const source = data.stream || data.source || 'system';
+                const message = data.message || data.line || '';
+                console.log(`\x1b[90m${timestamp} [${source}]\x1b[0m ${message}`);
               } catch {}
             }
           }
