@@ -31,7 +31,7 @@ export default function HomePage() {
   return (
     <div
       className="min-h-screen relative selection:bg-cyan-500/30 selection:text-white"
-      style={{ background: "#050510", color: "#f1f5f9" }}
+      style={{ background: "transparent", color: "#f1f5f9" }}
     >
       {/* Navigation Bar with Glassmorphic 3D Bevel */}
       <header
