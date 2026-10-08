@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { trpc } from "@/lib/trpc-client";
 import { useDashboard } from "../dashboard-shell";
@@ -29,6 +29,7 @@ export default function ServicesPage() {
   const [restartingId, setRestartingId] = useState<string | null>(null);
   const [pausingId, setPausingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [viewLogsDeployId, setViewLogsDeployId] = useState<string | null>(null);
 
   const restartMutation = trpc.service.restart.useMutation();
   const pauseMutation = trpc.service.setPaused.useMutation();
@@ -227,15 +228,30 @@ export default function ServicesPage() {
                     >
                       {pausingId === svc.id ? "Updating..." : isPaused ? "▶ Resume" : "⏸ Pause"}
                     </button>
+                    <button
+                      onClick={() => setViewLogsDeployId(svc.deployments?.[0]?.id || null)}
+                      disabled={!svc.deployments?.[0]?.id}
+                      className="btn btn-ghost btn-sm"
+                      style={{ fontSize: "0.75rem" }}
+                    >
+                      Logs
+                    </button>
                     {svc.environment?.project?.id && (
                       <Link
                         href={`/dashboard/projects/${svc.environment.project.id}`}
-                        className="btn btn-secondary btn-sm"
+                        className="btn btn-ghost btn-sm"
                         style={{ fontSize: "0.75rem" }}
                       >
-                        Console →
+                        Console
                       </Link>
                     )}
+                    <Link
+                      href={`/dashboard/services/${svc.id}`}
+                      className="btn btn-secondary btn-sm"
+                      style={{ fontSize: "0.75rem" }}
+                    >
+                      Details →
+                    </Link>
                     <button
                       onClick={() => handleDelete(svc.id)}
                       disabled={deletingId === svc.id}
@@ -280,6 +296,63 @@ export default function ServicesPage() {
           })}
         </div>
       )}
+      {viewLogsDeployId && (
+        <LogsModal deployId={viewLogsDeployId} onClose={() => setViewLogsDeployId(null)} />
+      )}
+    </div>
+  );
+}
+
+function LogsModal({ deployId, onClose }: { deployId: string; onClose: () => void }) {
+  const [logs, setLogs] = useState<any[]>([]);
+  const { data: initialLogs } = trpc.deployment.logs.useQuery({ deploymentId: deployId });
+
+  useEffect(() => {
+    if (initialLogs) setLogs(initialLogs as any[]);
+  }, [initialLogs]);
+
+  useEffect(() => {
+    const eventSource = new EventSource(`/api/deployments/${deployId}/logs/stream`);
+    eventSource.onmessage = (event) => {
+      try {
+        const entry = JSON.parse(event.data);
+        setLogs((prev) => {
+          if (prev.some((l) => l.id === entry.id)) return prev;
+          return [...prev, entry];
+        });
+      } catch {}
+    };
+    return () => eventSource.close();
+  }, [deployId]);
+
+  return (
+    <div style={{
+      position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+      background: "rgba(0,0,0,0.6)", zIndex: 1000,
+      display: "flex", justifyContent: "center", alignItems: "center",
+      padding: "20px"
+    }}>
+      <div className="card" style={{
+        width: "100%", maxWidth: "900px", height: "80vh",
+        display: "flex", flexDirection: "column",
+        background: "var(--bg-card)",
+      }}>
+        <div style={{ padding: "16px", borderBottom: "1px solid var(--border-subtle)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <h3 style={{ margin: 0 }}>Deployment Logs</h3>
+          <button className="btn btn-ghost btn-sm" onClick={onClose}>Close</button>
+        </div>
+        <div style={{ flex: 1, overflowY: "auto", padding: "16px", background: "#0a0a0a", color: "#d4d4d4", fontFamily: "monospace", fontSize: "13px" }}>
+          {logs.map((log, i) => (
+            <div key={log.id || i} style={{ marginBottom: "4px" }}>
+              <span style={{ color: "#888", marginRight: "8px" }}>[{new Date(log.timestamp).toLocaleTimeString()}]</span>
+              <span style={{ color: log.stream === "stderr" ? "#ff7b72" : log.stream === "system" ? "#79c0ff" : "inherit" }}>
+                {log.message}
+              </span>
+            </div>
+          ))}
+          {logs.length === 0 && <div style={{ color: "#888" }}>Waiting for logs...</div>}
+        </div>
+      </div>
     </div>
   );
 }

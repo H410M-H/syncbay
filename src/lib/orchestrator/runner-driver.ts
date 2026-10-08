@@ -1148,17 +1148,10 @@ export class LocalRunnerDriver implements RunnerDriver {
   private async getPipeline(): Promise<any> {
     if (!this.pipeline) {
       try {
-        const pipelinePath = "../../../runner/src/pipeline.ts";
-        const pipelineModule = await import(/* webpackIgnore: true */ pipelinePath);
+        const pipelineModule = await import("../../../runner/src/pipeline");
         this.pipeline = pipelineModule.defaultPipeline || new pipelineModule.BuildPipeline();
-      } catch (err1) {
-        try {
-          const fallbackPath = "../../../runner/src/pipeline";
-          const pipelineModule = await import(/* webpackIgnore: true */ fallbackPath);
-          this.pipeline = pipelineModule.defaultPipeline || new pipelineModule.BuildPipeline();
-        } catch (err2) {
-          console.warn("[LocalRunnerDriver] Warning: Could not import runner/src/pipeline:", err1, err2);
-        }
+      } catch (err1: any) {
+        console.warn("[LocalRunnerDriver] Warning: Could not import runner/src/pipeline:", err1.message);
       }
     }
     return this.pipeline;

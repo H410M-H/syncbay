@@ -89,6 +89,10 @@ test("BuildPipeline: native process execution and clean shutdown", async () => {
     targetPort: 33000,
   });
 
+  if (!result.success) {
+    console.error(result.error);
+    console.error(result.logs);
+  }
   assert.strictEqual(result.success, true);
   assert.ok(result.assignedPort! >= 33000);
   assert.ok(result.containerId?.startsWith("proc_"));

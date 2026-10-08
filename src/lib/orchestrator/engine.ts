@@ -154,43 +154,9 @@ export async function executeDeployment(
       }).catch(() => null);
     }
 
-    // Auto-detect runtime
-    log(`[nixpacks] Scanning repository files for runtime signatures...`, "stdout");
-    const detected = detectRuntime([
-      "package.json",
-      "tsconfig.json",
-      "src/index.ts",
-    ]);
-    log(`[nixpacks] Detected runtime: ${detected.language}${detected.framework ? ` (${detected.framework})` : ""} on Node.js v20`, "stdout");
-
-    // Phase 1.5: Knip Code Quality & Dead-Code Analysis (R4)
-    try {
-      const scanFiles = detected.detectedFiles && detected.detectedFiles.length > 0
-        ? detected.detectedFiles
-        : ["package.json", "tsconfig.json", "src/index.ts"];
-
-      const knipResult = await runKnipAnalysis({
-        rootDir: service?.rootDir || undefined,
-        files: scanFiles,
-      });
-
-      for (const logLine of knipResult.formattedLogs) {
-        log(logLine, "stdout");
-      }
-    } catch (knipError: any) {
-      log(`[knip] Code quality scan skipped: ${knipError?.message || knipError}`, "system");
-    }
-
-    // Generate Nixpacks 4-phase plan
-    const plan = generateNixpacksPlan(detected, {
-      buildCommand: service?.buildCommand || undefined,
-      startCommand: service?.startCommand || undefined,
-    });
-    log(`[nixpacks] Generated 4-phase build plan:`, "stdout");
-    log(`  Phase 1 (setup):   install system pkgs [${plan.phases.setup?.pkgs?.join(", ") || "default"}]`, "stdout");
-    log(`  Phase 2 (install): ${plan.phases.install?.cmds?.join(" && ") || "npm ci"}`, "stdout");
-    log(`  Phase 3 (build):   ${plan.phases.build?.cmds?.join(" && ") || "npm run build"}`, "stdout");
-    log(`  Phase 4 (start):   ${plan.phases.start?.cmd || "node server.js"}`, "stdout");
+    // Defer runtime detection and build plan generation to the runner
+    // once the repository is actually cloned and analyzed.
+    log(`[syncbay] Awaiting runner allocation...`, "system");
 
     // Resolve environment variables & cross-service references
     const rawVars = service?.variables?.map((v) => ({
@@ -238,7 +204,7 @@ export async function executeDeployment(
       serviceName,
       repoUrl: resolvedRepoUrl,
       branch: service?.branch || undefined,
-      commitSha: commit,
+      commitSha: options.commitSha,
       commitMessage: message,
       rootDir: service?.rootDir || undefined,
       buildCommand: service?.buildCommand || undefined,

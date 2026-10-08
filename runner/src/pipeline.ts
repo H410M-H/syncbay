@@ -13,7 +13,7 @@ import { exec, spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { promisify } from "node:util";
-import { PortManager, defaultPortManager } from "./port-manager.ts";
+import { PortManager, defaultPortManager } from "./port-manager";
 
 const execAsync = promisify(exec);
 
@@ -308,7 +308,7 @@ export class BuildPipeline {
         await fs.rm(baseWorkDir, { recursive: true, force: true }).catch(() => null);
         await fs.mkdir(path.dirname(baseWorkDir), { recursive: true }).catch(() => null);
 
-        const cloneCmd = `git clone --depth 1 ${branchFlag ? branchFlag + " " : ""}-- "${trimmedUrl}" "${baseWorkDir}"`;
+        const cloneCmd = `git clone ${branchFlag ? branchFlag + " " : ""}-- "${trimmedUrl}" "${baseWorkDir}"`;
         log(`Cloning repository: ${cloneCmd}`);
         const cloneRes = await this.executor.execute(cloneCmd, {
           env: {
@@ -324,7 +324,10 @@ export class BuildPipeline {
         if (options.commitSha) {
           const safeSha = options.commitSha.trim();
           log(`Checking out target commit: ${safeSha}`);
-          await this.executor.execute(`git checkout -- "${safeSha}"`, { cwd: baseWorkDir });
+          const checkoutRes = await this.executor.execute(`git checkout -- "${safeSha}"`, { cwd: baseWorkDir });
+          if (checkoutRes.exitCode !== 0) {
+            throw new Error(`Git checkout failed: ${checkoutRes.stderr || checkoutRes.stdout}`);
+          }
         }
       } else {
         await fs.mkdir(baseWorkDir, { recursive: true }).catch(() => null);
@@ -353,7 +356,7 @@ server.listen(port, "0.0.0.0", () => {
   console.log("Syncbay application [${serviceName}] active on port " + port);
 });
 `;
-        await fs.writeFile(path.join(sourceDir, "server.js"), starter, "utf8").catch(() => null);
+        await fs.writeFile(path.join(sourceDir, "server.cjs"), starter, "utf8").catch(() => null);
       }
 
       // Step 3: Determine build strategy (Dockerfile vs Nixpacks vs Native process)
@@ -526,6 +529,7 @@ server.listen(port, "0.0.0.0", () => {
         if (!runCmd) {
           const candidateFiles = [
             "server.js",
+            "server.cjs",
             "index.js",
             "app.js",
             "main.js",
@@ -634,8 +638,8 @@ const server = http.createServer((req, res) => {
 });
 server.listen(port, "0.0.0.0");
 `;
-            await fs.writeFile(path.join(sourceDir, "server.js"), starter, "utf8").catch(() => null);
-            runCmd = "node server.js";
+            await fs.writeFile(path.join(sourceDir, "server.cjs"), starter, "utf8").catch(() => null);
+            runCmd = "node server.cjs";
           }
         }
 
