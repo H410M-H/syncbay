@@ -261,3 +261,66 @@ Follow the interface contracts defined in PROJECT.md for all three functions.
 ### E2E Tests
 - [ ] `npm run test` completes with all tests passing
 - [ ] PROJECT.md milestones updated to DONE
+
+
+## 2026-10-08T08:44:13Z
+
+Implement a production-grade, hybrid compute and edge routing system for the Syncbay PaaS platform, enabling real applications to be built and served globally across production and preview environments at zero hosting cost.
+
+Working directory: C:\dev\syncbay
+Integrity mode: development
+
+## Requirements
+
+### R1. Hybrid Runner Driver Architecture (Components A & B)
+Implement an extensible `RunnerDriver` subsystem supporting three complementary execution modes:
+- **REST Webhook Driver**: Authenticated HTTP/SSE dispatch with HMAC token verification for fast builds with streaming logs.
+- **Queue/DB Polling Driver**: Asynchronous job queue processed by the runner daemon to handle multi-minute builds without Vercel serverless function timeouts.
+- **SSH Remote Driver**: Remote command execution for provisioning, health checks, and container process management on custom Linux nodes.
+Provide a standalone, containerized runner agent (`runner/`) capable of executing `git clone`, running Nixpacks/Docker builds, launching isolated application containers, and managing dynamic port bindings.
+
+### R2. Global Edge Ingress & Tunnel Routing (Component C)
+Implement automated ingress management integrating with Cloudflare Tunnels (`cloudflared`):
+- Connect the runner host directly to the Cloudflare Global Edge with free wildcard SSL (`*.syncbay.app`).
+- Dynamically register container hostnames (`web-production-*.syncbay.app`, `web-pr-*.syncbay.app`) and route incoming HTTP/WebSocket traffic to internal container ports with zero open inbound firewall ports.
+- Update Next.js edge middleware in `src/middleware.ts` to transparently forward traffic for active services to the upstream origin while directing booting/sleeping containers to the status preview screen.
+
+### R3. Ephemeral Preview Environments & GitHub PR Pipeline (Component D)
+Complete the pull request deployment lifecycle in `src/lib/orchestrator/pr-manager.ts`:
+- Automatically register unique `Domain` records (`${service.name}-pr-${prNumber}.syncbay.app`) for every PR event.
+- Implement container lifecycle management: idle timeout (auto-sleep after 15–30 minutes) and automated resource destruction upon PR merge or closure.
+- Integrate with the authenticated GitHub Octokit client to post status checks and PR comments containing the live preview link and deployment badge.
+
+### R4. Knip Code Quality & Dead-Code Analyzer (Component E)
+Build an automated repository inspection module (`src/lib/buildpack/knip-analyzer.ts`) integrating `knip`:
+- Scan repository file trees and `package.json` manifests prior to container compilation.
+- Detect unused exports, unreferenced source files, and redundant dependencies.
+- Stream clean optimization recommendations directly into the deployment build log.
+
+### R5. Cold-Start UX & Core Platform Bug Fixes (Component F)
+Fix critical runtime regressions and enhance the service preview UX:
+- Correct the Prisma relation query bug in `src/app/service-preview/[subdomain]/page.tsx` (query `environment.project` instead of non-existent `service.project`).
+- Transform `service-preview` into an active booting/waking splash screen that displays real-time deployment logs and automatically redirects visitors to the live application once `/health` returns `200 OK`.
+
+## Acceptance Criteria
+
+### Core Bug Fixes & Schema Integrity
+- [ ] `src/app/service-preview/[subdomain]/page.tsx` successfully reads service and project metadata without throwing schema validation errors or falling back to "Syncbay Application".
+- [ ] Pull request webhook handler in `pr-manager.ts` creates and persists a valid `Domain` record for every spawned preview service.
+
+### Runner Driver Subsystem
+- [ ] `RunnerDriver` interface provides unified methods: `dispatchBuild()`, `checkStatus()`, and `stopContainer()`.
+- [ ] HTTP, Queue, and SSH driver implementations pass automated unit tests for payload serialization, authentication verification, and status mapping.
+- [ ] Runner agent code in `runner/` includes an automated build pipeline supporting Docker and Nixpacks execution.
+
+### Edge Ingress & Middleware
+- [ ] `src/middleware.ts` correctly differentiates between active services (direct pass-through) and waking/building services (preview splash).
+- [ ] Cloudflare Tunnel ingress configuration generator maps service subdomains to target container ports.
+
+### Knip Analyzer
+- [ ] `knip-analyzer.ts` correctly identifies unused files and dependencies from repository file lists and emits formatted log entries.
+- [ ] Knip analysis runs during the build phase in `src/lib/orchestrator/engine.ts` without blocking successful builds.
+
+### Cold-Start UX
+- [ ] Service preview page renders live status with pulsing indicators for `BUILDING` and `DEPLOYING` states.
+- [ ] Client-side health probe automatically redirects the browser to the live application when the service reaches `ACTIVE` status.

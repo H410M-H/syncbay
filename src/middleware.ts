@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getServiceRoute } from "@/lib/edge/service-registry";
 
 export function middleware(req: NextRequest) {
   const host = (req.headers.get("x-forwarded-host") || req.headers.get("host") || "").toLowerCase().split(":")[0];
@@ -24,10 +25,43 @@ export function middleware(req: NextRequest) {
     host !== "cname.syncbay.app";
 
   if (isSyncbaySubdomain) {
-    const subdomain = host.replace(".syncbay.app", "");
+    const subdomain = host.endsWith(".syncbay.app") ? host.slice(0, -".syncbay.app".length) : host;
 
-    // Return instant HTTP 200 health check response for container probes
+    // Resolve service route from Edge-safe registry
+    const route = getServiceRoute(host);
+
+    // Return health check response for container probes reflecting real service status
     if (pathname === "/health" || pathname === "/healthz") {
+      if (route && (route.status === "FAILED" || route.status === "CRASHED")) {
+        return NextResponse.json(
+          {
+            error: "Bad Gateway",
+            message: `Service is in ${route.status} state`,
+            subdomain,
+            timestamp: new Date().toISOString(),
+          },
+          { status: 502 }
+        );
+      }
+
+      // If the service is booting, building, deploying, sleeping, or not yet registered,
+      // return HTTP 503 to prevent premature splash screen redirect reload loops.
+      if (!route || route.status !== "ACTIVE") {
+        const currentStatus = route ? route.status : "BOOTING";
+        return NextResponse.json(
+          {
+            status: "starting",
+            serviceStatus: currentStatus,
+            subdomain,
+            message: `Service is currently ${currentStatus}. Container probe warming up.`,
+            runtime: "Syncbay Edge Container Fabric",
+            edgePop: "iad1",
+            timestamp: new Date().toISOString(),
+          },
+          { status: 503 }
+        );
+      }
+
       return NextResponse.json({
         status: "healthy",
         subdomain,
@@ -38,7 +72,52 @@ export function middleware(req: NextRequest) {
       });
     }
 
-    // Rewrite customer traffic to the dynamic service preview container route
+    // Return 502 Bad Gateway if service has crashed or failed
+    if (route && (route.status === "FAILED" || route.status === "CRASHED")) {
+      return NextResponse.json(
+        {
+          error: "Bad Gateway",
+          message: `Service is in ${route.status} state`,
+          subdomain,
+          timestamp: new Date().toISOString(),
+        },
+        { status: 502 }
+      );
+    }
+
+    // If active: transparently proxy/forward to upstream origin container
+    if (route && route.status === "ACTIVE") {
+      if (route.upstreamUrl) {
+        try {
+          const upstream = new URL(route.upstreamUrl);
+          const target = new URL(req.url);
+          target.protocol = upstream.protocol;
+          target.hostname = upstream.hostname;
+          target.port = upstream.port;
+          target.pathname = pathname;
+          target.search = req.nextUrl.search;
+
+          const requestHeaders = new Headers(req.headers);
+          requestHeaders.set("x-forwarded-host", host);
+          requestHeaders.set("x-pathname", pathname);
+
+          return NextResponse.rewrite(target, {
+            request: {
+              headers: requestHeaders,
+            },
+          });
+        } catch {
+          // If URL parsing fails, pass-through
+          return NextResponse.next();
+        }
+      }
+
+      // If active without specific upstream URL, pass-through
+      return NextResponse.next();
+    }
+
+    // If service status is not ACTIVE (QUEUED, BUILDING, DEPLOYING, SLEEPING, or unknown):
+    // rewrite customer traffic to the dynamic service preview container route
     const url = req.nextUrl.clone();
     url.pathname = `/service-preview/${subdomain}`;
     return NextResponse.rewrite(url);

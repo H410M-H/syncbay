@@ -92,7 +92,7 @@ export function assertIncludes(container: string | any[], item: any, message?: s
 
 export async function assertRejects(
   asyncFn: () => Promise<any>,
-  expectedErrorRegex?: RegExp | string,
+  expectedErrorRegex?: RegExp | string | Function,
   message?: string
 ): Promise<void> {
   let threw = false;
@@ -101,7 +101,12 @@ export async function assertRejects(
   } catch (err: any) {
     threw = true;
     if (expectedErrorRegex) {
-      if (typeof expectedErrorRegex === "string") {
+      if (typeof expectedErrorRegex === "function") {
+        assert.ok(
+          err instanceof (expectedErrorRegex as any) || err.name === (expectedErrorRegex as any).name,
+          `Expected error to be instance of ${(expectedErrorRegex as any).name}, got ${err}`
+        );
+      } else if (typeof expectedErrorRegex === "string") {
         assert.ok(
           err.message?.includes(expectedErrorRegex),
           `Expected error message "${err.message}" to include "${expectedErrorRegex}"`
@@ -137,3 +142,11 @@ export function assertThrows(
   }
   assert.ok(threw, message || "Expected function to throw an error, but it succeeded");
 }
+
+export {
+  hybridHarness,
+  RunnerDriverError,
+  AuthenticationError,
+  TimeoutError,
+} from "./hybrid-harness";
+export type * from "./hybrid-harness";

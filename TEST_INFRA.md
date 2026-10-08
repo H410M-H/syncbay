@@ -1,186 +1,168 @@
-# Test Infrastructure & Specification: Syncbay PaaS E2E Test Suite
+# Test Infrastructure & Specification: Syncbay PaaS Hybrid Compute & Edge Routing E2E Test Suite
 
 ## 1. Test Philosophy & Principles
 
-Syncbay is an enterprise Developer Platform as a Service (PaaS) engineered to surpass Vercel and Railway, featuring automated buildpack detection, Nixpacks container plan generation, dynamic inter-service variable resolution, dual-driver orchestration (local container simulation + cloud edge proxy), zero-downtime blue/green deployments, sub-second instant rollbacks, multi-region edge cache purging across 6 global POPs, full workspace RBAC with team invitations, a hyper-competitive multi-tier pricing engine, and official US corporate identity compliance.
+Syncbay is an enterprise Developer Platform as a Service (PaaS) engineered for zero-cost hybrid compute and automated global edge routing. It features multi-driver execution (authenticated Webhook with HMAC SHA-256, DB/Queue polling for long-running builds without serverless timeouts, and remote SSH execution on custom Linux nodes), containerized Nixpacks and Docker pipelines, dynamic port pooling, Cloudflare Tunnel automated ingress configuration (`*.syncbay.app`), zero-latency edge route resolution via Edge Service Registry, Next.js Edge Middleware transparent routing, ephemeral preview environments with automated idle timeout (`idleTimeoutSecs: 1800`) and teardown, Knip dead-code static analysis during compilation, and cold-start live splash screens with real-time SSE logs and client-side health probe redirection.
 
 The Syncbay E2E test suite adheres to five core testing principles:
 
 1. **Opaque-Box & Requirement-Driven**:
-   Tests are derived strictly from user requirements in `ORIGINAL_REQUEST.md` and architectural interface contracts in `PROJECT.md`. Tests verify external observable behavior, API responses, state transitions, and contract invariants without coupling to internal private implementation details.
+   Tests are derived strictly from user requirements in `ORIGINAL_REQUEST.md` (R1 through R5) and architectural interface contracts in `PROJECT.md`. Tests verify external observable behavior, API responses, state transitions, and contract invariants without coupling to private implementation details.
 
 2. **Real Logic & Zero-Facade Integrity**:
-   No facade tests that pass unconditionally without exercising real logic. Every test exercises concrete inputs, deterministic algorithms, schema validations, state machines, or streaming protocols, and asserts against authoritative expected outputs.
+   Zero facade tests that pass unconditionally without exercising real logic. Every test exercises concrete inputs, deterministic algorithms, cryptographic signatures (HMAC SHA-256), schema validations, state machines, or streaming protocols, and asserts against authoritative expected outputs.
 
-3. **Progressive Testability & Milestone Resilience**:
-   The test suite is verifiable across all milestone stages (M1 through M6). Through the `tests/harness/` abstraction and `tests/harness/enterprise-harness.ts`, tests exercise production modules directly as they become available (`src/lib/auth.ts`, `src/lib/buildpack/`, `src/lib/storage-provider.ts`, `src/lib/domain-service.ts`, `src/lib/database-provider.ts`, `src/lib/edge/`, `src/lib/devops/`), while maintaining contract-accurate reference oracles for downstream systems.
+3. **Progressive Testability & Milestone Resilience (Dual Track)**:
+   The test suite is verifiable across all milestone stages (M1 through M6). Through the `tests/harness/` abstraction and `tests/harness/hybrid-harness.ts`, tests exercise production modules directly as they become available (`src/lib/tunnel/tunnel-config.ts`, `src/lib/edge/service-registry.ts`, `src/lib/orchestrator/runner-driver.ts`, `src/lib/buildpack/knip-analyzer.ts`, `src/lib/orchestrator/pr-manager.ts`), while maintaining contract-accurate reference oracles for downstream systems.
 
 4. **Self-Contained & Deterministic**:
-   Every test creates its own fixtures, isolates its execution state, cleans up resources, and avoids non-deterministic dependencies or flaky external network calls.
+   Every test creates its own fixtures, isolates its execution state, cleans up resources (ports, routes, container IDs), and avoids non-deterministic dependencies or flaky external network calls.
 
-5. **Granular 4-Tier Test Hierarchy (+ Extended Modules)**:
-   Every feature is tested across primary happy paths (Tier 1), boundary and corner cases (Tier 2), cross-feature pairwise interactions (Tier 3), complex real-world application deployments (Tier 4), alongside next-generation edge/shell/studio modules (Tier 5) and DevOps hyper-plane mechanisms (Tier 6).
+5. **Granular 4-Tier Test Hierarchy**:
+   Every feature is tested across primary happy paths (Tier 1: >=5 per feature), boundary and corner cases (Tier 2: >=5 per feature), cross-feature pairwise interactions (Tier 3), and complex real-world application deployments (Tier 4).
 
 ---
 
-## 2. Feature Inventory & Mapping
-
-### Enterprise Upgrade Feature Inventory (F01 – F16)
+## 2. Feature Inventory & Mapping (Requirements R1 – R5 / Features 1 – 18)
 
 | Feature | Name | Description | T1 (Primary) | T2 (Boundary) | T3 (Pairwise) | T4 (Real-World) | Interface Contract |
 |---|---|---|:---:|:---:|:---:|:---:|---|
-| **F01** | RFC 9207 OAuth Issuer Fix | Configure `issuer: "https://github.com/login/oauth"` & account linking on GitHubProvider in `src/lib/auth.ts` | 5 | 4 | 4 | ✓ | `authOptions.providers[GitHub]` |
-| **F02** | OAuth Callback Redirection | Support dynamic `callbackUrl` parameter and error-resilient callbacks | 5 | 0 | 1 | - | `validateCallback`, `/auth/signin` |
-| **F03** | TypeScript Build Unblock | Fix TS2737 BigInt literals in `waf-engine.ts`, target `ES2022` in `tsconfig.json` | 5 | 0 | 0 | - | `tsconfig.json`, `BigInt` |
-| **F04** | Collapsible Sidebar & Tooltips | Desktop/tablet collapsible sidebar (72px), localStorage persistence, tooltip clipping prevention | 5 | 1 | 1 | - | `dashboard-shell.tsx`, `globals.css` |
-| **F05** | Mobile Responsive Navigation | Hamburger drawer sheet on <768px, `.hide-on-mobile`, 44x44px touch targets, swipe-to-close | 5 | 5 | 1 | ✓ | `dashboard-shell.tsx`, touch events |
-| **F06** | Dashboard Route Completeness | Eliminate 404s for `/dashboard/databases` and `/dashboard/team` with active route indicators | 5 | 0 | 1 | - | `src/app/dashboard/*` |
-| **F07** | Prisma Schema RBAC Expansion | Add `ADMIN` role to `WorkspaceRole` enum (`OWNER`, `ADMIN`, `MEMBER`, `VIEWER`) | 5 | 0 | 0 | ✓ | `prisma/schema.prisma` |
-| **F08** | RBAC Permission Guard | Restrict project deletion & billing to `OWNER`/`ADMIN`; block `MEMBER` from deletion | 5 | 10 | 6 | ✓ | `canDeleteProject`, `projectRouter` |
-| **F09** | Team Invitation Flow | Cryptographic tokens, 7-day expiration, `/invite/[token]` public verification & acceptance | 5 | 5 | 3 | ✓ | `workspaceRouter.invite`, `acceptInvite` |
-| **F10** | Member Management & Audit | Member listing, role updating, sole-owner demotion safeguard, SOC2 append-only audit logs | 10 | 5 | 5 | ✓ | `workspaceRouter.updateMemberRole` |
-| **F11** | Tiered Pricing Engine | Hobby ($0), Pro ($18/mo, unlimited seats, 0ms cold start), Enterprise ($450/mo), 20% annual discount | 10 | 10 | 7 | ✓ | `/pricing`, `PricingOracle` |
-| **F12** | Competitive Matrix | Side-by-side comparison against Vercel ($20/seat tax) and Railway ($5 base + compute markup) | 10 | 5 | 3 | ✓ | `/pricing#comparison` |
-| **F13** | US Corporate Identity | Syncbay Technologies Inc., 548 Market St, Suite 82194, San Francisco, CA 94104; Delaware C-Corp | 10 | 8 | 2 | ✓ | `layout.tsx`, `PricingOracle` |
-| **F14** | Instant Deployment Rollback | Sub-second traffic shift to previous deployment without full rebuild delay | 10 | 10 | 8 | ✓ | `instantRollback`, `edge-router.ts` |
-| **F15** | Env Var Synchronization | Bulk `.env` parser, cross-env copy (merge/overwrite), workspace inheritance, secret masking | 10 | 12 | 3 | ✓ | `EnvVarSyncOracle`, `serviceRouter` |
-| **F16** | Edge Cache Purging Engine | Invalidation across 6 POPs (iad1, sfo1, fra1, sin1, lhr1, syd1) by tag, path, domain, or all | 10 | 10 | 4 | ✓ | `EdgeCachePurgeOracle`, `edge.ts` |
-
-### Foundational Platform Features (F1 – F20)
-
-| ID | Feature Name | Description | Interface Contract |
-|---|---|---|---|
-| **F1** | Workspace Dynamic View | `/dashboard/[slug]` overview, spending caps, member list | `src/server/routers/workspace.ts` |
-| **F2** | Project 7-Tab Console | Multi-tab console: Services, Builds, Logs, Metrics, Databases, Domains, Settings | `src/server/routers/project.ts` |
-| **F3** | Global Settings Console | Profile, scoped API tokens (`READ_ONLY`, `DEPLOY_ONLY`, `FULL_ACCESS`), auth providers | `src/server/routers/token.ts` |
-| **F4** | Resource Creation Flows | `/dashboard/projects/new`, `/dashboard/services/new`, `/dashboard/databases/new` | `src/app/dashboard/*` |
-| **F5** | Navigation Zero-404s | Workspace switcher, route integrity across dashboard views | `src/app/dashboard/layout.tsx` |
-| **F6** | Multi-Language Detection | Node.js, Python, Go, Rust, Ruby, Dockerfile auto-detection | `src/lib/buildpack/detector.ts` |
-| **F7** | Nixpacks / CNB Engine | Deterministic 4-phase plan (setup, install, build, start) and OCI manifests | `src/lib/buildpack/nixpacks.ts` |
-| **F8** | Env Var Reference Engine | Inter-service references `${{ Postgres.URL }}`, `${{ Service.URL }}` | `src/lib/buildpack/resolver.ts` |
-| **F9** | Deployment State Machine | Transition lifecycle: `QUEUED` -> `BUILDING` -> `DEPLOYING` -> `ACTIVE` | `src/lib/orchestrator/` |
-| **F10** | Dual-Driver Architecture | Local simulated container runner + Cloud edge container proxy | `src/lib/orchestrator/drivers/` |
-| **F11** | Blue/Green Health Checks | HTTP health checks gating traffic shift with auto-rollback on probe failure | `src/lib/orchestrator/engine.ts` |
-| **F12** | Real-Time SSE Log Console | Ring buffer event bus streaming build steps and container stdout/stderr | `src/lib/telemetry/event-bus.ts` |
-| **F13** | Real-Time Live Metrics | Live CPU, memory, network egress, and disk usage telemetry stream | `src/lib/telemetry/metrics-generator.ts`|
-| **F14** | Dynamic Subdomains | Default subdomains (`<service>-<env>.syncbay.app`) and vanity hostnames | `src/lib/domain-service.ts` |
-| **F15** | CNAME/TXT & SSL Flow | Automated DNS verification records and TLS 1.3 certificate provisioning | `src/lib/domain-service.ts` |
-| **F16** | Managed Databases | Postgres, Redis/Valkey, MySQL instance credentials and connection URLs | `src/lib/database-provider.ts` |
-| **F17** | Object Storage & Presigned | Cloudflare R2 / S3 compatible bucket management and presigned URLs | `src/lib/storage-provider.ts` |
-| **F18** | Persistent Storage Volumes | Persistent volume configurations, mount paths, and service attachment | `src/server/routers/volume.ts` |
-| **F19** | GitHub Push Webhook | Repository linking, branch selection, and automated push deployment triggers | `src/server/routers/github.ts` |
-| **F20** | Ephemeral PR Previews | GitHub PR webhooks, ephemeral `pr-<num>` env provisioning, teardown on merge | `src/lib/orchestrator/pr-preview.ts` |
+| **HYB-F01** | Prisma Relation Query Fix | Fix query in `service-preview` to use `environment.project` instead of non-existent `service.project` | 5 | 5 | 2 | ✓ | `src/app/service-preview/[subdomain]/page.tsx` |
+| **HYB-F02** | Ephemeral PR Domain Registration | Automatically generate and persist `Domain` record `${service.name}-pr-${prNumber}.syncbay.app` in `pr-manager.ts` | 5 | 5 | 4 | ✓ | `src/lib/orchestrator/pr-manager.ts` |
+| **HYB-F03** | PR Lifecycle Auto-Sleep & Teardown | Configure 15–30 min idle timeout (`idleTimeoutSecs: 1800`), scale-to-zero, and cleanup hooks in `pr-manager.ts` | 5 | 5 | 5 | ✓ | `pr-manager.ts`, `idleTimeoutSecs` |
+| **HYB-F04** | GitHub Octokit Commit Status & Comments | Post `syncbay/preview` commit status check and markdown preview comment with live badges | 5 | 5 | 3 | ✓ | `@octokit/rest`, commit statuses |
+| **HYB-F05** | Unified `RunnerDriver` Interface | Declare `RunnerDriver` interface with `dispatchBuild()`, `checkStatus()`, and `stopContainer()` in `runner-driver.ts` | 5 | 5 | 3 | ✓ | `src/lib/orchestrator/runner-driver.ts` |
+| **HYB-F06** | REST Webhook Runner Driver | Implement `WebhookRunnerDriver` with HMAC SHA-256 signature verification and SSE streaming log URL | 5 | 5 | 3 | ✓ | `WebhookRunnerDriver`, `X-Syncbay-Signature` |
+| **HYB-F07** | Queue/DB Polling Runner Driver | Implement `QueueRunnerDriver` mapping Prisma `Build`/`Deployment` records for long-running builds | 5 | 5 | 2 | ✓ | `QueueRunnerDriver`, FIFO queue |
+| **HYB-F08** | SSH Remote Runner Driver | Implement `SshRunnerDriver` for remote Linux provisioning, health checking, and container management | 5 | 5 | 3 | ✓ | `SshRunnerDriver`, remote shell |
+| **HYB-F09** | Containerized Runner Agent Daemon | Standalone runner in `runner/` with `package.json`, `Dockerfile`, daemon `src/index.ts` | 5 | 5 | 2 | ✓ | `runner/src/index.ts` |
+| **HYB-F10** | Runner Build Pipeline & Port Allocator | Automated build pipeline (`pipeline.ts`) supporting Docker and Nixpacks, with dynamic port pool (`port-manager.ts`) | 5 | 5 | 4 | ✓ | `pipeline.ts`, `port-manager.ts` (20000..30000) |
+| **HYB-F11** | Cloudflare Tunnel Ingress Generator | Generate valid `cloudflared` YAML configuration mapping subdomains to internal container ports | 5 | 5 | 4 | ✓ | `src/lib/tunnel/tunnel-config.ts` |
+| **HYB-F12** | Edge Service Registry | Edge-safe in-memory/cache store (`service-registry.ts`) for zero-latency subdomain and status lookup | 5 | 5 | 4 | ✓ | `src/lib/edge/service-registry.ts` |
+| **HYB-F13** | Edge Middleware Transparent Routing | Update `src/middleware.ts` to transparently route active services to origin and waking/building to splash | 5 | 5 | 4 | ✓ | `src/middleware.ts` |
+| **HYB-F14** | Knip Code Quality Analyzer Module | Module in `src/lib/buildpack/knip-analyzer.ts` scanning file trees and `package.json` for unused deps/files/exports | 5 | 5 | 3 | ✓ | `src/lib/buildpack/knip-analyzer.ts` |
+| **HYB-F15** | Non-Blocking Knip Engine Integration | Integrate Knip scan into build phase in `src/lib/orchestrator/engine.ts` streaming `[knip]` logs non-blockingly | 5 | 5 | 2 | ✓ | `engine.ts`, non-blocking contract |
+| **HYB-F16** | Cold-Start Live Splash Screen | Render multi-state pulsing indicators for `BUILDING` and `DEPLOYING` states in `service-preview` | 5 | 5 | 3 | ✓ | `service-preview/[subdomain]/page.tsx` |
+| **HYB-F17** | Real-Time SSE Log Streaming Console | Display live deployment logs via `/api/deployments/${id}/logs/stream` in `service-preview` | 5 | 5 | 2 | ✓ | `/api/deployments/${id}/logs/stream` |
+| **HYB-F18** | Client-Side Health Probe & Redirect | Client-side probe checking `/health` every 1.5s, auto-redirecting to live application upon `200 OK` | 5 | 5 | 3 | ✓ | Client-side polling (1500ms) |
 
 ---
 
-## 3. Test Architecture & Invocation
+## 3. Test Architecture & Directory Structure
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                           Syncbay PaaS E2E Test Suite                           │
-│                     Invoked via: npm test (418 Tests Total)                     │
-└────────────────────────────────────────┬────────────────────────────────────────┘
-                                         │
-    ┌────────────────────────────────────┼────────────────────────────────────┐
-    ▼                                    ▼                                    ▼
-┌─────────────────────────┐  ┌─────────────────────────┐  ┌─────────────────────────┐
-│         Tier 1          │  │         Tier 2          │  │         Tier 3          │
-│    Feature Coverage     │  │ Boundary & Corner Cases │  │  Cross-Feature Pairwise │
-│       (180 Tests)       │  │       (150 Tests)       │  │       (28 Tests)        │
-└───────────┬─────────────┘  └───────────┬─────────────┘  └───────────┬─────────────┘
-            │                            │                            │
-    ┌───────┴────────────────────────────┴────────────────────────────┴───────┐
-    ▼                                    ▼                                    ▼
-┌─────────────────────────┐  ┌─────────────────────────┐  ┌─────────────────────────┐
-│         Tier 4          │  │         Tier 5          │  │         Tier 6          │
-│  Real-World Scenarios   │  │   Next-Gen Edge Modules │  │   DevOps Hyper-Plane    │
-│       (15 Tests)        │  │       (22 Tests)        │  │       (23 Tests)        │
-└───────────┬─────────────┘  └───────────┬─────────────┘  └───────────┬─────────────┘
-            │                            │                            │
-            └────────────────────────────┼────────────────────────────┘
-                                         ▼
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                                 Test Harnesses                                  │
-│       tests/harness/index.ts  │  tests/harness/enterprise-harness.ts            │
-│       - Production Bridges    │  - Deterministic Oracles                        │
-│       - State Machines        │  - OAuth & RBAC Verifiers                       │
-│       - Pricing & Rollback    │  - Edge Cache Purge Telemetry                   │
-└─────────────────────────────────────────────────────────────────────────────────┘
+C:\dev\syncbay\
+├── tests\
+│   ├── harness\
+│   │   ├── index.ts                (Harness Core & Assertions)
+│   │   ├── hybrid-harness.ts       (Reference Oracles & Contract Adapters for R1–R5)
+│   │   ├── enterprise-harness.ts   (Enterprise Features Harness)
+│   │   ├── adapter.ts              (Foundational Platform Adapter)
+│   │   └── ...
+│   └── e2e\
+│       ├── run-all.ts              (Master E2E Test Runner)
+│       ├── tier1-hybrid.test.ts    (Tier 1: Feature Coverage — 90 Tests)
+│       ├── tier2-hybrid.test.ts    (Tier 2: Boundary & Corner Cases — 90 Tests)
+│       ├── tier3-hybrid.test.ts    (Tier 3: Pairwise Combinations — 20 Tests)
+│       ├── tier4-hybrid.test.ts    (Tier 4: Real-World Scenarios — 10 Tests)
+│       └── ...
 ```
 
-### Test Invocation Commands
-
-- **Execute All Tests**:
-  ```bash
-  npm test
-  # or directly:
-  node node_modules/tsx/dist/cli.mjs tests/e2e/run-all.ts
-  ```
-
-- **Filter by Specific Tier**:
-  ```bash
-  npx tsx tests/e2e/run-all.ts --tier=1   # Execute Tier 1 only
-  npx tsx tests/e2e/run-all.ts --tier=2   # Execute Tier 2 only
-  npx tsx tests/e2e/run-all.ts --tier=3   # Execute Tier 3 only
-  npx tsx tests/e2e/run-all.ts --tier=4   # Execute Tier 4 only
-  ```
-
-- **Filter by Feature ID**:
-  ```bash
-  npx tsx tests/e2e/run-all.ts --feature=F01   # NextAuth RFC 9207
-  npx tsx tests/e2e/run-all.ts --feature=F08   # RBAC Deletion Guard
-  npx tsx tests/e2e/run-all.ts --feature=F14   # Instant Rollback
-  ```
+### Reference Oracles (`hybrid-harness.ts`)
+1. **`RunnerDriverOracle` / `WebhookRunnerDriver` / `QueueRunnerDriver` / `SshRunnerDriver`**:
+   - Enforces `RunnerDriver` interface contract (`dispatchBuild()`, `checkStatus()`, `stopContainer()`).
+   - Generates and verifies HMAC SHA-256 tokens (`X-Syncbay-Signature`).
+   - Simulates FIFO job queues, status transitions (`QUEUED` -> `BUILDING` -> `DEPLOYING` -> `ACTIVE` / `FAILED`), and long-running build management without Vercel serverless timeouts.
+   - Executes remote SSH commands and health checks.
+2. **`DynamicPortManager` & `RunnerBuildPipeline`**:
+   - Manages dynamic port pool (20000–30000), collision detection, allocation, and recycling.
+   - Executes multi-stage compilation pipelines for Docker and Nixpacks.
+3. **`TunnelConfigGenerator`**:
+   - Validates RFC 1123 hostnames and port bounds (1..65535).
+   - Generates valid Cloudflare Tunnel YAML ingress definitions ensuring specific routes precede wildcard `*.syncbay.app` and always terminates with `service: http_status:404`.
+4. **`EdgeServiceRegistry`**:
+   - Zero-dependency web-standard runtime store for sub-millisecond route resolution.
+   - Tracks route status (`ACTIVE`, `BUILDING`, `DEPLOYING`, `SLEEPING`, `FAILED`).
+5. **`EdgeMiddlewareSimulator`**:
+   - Simulates Next.js edge middleware: transparently proxies `ACTIVE` routes, rewrites `BUILDING`/`DEPLOYING`/`SLEEPING` routes to `/service-preview/[subdomain]`, and passes through internal system routes.
+6. **`PrManagerOracle`**:
+   - Handles GitHub pull request webhooks (`opened`, `synchronize`, `closed`, `reopened`).
+   - Registers ephemeral domains `${service.name}-pr-${prNumber}.syncbay.app`.
+   - Manages 1800s idle timeout auto-sleep and automated resource destruction upon PR close/merge.
+   - Posts GitHub Octokit commit status checks (`syncbay/preview`) and PR comments.
+7. **`KnipAnalyzerOracle`**:
+   - Detects unused dependencies, orphaned files, and unreferenced exports.
+   - Formats `[knip]` logs and provides clean optimization recommendations.
+   - Non-blocking contract: builds never fail due to code quality warnings.
+8. **`ServicePreviewOracle`**:
+   - Fixes Prisma relation query by accessing `environment.project` rather than `service.project`.
+   - Simulates pulsing splash screen UI, SSE log consumption, and client-side `/health` polling (1.5s interval) with automatic redirection.
 
 ---
 
 ## 4. Real-World Application Scenarios (Tier 4)
 
-1. **Scenario 1: Enterprise Team Onboarding & Multi-Role Governance Lifecycle** (`T4-SCENARIO-ENT-01`):
-   - Owner provisions a team workspace.
-   - Dispatches email invitations with designated roles (`ADMIN`, `MEMBER`, `VIEWER`).
-   - Admin accepts `/invite/[token]` and manages project infrastructure.
-   - Member accepts invite, attempts to delete project, and is blocked by the RBAC deletion guard.
-   - Viewer logs in and verifies read-only access (no deployment triggers).
-   - Owner audits the full SOC2 compliant event log trail.
+1. **`HYB-T4-SCENARIO-01` — Complete Ephemeral GitHub PR Deployment & Teardown**:
+   End-to-end PR lifecycle: GitHub webhook event -> domain generation `shop-web-pr-501.syncbay.app` -> Queue runner build dispatch -> non-blocking Knip dead-code scan -> Cloudflare tunnel ingress config generation -> Edge Registry route setup -> Edge middleware rewrite to splash -> splash screen queries `environment.project` -> client health probe polls until 200 OK -> deployment marked ACTIVE -> edge middleware proxies direct -> Octokit check updated to success & markdown comment posted -> PR merged -> automated teardown destroys domain, purges registry, and releases port.
 
-2. **Scenario 2: Emergency Incident Response: Sub-Second Rollback & Multi-Region Edge Flush** (`T4-SCENARIO-ENT-02`):
-   - Production deployment exhibits elevated error rates or crashes.
-   - DevOps Admin triggers an instant rollback command.
-   - Edge router shifts domain snapshot to the previous stable release in under 50ms without waiting for a full rebuild.
-   - Edge cache purge broadcast fires across all 6 POPs (`iad1`, `sfo1`, `fra1`, `lhr1`, `sin1`, `syd1`).
-   - Traffic is restored with zero dropped connections.
+2. **`HYB-T4-SCENARIO-02` — Webhook Runner Driver with Fast Streaming Logs**:
+   Fast build workflow: Webhook HMAC SHA-256 dispatch -> dynamic port allocation -> SSE streaming log URL -> container launch -> Edge Registry update -> transparent edge proxy.
 
-3. **Scenario 3: DevOps Configuration Pipeline: Bulk .env Sync & Staging-to-Production Promotion** (`T4-SCENARIO-ENT-03`):
-   - Developer imports a raw multi-variable `.env` bundle into a Preview environment.
-   - Inter-service database references (`${{ Postgres.URL }}`) are dynamically resolved.
-   - Secret variables are masked in web console views and logs.
-   - Variables are promoted to Production in merge mode, preserving cluster-specific overrides.
+3. **`HYB-T4-SCENARIO-03` — Scale-to-Zero and Instant Cold-Start Wake-Up Flow**:
+   Container idle timeout (1800s) -> status changes to SLEEPING -> visitor lands on domain -> Edge middleware intercepts and rewrites to `/service-preview/[subdomain]` -> splash screen boots container -> client health probe polls every 1.5s -> 200 OK triggers redirect to live app.
 
-4. **Scenario 4: Developer Conversion Journey: Public Evaluation -> US Compliance -> OAuth -> Mobile Console** (`T4-SCENARIO-ENT-04`):
-   - Developer evaluates `/pricing`, toggling annual billing to calculate $1,000+ savings vs Vercel seat taxes.
-   - Verifies US corporate identity at 548 Market St, San Francisco, CA 94104 and Delaware C-Corp status.
-   - Authenticates via RFC 9207 compliant GitHub OAuth with `callbackUrl=/dashboard`.
-   - Accesses dashboard on mobile viewport (<768px), testing drawer touch swipe-to-close gesture.
-   - Navigates to `/dashboard/databases` and `/dashboard/team` with zero 404s.
+4. **`HYB-T4-SCENARIO-04` — Custom Linux Node Remote Provisioning via SSH Runner**:
+   Targeting custom Linux node -> SSH runner validates CPU and memory health -> dispatches Docker build -> allocates port -> updates Cloudflare Tunnel config -> validates container responsiveness.
 
-5. **Scenario 5: Complete Enterprise Security & Operational Resilience Lifecycle** (`T4-SCENARIO-ENT-05`):
-   - Corporate governance and US cloud data sovereignty verified.
-   - Admin initiates an emergency edge cache flush.
-   - Unauthorized privilege escalation attempts by Viewers and Members are intercepted and logged.
-   - Instant rollback safely shifts active deployment snapshot.
+5. **`HYB-T4-SCENARIO-05` — Full-Stack Next.js Monorepo with Knip Code Optimization**:
+   Next.js repo analyzed -> Knip detects unused dependencies and dead components -> streams optimization recommendations non-blockingly -> build succeeds with exit code 0.
+
+6. **`HYB-T4-SCENARIO-06` — High-Concurrency Concurrent PR Deployments with Port Pooling**:
+   Three concurrent PRs opened simultaneously for same service -> PR Manager assigns `pr-601`, `pr-602`, `pr-603` -> dynamic port manager allocates non-colliding ports -> ingress YAML config includes all three -> isolated concurrent execution.
+
+7. **`HYB-T4-SCENARIO-07` — Resilient Build Failure Handling & Graceful Teardown**:
+   Build script encounters error -> Runner Driver captures failure -> status marked FAILED -> Octokit check marked failure -> PR comment reflects error -> Edge middleware returns 502 with diagnostic link -> resources cleaned up safely.
+
+8. **`HYB-T4-SCENARIO-08` — Multi-Service Microservices Fleet PR Deployment**:
+   Frontend and backend microservices in same PR -> both receive distinct subdomains and ports -> inter-service routing established -> registered in Cloudflare tunnel config -> Edge Middleware proxies both smoothly.
+
+9. **`HYB-T4-SCENARIO-09` — Custom Vanity Domain Ingress with Health Probe Redirection**:
+   Vanity custom domain + default preview subdomain -> routed through Edge Registry -> cold-start splash verifies project -> health probe detects 200 OK -> auto-redirects to custom domain.
+
+10. **`HYB-T4-SCENARIO-10` — Runner Daemon Failover and FIFO Queue Recovery**:
+    Runner daemon temporary crash -> DB queue retains build in QUEUED -> new runner starts -> dequeues pending job in FIFO order -> completes build with zero lost jobs.
 
 ---
 
 ## 5. Coverage Thresholds & Quality Gates
 
-| Metric | Target Threshold | Measured Result | Status |
-|---|:---:|:---:|:---:|
-| **Tier 1 Feature Coverage** | >= 5 tests per feature | >= 5 tests per feature (180 tests) | **PASSED** |
-| **Tier 2 Boundary Cases** | >= 5 tests per feature | >= 5 tests per feature (150 tests) | **PASSED** |
-| **Tier 3 Cross-Feature** | >= 12 interactions | 28 interaction tests | **PASSED** |
-| **Tier 4 Real-World Scenarios** | >= 10 scenarios | 15 full application scenarios | **PASSED** |
-| **Total Test Suite Pass Rate** | 100% (0 failures) | 418 / 418 passed (0 failures) | **PASSED** |
-| **Total Test Execution Duration** | < 10.0 seconds | 1.42 seconds | **PASSED** |
-| **Zero-Facade Integrity** | 100% Real Logic | Zero tautological/facade assertions | **PASSED** |
-| **RFC 9207 & Corporate Compliance** | 100% verified | Issuer configured & 548 Market St verified | **PASSED** |
+| Metric | Threshold | Actual Count | Status |
+|---|---|:---:|:---:|
+| **Tier 1 (Feature Coverage)** | >= 5 test cases per feature (18 features across R1–R5) | **90** | **MET (100%)** |
+| **Tier 2 (Boundary & Corner Cases)** | >= 5 test cases per feature (18 features across R1–R5) | **90** | **MET (100%)** |
+| **Tier 3 (Pairwise Cross-Feature)** | >= 15 pairwise interaction test cases | **20** | **MET (100%)** |
+| **Tier 4 (Real-World Scenarios)** | >= 8 end-to-end multi-feature scenarios | **10** | **MET (100%)** |
+| **Total Hybrid Compute Suite** | >= 180 tests | **210** | **MET (100%)** |
+| **Combined PaaS Suite Total** | >= 400 tests | **628** | **MET (100%)** |
+| **Pass Rate Quality Gate** | 100% Pass Rate (0 Failures, Exit Code 0) | **100%** | **MET** |
+
+---
+
+## 6. How to Run the Tests
+
+```bash
+# Run the complete test suite including Tiers 1-4 for Hybrid Compute & Edge Routing:
+npm test
+
+# Alternatively invoke directly via tsx:
+node node_modules/tsx/dist/cli.mjs tests/e2e/run-all.ts
+
+# Run specific tiers:
+node node_modules/tsx/dist/cli.mjs tests/e2e/run-all.ts --tier=1
+node node_modules/tsx/dist/cli.mjs tests/e2e/run-all.ts --tier=2
+node node_modules/tsx/dist/cli.mjs tests/e2e/run-all.ts --tier=3
+node node_modules/tsx/dist/cli.mjs tests/e2e/run-all.ts --tier=4
+
+# Run specific feature:
+node node_modules/tsx/dist/cli.mjs tests/e2e/run-all.ts --feature=HYB-F01
+```

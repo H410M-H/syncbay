@@ -32,6 +32,14 @@ import "./tier7-all-modules-seo-geo-crons-rd.test";
 import "./tier8-card-payments-billing.test";
 import "./tier9-brand-logo-and-seo.test";
 
+// Import Hybrid Compute & Edge Routing test suites (R1–R5, Features 1–18)
+import "./tier1-hybrid.test";
+import "./tier2-hybrid.test";
+import "./tier3-hybrid.test";
+import "./tier4-hybrid.test";
+import "./tier5-hybrid-adversarial.test";
+import "./tier5-adversarial.test";
+
 // Parse CLI arguments
 const args = process.argv.slice(2);
 const tierArg = args.find((a) => a.startsWith("--tier="))?.split("=")[1];
@@ -173,6 +181,28 @@ async function runSuite() {
     const t1 = results.filter((r) => r.feature === f && r.tier === 1);
     const t2 = results.filter((r) => r.feature === f && r.tier === 2);
     const t3 = results.filter((r) => r.feature.includes(f) && r.tier === 3);
+    const t4 = results.filter((r) => r.tier === 4);
+
+    const fPassed = results.filter((r) => r.feature.includes(f) && !r.passed).length === 0;
+    const status = fPassed ? "PASS ✔" : "FAIL ✘";
+
+    console.log(
+      `  │ ${f.padEnd(7)} │ ${String(t1.length).padStart(6)} │ ${String(t2.length).padStart(6)} │ ${String(t3.length).padStart(6)} │ ${String(t4.length > 0 ? "✓" : "-").padStart(6)} │ ${status.padEnd(7)} │`
+    );
+  }
+  console.log("  └─────────┴────────┴────────┴────────┴────────┴─────────┘");
+
+  // Hybrid Compute & Edge Routing Feature Inventory (HYB-F01 through HYB-F18 across R1–R5)
+  const hybridFeatures = Array.from({ length: 18 }, (_, i) => `HYB-F${String(i + 1).padStart(2, "0")}`);
+  console.log("\n  Hybrid Compute & Edge Routing Feature Inventory (R1 to R5 / HYB-F01 to HYB-F18):");
+  console.log("  ┌─────────┬────────┬────────┬────────┬────────┬─────────┐");
+  console.log("  │ Feature │ Tier 1 │ Tier 2 │ Tier 3 │ Tier 4 │ Status  │");
+  console.log("  ├─────────┼────────┼────────┼────────┼────────┼─────────┤");
+
+  for (const f of hybridFeatures) {
+    const t1 = results.filter((r) => r.feature === f && r.tier === 1);
+    const t2 = results.filter((r) => r.feature === f && r.tier === 2);
+    const t3 = results.filter((r) => r.feature.includes(f.replace("HYB-", "")) && r.tier === 3);
     const t4 = results.filter((r) => r.tier === 4);
 
     const fPassed = results.filter((r) => r.feature.includes(f) && !r.passed).length === 0;

@@ -1,79 +1,160 @@
-# Project: Syncbay PaaS Enterprise Upgrade
+# Project: Syncbay PaaS Platform — Hybrid Compute & Edge Routing
 
 ## Architecture
-Syncbay is a Railway/Vercel-class PaaS built with Next.js 14 (App Router), TypeScript, Tailwind CSS, tRPC, NextAuth v4, Prisma ORM (SQLite for local/edge simulation), and an edge-compatible deployment orchestrator.
-- **Frontend Layer**: Next.js App Router (`src/app`), server and client components, Lucide icons, Tailwind design system, responsive mobile drawer navigation, collapsible sidebar.
-- **API & RPC Layer**: tRPC router (`src/server/routers/`) with procedures for projects, deployments, services, databases, workspaces, members, invitations, and DevOps operations. NextAuth handlers in `src/app/api/auth/[...nextauth]`.
-- **Database & RBAC Layer**: Prisma schema (`prisma/schema.prisma`) defining `User`, `Account`, `Session`, `Workspace`, `WorkspaceMember` (`OWNER`, `ADMIN`, `MEMBER`, `VIEWER`), `Invitation`, `AuditLog`, `Project`, `Deployment`, `Service`.
-- **DevOps & Orchestration Layer**: Dual-driver execution engine (Local simulated container runner + Edge proxy router), Nixpacks auto-detector, instant rollback mechanism, edge cache purger (`src/lib/edge`), and env var synchronizer.
-- **Production Delivery**: Vercel deployment pipeline (`https://www.syncbay.app`).
+The Syncbay PaaS Platform provides a hybrid compute execution layer and an automated global edge routing fabric:
+1. **Control Plane & Orchestration**:
+   - Next.js Web Application & API layer (`src/app/`, `src/lib/orchestrator/`).
+   - GitHub webhook processing and ephemeral preview environment management (`src/lib/orchestrator/pr-manager.ts`).
+   - Multi-driver execution dispatcher (`src/lib/orchestrator/runner-driver.ts`).
+   - Deployment build pipeline with code quality scanning (`src/lib/orchestrator/engine.ts`, `src/lib/buildpack/knip-analyzer.ts`).
+2. **Execution Drivers & Runner Fabric**:
+   - `WebhookRunnerDriver`: Synchronous HTTP/SSE with HMAC SHA-256 verification for fast builds.
+   - `QueueRunnerDriver`: Asynchronous DB-backed polling queue for long-running builds without serverless timeouts.
+   - `SshRunnerDriver`: Remote command execution and container process management on custom Linux nodes.
+   - Containerized Runner Agent (`runner/`): Standalone daemon supporting Docker, Nixpacks, dynamic port binding, and git cloning.
+3. **Global Edge Ingress & Tunnel Routing**:
+   - Cloudflare Tunnel ingress configuration generator (`src/lib/tunnel/tunnel-config.ts`).
+   - Edge Service Registry (`src/lib/edge/service-registry.ts`) for zero-latency, edge-safe route resolution.
+   - Next.js Edge Middleware (`src/middleware.ts`) transparently proxying active services to upstream ports and routing booting/waking services to preview splash.
+4. **Cold-Start UX**:
+   - Service Preview Splash Screen (`src/app/service-preview/[subdomain]/page.tsx`) with pulsing status badges, real-time log streaming, and client-side `/health` auto-redirection.
+
+---
 
 ## Feature Inventory
+
 | # | Feature | Description | Milestone | Source |
 |---|---------|-------------|-----------|--------|
-| F01 | NextAuth RFC 9207 Issuer Fix | Configure `issuer: "https://github.com/login/oauth"` and account linking on GitHubProvider in `src/lib/auth.ts` | M1 | R1 |
-| F02 | OAuth Callback & Sign-in Redirection | Support `callbackUrl` in signin form and error-resilient callbacks | M1 | R1 |
-| F03 | TypeScript & Build Compilation Unblock | Fix TS2737 BigInt literals in `src/lib/devops/waf-engine.ts` and set target `ES2022` in `tsconfig.json` | M1 | AC / Quality |
-| F04 | Collapsible Sidebar & Tooltip Fix | Prevent tooltip clipping in collapsed sidebar via CSS, persist state via localStorage | M2 | R2 |
-| F05 | Mobile Responsive Navigation | Add `.hide-on-mobile`, touch targets, mobile drawer sheet, zero horizontal scroll overflow on <768px | M2 | R2 |
-| F06 | Dashboard Route Completeness | Eliminate 404s by adding `/dashboard/databases` and `/dashboard/team` | M2 | R2, AC |
-| F07 | Prisma Schema RBAC Expansion | Add `ADMIN` role to `WorkspaceRole` enum in `prisma/schema.prisma` and generate client | M3 | R3 |
-| F08 | RBAC Permission Enforcement & Deletion Guard | Restrict project deletion and billing to `OWNER` and `ADMIN`; block `MEMBER` from deletion | M3 | R3, AC |
-| F09 | Team Invitation Flow & `/invite/[token]` | Support invitation token generation, `/invite/[token]` page, email invite dialog, role assignment | M3 | R3 |
-| F10 | Member Management Table & Audit Logging | Member list with role changing, revocation, and audit log events | M3 | R3 |
-| F11 | Tiered Pricing Engine (/pricing) | Interactive selector for Hobby ($0/mo), Pro ($18/mo, unlimited seats), Enterprise ($450/mo) | M4 | R4 |
-| F12 | Competitive Comparison Matrix | Side-by-side feature comparison matrix against Vercel and Railway | M4 | R4 |
-| F13 | Official US Corporate Identity & Footer | Update corporate identity to Syncbay Technologies Inc., 548 Market St, Suite 82194, San Francisco, CA 94104, United States in layout, footer, and metadata | M4 | R5 |
-| F14 | Instant Deployment Rollback | Sub-second rollback shifting domain traffic without full rebuild delay | M5 | R6 |
-| F15 | Environment Variable Synchronization | Bulk `.env` import, cross-environment variable copying, and workspace inheritance | M5 | R6 |
-| F16 | Edge Cache Purging Engine | Edge POP cache invalidation (by tag, path, or all) integrated with rollback and CLI | M5 | R6 |
-| F17 | Comprehensive E2E Test Suite Pass | 100% pass on Tiers 1-4 opaque-box tests covering all PaaS capabilities | M6 | AC |
-| F18 | Adversarial Hardening (Tier 5) | White-box stress-testing, boundary edge cases, and vulnerability testing | M6 | Process |
-| F19 | Production Build & Live Verification | `npm run build` cleanly succeeds and verified live on https://www.syncbay.app | M6 | AC |
+| 1 | Prisma Relation Query Fix | Fix query in `service-preview` to use `environment.project` instead of `service.project` | M1 | Survey (R5) |
+| 2 | Ephemeral PR Domain Registration | Automatically generate and persist `Domain` record `${service.name}-pr-${prNumber}.syncbay.app` in `pr-manager.ts` | M1 | Survey (R3) |
+| 3 | PR Lifecycle Auto-Sleep & Teardown | Configure 15–30 min idle timeout (`idleTimeoutSecs: 1800`), scale-to-zero, and cleanup hooks in `pr-manager.ts` | M1 | Survey (R3) |
+| 4 | GitHub Octokit Commit Status & Comments | Post `syncbay/preview` commit status check and markdown preview comment with live badges | M1 | Survey (R3) |
+| 5 | Unified `RunnerDriver` Interface | Declare `RunnerDriver` interface with `dispatchBuild()`, `checkStatus()`, and `stopContainer()` in `runner-driver.ts` | M2 | Survey (R1) |
+| 6 | REST Webhook Runner Driver | Implement `WebhookRunnerDriver` with HMAC SHA-256 signature verification and SSE streaming log URL | M2 | Survey (R1) |
+| 7 | Queue/DB Polling Runner Driver | Implement `QueueRunnerDriver` mapping Prisma `Build`/`Deployment` records for long-running builds | M2 | Survey (R1) |
+| 8 | SSH Remote Runner Driver | Implement `SshRunnerDriver` for remote Linux provisioning, health checking, and container management | M2 | Survey (R1) |
+| 9 | Containerized Runner Agent Daemon | Standalone runner in `runner/` with `package.json`, `Dockerfile`, daemon `src/index.ts` | M2 | Survey (R1) |
+| 10 | Runner Build Pipeline & Port Allocator | Automated build pipeline (`pipeline.ts`) supporting Docker and Nixpacks, with dynamic port pool (`port-manager.ts`) | M2 | Survey (R1) |
+| 11 | Cloudflare Tunnel Ingress Generator | Generate valid `cloudflared` YAML configuration mapping subdomains to internal container ports | M3 | Survey (R2) |
+| 12 | Edge Service Registry | Edge-safe in-memory/cache store (`service-registry.ts`) for zero-latency subdomain and status lookup | M3 | Survey (R2) |
+| 13 | Edge Middleware Transparent Routing | Update `src/middleware.ts` to transparently route active services to origin and waking/building to splash | M3 | Survey (R2) |
+| 14 | Knip Code Quality Analyzer Module | Module in `src/lib/buildpack/knip-analyzer.ts` scanning file trees and `package.json` for unused deps/files/exports | M4 | Survey (R4) |
+| 15 | Non-Blocking Knip Engine Integration | Integrate Knip scan into build phase in `src/lib/orchestrator/engine.ts` streaming `[knip]` logs non-blockingly | M4 | Survey (R4) |
+| 16 | Cold-Start Live Splash Screen | Render multi-state pulsing indicators for `BUILDING` and `DEPLOYING` states in `service-preview` | M5 | Survey (R5) |
+| 17 | Real-Time SSE Log Streaming Console | Display live deployment logs via `/api/deployments/${id}/logs/stream` in `service-preview` | M5 | Survey (R5) |
+| 18 | Client-Side Health Probe & Redirect | Client-side probe checking `/health` every 1.5s, auto-redirecting to live application upon `200 OK` | M5 | Survey (R5) |
+| 19 | E2E Test Suite (Tiers 1-4) | Comprehensive opaque-box test runner and test cases covering all R1-R5 acceptance criteria | M6 | Plan (Dual Track) |
+| 20 | Adversarial Coverage Hardening (Tier 5) | White-box adversarial testing and edge case verification | M6 | Plan (Dual Track) |
+
+---
 
 ## Milestones
+
 | # | Name | Scope | Dependencies | Status |
 |---|------|-------|-------------|--------|
-| M1 | Auth RFC 9207 & Build Compilation Unblock | F01, F02, F03 | none | DONE |
-| M2 | Collapsible Sidebar & Universal Mobile Responsiveness | F04, F05, F06 | none | DONE |
-| M3 | Workspace RBAC & Team Member Invitations | F07, F08, F09, F10 | M1 | DONE |
-| M4 | Competitive Plans & Pricing Engine + Corporate Identity | F11, F12, F13 | none | DONE |
-| M5 | Advanced DevOps Capabilities & Deployment Engine | F14, F15, F16 | M1 | DONE |
-| M6 | Final Verification & Adversarial Hardening (Dual Track Integration) | F17, F18, F19 | M1, M2, M3, M4, M5 | DONE |
+| M1 | Core Platform Bug Fixes & PR Pipeline | Features 1, 2, 3, 4: Prisma relation bug fix, PR domain registration, PR lifecycle & Octokit checks in `pr-manager.ts` | None | DONE (worker_m1) |
+| M2 | Hybrid Runner Driver Subsystem & Agent | Features 5, 6, 7, 8, 9, 10: `runner-driver.ts` (Webhook, Queue, SSH), and `runner/` containerized agent | None | DONE (worker_m2) |
+| M3 | Global Edge Ingress & Tunnel Routing | Features 11, 12, 13: `tunnel-config.ts`, `service-registry.ts`, and `src/middleware.ts` | M1 | DONE (worker_m3) |
+| M4 | Knip Code Quality & Dead-Code Analyzer | Features 14, 15: `knip-analyzer.ts` and non-blocking integration in `engine.ts` | None | DONE (worker_m4) |
+| M5 | Cold-Start UX & Health Probe Splash Screen | Features 16, 17, 18: Live pulsing splash screen, SSE log console, `/health` auto-redirection in `service-preview` | M1 | DONE (worker_m5) |
+| M6 | Final Verification: 100% E2E Test Pass & Adversarial Hardening | Features 19, 20: Tiers 1-4 test suite pass + Tier 5 adversarial hardening | M1, M2, M3, M4, M5 | DONE (PASS) |
+
+---
 
 ## Interface Contracts
 
-### Auth ↔ NextAuth Handler
-- GitHubProvider config: `{ clientId, clientSecret, issuer: "https://github.com/login/oauth", allowDangerousEmailAccountLinking: true }`
-- Sign-in redirect: `callbackUrl` query parameter preserved and respected.
+### 1. `RunnerDriver` ↔ `Orchestrator Engine`
+- **Location**: `src/lib/orchestrator/runner-driver.ts`
+- **Signatures**:
+  ```typescript
+  export interface RunnerDriver {
+    readonly type: RunnerDriverType;
+    dispatchBuild(params: BuildDispatchParams): Promise<BuildDispatchResult>;
+    checkStatus(jobId: string): Promise<BuildStatusResult>;
+    stopContainer(containerId: string, options?: Partial<StopContainerParams>): Promise<StopContainerResult>;
+  }
+  ```
+- **Error Handling**: Custom error types `RunnerDriverError`, `AuthenticationError`, `TimeoutError`. Driver methods must reject or return structured error results without throwing uncaught process exceptions.
 
-### Workspace & RBAC ↔ Routers
-- `WorkspaceRole`: `"OWNER" | "ADMIN" | "MEMBER" | "VIEWER"`
-- Permissions:
-  - `deleteProject`: `role === "OWNER" || role === "ADMIN"` (MEMBER and VIEWER get `FORBIDDEN`)
-  - `inviteMember`: `role === "OWNER" || role === "ADMIN"`
-  - `modifyBilling`: `role === "OWNER" || role === "ADMIN"`
-- Invitations: Token-based `/invite/[token]` accepting invite redirects to `/dashboard` or prompts signin with `callbackUrl=/invite/[token]`.
+### 2. `Cloudflare Tunnel Config Generator` ↔ `Edge Ingress`
+- **Location**: `src/lib/tunnel/tunnel-config.ts`
+- **Signatures**:
+  ```typescript
+  export interface RouteMapping {
+    hostname: string;
+    targetPort: number;
+    path?: string;
+  }
+  export function generateTunnelConfig(params: {
+    tunnelId: string;
+    credentialsFile?: string;
+    routes: RouteMapping[];
+    controlPlaneFallback?: string;
+    catchAllService?: string;
+  }): string;
+  ```
+- **Guarantees**: Valid YAML, hostname validation, port bounds (1..65535), specific rules precedes wildcard `*.syncbay.app`, always ends with `service: http_status:404`.
 
-### DevOps & Deployment Engine ↔ Edge Router
-- `instantRollback(deploymentId: string)`:
-  - Updates target deployment to `ACTIVE`, previous to `SUPERSEDED`.
-  - Shifts edge domain routing to target deployment snapshot.
-  - Automatically invokes `purgeEdgeCache({ all: true })`.
-- `syncVariables(serviceId: string, variables: Record<string, string>, mode: "merge" | "overwrite")`
-- `purgeEdgeCache(options: { domain?: string, path?: string, tag?: string, all?: boolean })`
+### 3. `Edge Service Registry` ↔ `Next.js Edge Middleware`
+- **Location**: `src/lib/edge/service-registry.ts`
+- **Signatures**:
+  ```typescript
+  export function registerServiceRoute(hostname: string, targetPort: number, status: string, upstreamUrl?: string): void;
+  export function getServiceRoute(hostname: string): { status: string; targetPort?: number; upstreamUrl?: string } | null;
+  export function clearServiceRoutes(): void;
+  ```
+- **Edge Runtime Compatibility**: Zero Node.js native dependencies (`fs`, `child_process`, `net`, `@prisma/client`). 100% web-standard runtime compatible.
+
+### 4. `Knip Analyzer` ↔ `Engine Build Pipeline`
+- **Location**: `src/lib/buildpack/knip-analyzer.ts`
+- **Signatures**:
+  ```typescript
+  export interface KnipScanOptions {
+    rootDir?: string;
+    files: string[];
+    packageJsonContent?: string | object;
+  }
+  export interface KnipAnalysisResult {
+    unusedDependencies: string[];
+    unreferencedFiles: string[];
+    unusedExports: { file: string; exportName: string }[];
+    recommendations: string[];
+    formattedLogs: string[];
+  }
+  export function runKnipAnalysis(options: KnipScanOptions): Promise<KnipAnalysisResult>;
+  ```
+- **Guarantees**: Non-blocking. In `src/lib/orchestrator/engine.ts`, errors during Knip execution are caught and logged; builds never fail due to code quality warnings.
+
+---
 
 ## Code Layout
-- `src/app/`: Next.js 14 App Router routes and pages
-  - `src/app/dashboard/`: Dashboard views (`/dashboard`, `/dashboard/projects`, `/dashboard/databases`, `/dashboard/team`, `/dashboard/settings`)
-  - `src/app/pricing/`: Public pricing engine and comparison matrix
-  - `src/app/invite/[token]/`: Secure team invitation acceptance page
-  - `src/app/auth/`: Sign-in and authentication pages
-- `src/components/`: Reusable UI components (Sidebar, Topbar, Modals, ComparisonTable)
-- `src/lib/`: Core libraries (auth, prisma, edge router, devops)
-  - `src/lib/auth.ts`: NextAuth configuration
-  - `src/lib/edge/`: Edge POP routing, caching, and cache purging
-  - `src/lib/devops/`: Buildpack engine, WAF, metrics, rollback
-- `src/server/routers/`: tRPC backend routers (`workspace.ts`, `project.ts`, `deployment.ts`, `service.ts`, `devops.ts`)
-- `prisma/schema.prisma`: Prisma schema and SQLite database definitions
-- `tests/e2e/`: E2E test suite runners and test files
+
+```
+C:\dev\syncbay\
+├── src\
+│   ├── app\
+│   │   ├── service-preview\
+│   │   │   └── [subdomain]\
+│   │   │       └── page.tsx            (M1 & M5: Prisma relation fix & Cold-Start splash UI)
+│   ├── lib\
+│   │   ├── orchestrator\
+│   │   │   ├── pr-manager.ts           (M1: Domain registration, lifecycle, Octokit checks)
+│   │   │   ├── runner-driver.ts        (M2: Unified RunnerDriver & Webhook/Queue/SSH drivers)
+│   │   │   └── engine.ts               (M4: Knip integration in build phase)
+│   │   ├── tunnel\
+│   │   │   └── tunnel-config.ts        (M3: Cloudflare Tunnel ingress YAML generator)
+│   │   ├── edge\
+│   │   │   └── service-registry.ts     (M3: Edge-safe route & status store)
+│   │   └── buildpack\
+│   │       └── knip-analyzer.ts        (M4: Repository dead code & dependency analyzer)
+│   └── middleware.ts                   (M3: Next.js Edge Middleware active pass-through)
+├── runner\                             (M2: Standalone containerized runner agent)
+│   ├── package.json
+│   ├── Dockerfile
+│   └── src\
+│       ├── index.ts                    (Daemon entrypoint)
+│       ├── pipeline.ts                 (Build pipeline: Docker & Nixpacks)
+│       └── port-manager.ts             (Dynamic port allocation)
+└── tests\
+    └── e2e\                            (M6: End-to-end tests across Tiers 1-5)
+```

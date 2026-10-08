@@ -4,6 +4,7 @@ import { detectRuntime } from "@/lib/buildpack/detector";
 import { generateNixpacksPlan } from "@/lib/buildpack/nixpacks";
 import { resolveEnvironmentVariables, type DatabaseRef } from "@/lib/buildpack/resolver";
 import { generateDefaultSubdomain } from "@/lib/domain-service";
+import { runKnipAnalysis } from "@/lib/buildpack/knip-analyzer";
 
 export interface TriggerOptions {
   serviceId: string;
@@ -76,6 +77,24 @@ export async function executeDeployment(
       "src/index.ts",
     ]);
     log(`[nixpacks] Detected runtime: ${detected.language}${detected.framework ? ` (${detected.framework})` : ""} on Node.js v20`, "stdout");
+
+    // Phase 1.5: Knip Code Quality & Dead-Code Analysis (R4)
+    try {
+      const scanFiles = detected.detectedFiles && detected.detectedFiles.length > 0
+        ? detected.detectedFiles
+        : ["package.json", "tsconfig.json", "src/index.ts"];
+
+      const knipResult = await runKnipAnalysis({
+        rootDir: service?.rootDir || undefined,
+        files: scanFiles,
+      });
+
+      for (const logLine of knipResult.formattedLogs) {
+        log(logLine, "stdout");
+      }
+    } catch (knipError: any) {
+      log(`[knip] Code quality scan skipped: ${knipError?.message || knipError}`, "system");
+    }
 
     // Generate Nixpacks 4-phase plan
     const plan = generateNixpacksPlan(detected, {
