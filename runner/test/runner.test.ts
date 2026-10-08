@@ -4,9 +4,9 @@
 
 import assert from "node:assert";
 import test from "node:test";
-import { PortManager } from "../src/port-manager.ts";
-import { BuildPipeline, MockPipelineExecutor } from "../src/pipeline.ts";
-import { RunnerDaemon } from "../src/index.ts";
+import { PortManager } from "../src/port-manager";
+import { BuildPipeline, MockPipelineExecutor } from "../src/pipeline";
+import { RunnerDaemon } from "../src/index";
 
 test("PortManager: dynamic allocation, reservation, and collision detection", async () => {
   const pm = new PortManager({ rangeStart: 30000, rangeEnd: 30050 });

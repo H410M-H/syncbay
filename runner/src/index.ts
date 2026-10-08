@@ -11,8 +11,8 @@
 
 import http from "node:http";
 import crypto from "node:crypto";
-import { BuildPipeline, type PipelineResult } from "./pipeline.ts";
-import { PortManager, defaultPortManager } from "./port-manager.ts";
+import { BuildPipeline, type PipelineResult } from "./pipeline";
+import { PortManager, defaultPortManager } from "./port-manager";
 
 export interface DaemonConfig {
   port?: number;

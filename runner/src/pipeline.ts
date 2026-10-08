@@ -13,7 +13,7 @@ import { exec } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { PortManager, defaultPortManager } from "./port-manager.ts";
+import { PortManager, defaultPortManager } from "./port-manager";
 
 const execAsync = promisify(exec);
 

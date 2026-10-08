@@ -346,7 +346,6 @@ export async function handlePullRequestWebhook(event: GitHubPullRequestEvent) {
       results.push({
         serviceId: service.id,
         action: "cleaned_up",
-        prNumber,
         ...cleanupResult,
       });
       continue;
