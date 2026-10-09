@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import type { Metadata } from "next";
+import "./docs.css";
 
 const sections = [
   {
@@ -96,11 +96,6 @@ const fallbackContent = (topic: (typeof topics)[number]) => ({
   ],
 });
 
-export const metadata: Metadata = {
-  title: "Documentation",
-  description: "Complete Syncbay documentation for services, modules, configuration, APIs, CLI, integrations, and operations.",
-};
-
 export default function DocsPage() {
   const [activeId, setActiveId] = useState("overview");
   const [query, setQuery] = useState("");
@@ -144,9 +139,4 @@ export default function DocsPage() {
   );
 }
 
-export { sections, topics, content };
 
-import "./docs.css";
-
-export const dynamic = "force-static";
-export const revalidate = 3600;
