@@ -94,6 +94,7 @@ function ProjectConsoleContent() {
   const triggerDeployMutation = trpc.deployment.trigger.useMutation();
   const redeployMutation = trpc.deployment.redeploy.useMutation();
   const cancelDeployMutation = trpc.deployment.cancel.useMutation();
+  const instantRollbackMutation = trpc.deployment.instantRollback.useMutation();
   const setPausedMutation = trpc.service.setPaused.useMutation();
   const deleteServiceMutation = trpc.service.delete.useMutation();
   const setVariableMutation = trpc.service.setVariable.useMutation();
@@ -111,6 +112,7 @@ function ProjectConsoleContent() {
   const updateScalingMutation = trpc.service.updateScaling.useMutation();
   const [scalingServiceId, setScalingServiceId] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [openDeploymentMenuId, setOpenDeploymentMenuId] = useState<string | null>(null);
 
   const handleRestartService = async (serviceId: string) => {
     try {
@@ -461,6 +463,17 @@ function ProjectConsoleContent() {
       await refetchProject();
     } catch (e: any) {
       alert(`Cancel failed: ${e.message}`);
+    }
+  };
+
+  const handleInstantRollback = async (deploymentId: string) => {
+    try {
+      await instantRollbackMutation.mutateAsync({ deploymentId });
+      await refetchProject();
+      setActionNotice("Traffic rolled back to this deployment");
+      setTimeout(() => setActionNotice(null), 4000);
+    } catch (e: any) {
+      alert(`Rollback failed: ${e.message}`);
     }
   };
 
@@ -1177,43 +1190,91 @@ function ProjectConsoleContent() {
                         </td>
 
                         <td style={{ textAlign: "right" }}>
-                          <div style={{ display: "flex", justifyContent: "flex-end", gap: "6px" }}>
-                            <button
-                              onClick={() => {
-                                setSelectedServiceId(s.id);
-                                setSelectedDeploymentId(dep.id);
-                                handleTabChange("logs");
-                              }}
+                          <div style={{ display: "flex", justifyContent: "flex-end", gap: "6px", alignItems: "center" }}>
+                            <Link
+                              href={`/dashboard/deployments/${dep.id}`}
                               className="btn btn-secondary btn-sm"
                             >
-                              Logs
-                            </button>
-
-                            {isRunning ? (
+                              View deployment
+                            </Link>
+                            <div style={{ position: "relative" }}>
                               <button
-                                onClick={() => handleCancelDeploy(dep.id)}
-                                className="btn btn-danger btn-sm"
+                                type="button"
+                                className="btn btn-ghost btn-sm"
+                                aria-label={`Actions for deployment ${dep.id.slice(0, 8)}`}
+                                aria-expanded={openDeploymentMenuId === dep.id}
+                                onClick={() => setOpenDeploymentMenuId((current) => current === dep.id ? null : dep.id)}
                               >
-                                Cancel
+                                More
                               </button>
-                            ) : (
-                              <>
-                                <button
-                                  onClick={() => handleRedeploy(dep.id, false)}
-                                  className="btn btn-ghost btn-sm"
-                                  title="Fast Redeploy with cached build"
+                              {openDeploymentMenuId === dep.id && (
+                                <div
+                                  role="menu"
+                                  aria-label={`Deployment ${dep.id.slice(0, 8)} actions`}
+                                  style={{ position: "absolute", right: 0, top: "calc(100% + 6px)", zIndex: 20, minWidth: "180px", padding: "6px", border: "1px solid var(--border-subtle)", borderRadius: "10px", background: "var(--bg-elevated)", boxShadow: "var(--shadow-lg)", textAlign: "left" }}
                                 >
-                                  ↺ Redeploy
-                                </button>
-                                <button
-                                  onClick={() => handleRedeploy(dep.id, true)}
-                                  className="btn btn-secondary btn-sm"
-                                  title="Clean Rebuild: compile from scratch"
-                                >
-                                  ⚡ Rebuild
-                                </button>
-                              </>
-                            )}
+                                  <Link
+                                    href={`/dashboard/deployments/${dep.id}`}
+                                    role="menuitem"
+                                    className="btn btn-ghost btn-sm"
+                                    style={{ display: "block", width: "100%", textAlign: "left" }}
+                                    onClick={() => setOpenDeploymentMenuId(null)}
+                                  >
+                                    Overview
+                                  </Link>
+                                  <Link
+                                    href={`/dashboard/deployments/${dep.id}?view=logs`}
+                                    role="menuitem"
+                                    className="btn btn-ghost btn-sm"
+                                    style={{ display: "block", width: "100%", textAlign: "left" }}
+                                    onClick={() => setOpenDeploymentMenuId(null)}
+                                  >
+                                    View logs
+                                  </Link>
+                                  {isRunning ? (
+                                    <button
+                                      type="button"
+                                      role="menuitem"
+                                      onClick={() => { setOpenDeploymentMenuId(null); handleCancelDeploy(dep.id); }}
+                                      className="btn btn-ghost btn-sm"
+                                      style={{ display: "block", width: "100%", textAlign: "left" }}
+                                    >
+                                      Cancel deployment
+                                    </button>
+                                  ) : (
+                                    <>
+                                      <button
+                                        type="button"
+                                        role="menuitem"
+                                        onClick={() => { setOpenDeploymentMenuId(null); handleRedeploy(dep.id, false); }}
+                                        className="btn btn-ghost btn-sm"
+                                        style={{ display: "block", width: "100%", textAlign: "left" }}
+                                      >
+                                        Redeploy
+                                      </button>
+                                      <button
+                                        type="button"
+                                        role="menuitem"
+                                        onClick={() => { setOpenDeploymentMenuId(null); handleRedeploy(dep.id, true); }}
+                                        className="btn btn-ghost btn-sm"
+                                        style={{ display: "block", width: "100%", textAlign: "left" }}
+                                      >
+                                        Clean rebuild
+                                      </button>
+                                      <button
+                                        type="button"
+                                        role="menuitem"
+                                        onClick={() => { setOpenDeploymentMenuId(null); handleInstantRollback(dep.id); }}
+                                        className="btn btn-ghost btn-sm"
+                                        style={{ display: "block", width: "100%", textAlign: "left" }}
+                                      >
+                                        Roll back to this
+                                      </button>
+                                    </>
+                                  )}
+                                </div>
+                              )}
+                            </div>
                           </div>
                         </td>
                       </tr>
