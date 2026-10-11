@@ -9,7 +9,7 @@
  * 5. Health probe verification
  */
 
-import { exec, spawn, type ChildProcess } from "node:child_process";
+import { exec, execSync, spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { promisify } from "node:util";
@@ -210,15 +210,13 @@ export class MockPipelineExecutor implements PipelineExecutor {
 }
 
 function createDefaultExecutor(): PipelineExecutor {
-  if (process.env.VERCEL === "1" || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.AWS_EXECUTION_ENV) {
-    return new MockPipelineExecutor();
-  }
   try {
-    const { execSync } = require("node:child_process");
     execSync("git --version", { stdio: "ignore" });
+    console.log("[pipeline] Using DefaultPipelineExecutor");
     return new DefaultPipelineExecutor();
-  } catch {
-    return new MockPipelineExecutor();
+  } catch (err) {
+    console.error("[pipeline] Failed to init DefaultPipelineExecutor:", err);
+    return new DefaultPipelineExecutor(); // force it anyway
   }
 }
 
@@ -496,7 +494,15 @@ server.listen(port, "0.0.0.0", () => {
         const pkgPath = path.join(sourceDir, "package.json");
         const packageJsonExists = await this.executor.fileExists(pkgPath);
 
-        const execEnv = { ...process.env, ...options.environmentVariables };
+        // Prepend node_modules/.bin to PATH so that locally-installed binaries
+        // (next, vite, tsc, etc.) are discoverable when running build/start commands
+        const nmBin = path.join(sourceDir, "node_modules", ".bin");
+        const currentPath = process.env.PATH || "/usr/bin:/bin";
+        const execEnv: NodeJS.ProcessEnv = {
+          ...process.env,
+          ...options.environmentVariables,
+          PATH: `${nmBin}:${currentPath}`,
+        };
 
         if (packageJsonExists) {
           // Install dependencies first if not already present
@@ -679,6 +685,7 @@ server.listen(port, "0.0.0.0");
         const childEnv: NodeJS.ProcessEnv = {
           ...process.env,
           ...options.environmentVariables,
+          PATH: `${nmBin}:${currentPath}`,
           PORT: String(assignedPort),
           HTTP_PORT: String(assignedPort),
           SERVER_PORT: String(assignedPort),
