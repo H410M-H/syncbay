@@ -73,8 +73,26 @@ export class RunnerDaemon {
       return false;
     }
 
-    // Enforce strict numeric validation for timestamp (missing, non-numeric, or expired is rejected)
-    return true;
+    if (!timestampHeader || !/^\d+$/.test(timestampHeader)) {
+      return false;
+    }
+
+    const timestamp = Number(timestampHeader);
+    if (!Number.isSafeInteger(timestamp) || Math.abs(Date.now() - timestamp) > 300000) {
+      return false;
+    }
+
+    const expected = crypto
+      .createHmac("sha256", this.webhookSecret)
+      .update(`${timestampHeader}.${body}`)
+      .digest("hex");
+    const provided = signatureHeader.replace(/^sha256=/, "").trim();
+
+    if (!/^[a-f0-9]{64}$/i.test(provided)) {
+      return false;
+    }
+
+    return crypto.timingSafeEqual(Buffer.from(provided, "hex"), Buffer.from(expected, "hex"));
   }
 
   /**

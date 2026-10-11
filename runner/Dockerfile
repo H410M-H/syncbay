@@ -61,8 +61,9 @@ RUN mkdir -p ${WORKSPACE_DIR} ${APP_DIR}
 
 WORKDIR ${APP_DIR}
 
-# Copy runner application files
+# Install the TypeScript runtime used by the source entrypoint
 COPY package.json ./
+RUN npm install --omit=dev
 COPY src/ ./src/
 
 # Environment Configuration
@@ -81,4 +82,4 @@ EXPOSE 8080
 EXPOSE 10000-60000
 
 # Entrypoint: Start runner daemon
-ENTRYPOINT ["node", "src/index.js"]
+ENTRYPOINT ["./node_modules/.bin/tsx", "src/index.ts"]
