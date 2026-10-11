@@ -156,7 +156,31 @@ function ProjectConsoleContent() {
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [sseConnected, setSseConnected] = useState(false);
   const [autoScrollLogs, setAutoScrollLogs] = useState(true);
+  const [logFilterStream, setLogFilterStream] = useState<"all" | "stdout" | "stderr" | "system">("all");
+  const [logSearchQuery, setLogSearchQuery] = useState<string>("");
   const terminalBottomRef = useRef<HTMLDivElement>(null);
+
+  // Filtered log lines based on selected stream and search keyword
+  const filteredLogs = useMemo(() => {
+    return logs.filter((l) => {
+      if (logFilterStream !== "all" && l.stream !== logFilterStream) return false;
+      if (logSearchQuery.trim()) {
+        const q = logSearchQuery.toLowerCase();
+        return l.message.toLowerCase().includes(q);
+      }
+      return true;
+    });
+  }, [logs, logFilterStream, logSearchQuery]);
+
+  // Detected build / compile error
+  const buildError = useMemo(() => {
+    if ((activeDeployment as any)?.errorMessage) return (activeDeployment as any).errorMessage;
+    const errLog = logs.find((l) => l.message.includes("[build:error]") || l.message.includes("[error] Deployment failed"));
+    if (errLog) {
+      return errLog.message.replace(/^\[.*?\]\s*/, "");
+    }
+    return null;
+  }, [activeDeployment, logs]);
 
   // Fetch initial logs buffer via tRPC
   const { data: initialLogs } = trpc.deployment.logs.useQuery(
@@ -421,9 +445,9 @@ function ProjectConsoleContent() {
     }
   };
 
-  const handleRedeploy = async (deploymentId: string) => {
+  const handleRedeploy = async (deploymentId: string, rebuild: boolean = false) => {
     try {
-      await redeployMutation.mutateAsync({ deploymentId });
+      await redeployMutation.mutateAsync({ deploymentId, rebuild });
       await refetchProject();
       handleTabChange("logs");
     } catch (e: any) {
@@ -1119,6 +1143,27 @@ function ProjectConsoleContent() {
                           <div style={{ fontSize: "0.8125rem", color: "var(--text-secondary)" }}>
                             {dep.build?.commitMessage || "Triggered via console"}
                           </div>
+                          {(dep as any).errorMessage && (
+                            <div
+                              style={{
+                                marginTop: "4px",
+                                padding: "4px 8px",
+                                background: "rgba(239, 68, 68, 0.12)",
+                                border: "1px solid rgba(239, 68, 68, 0.3)",
+                                borderRadius: "4px",
+                                color: "#f87171",
+                                fontSize: "0.75rem",
+                                fontFamily: "monospace",
+                                maxWidth: "380px",
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                              }}
+                              title={(dep as any).errorMessage}
+                            >
+                              ⚠️ {(dep as any).errorMessage}
+                            </div>
+                          )}
                         </td>
 
                         <td>
@@ -1132,7 +1177,7 @@ function ProjectConsoleContent() {
                         </td>
 
                         <td style={{ textAlign: "right" }}>
-                          <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px" }}>
+                          <div style={{ display: "flex", justifyContent: "flex-end", gap: "6px" }}>
                             <button
                               onClick={() => {
                                 setSelectedServiceId(s.id);
@@ -1152,13 +1197,22 @@ function ProjectConsoleContent() {
                                 Cancel
                               </button>
                             ) : (
-                              <button
-                                onClick={() => handleRedeploy(dep.id)}
-                                className="btn btn-ghost btn-sm"
-                                title="Rollback / Redeploy"
-                              >
-                                ↺ Rollback
-                              </button>
+                              <>
+                                <button
+                                  onClick={() => handleRedeploy(dep.id, false)}
+                                  className="btn btn-ghost btn-sm"
+                                  title="Fast Redeploy with cached build"
+                                >
+                                  ↺ Redeploy
+                                </button>
+                                <button
+                                  onClick={() => handleRedeploy(dep.id, true)}
+                                  className="btn btn-secondary btn-sm"
+                                  title="Clean Rebuild: compile from scratch"
+                                >
+                                  ⚡ Rebuild
+                                </button>
+                              </>
                             )}
                           </div>
                         </td>
@@ -1173,144 +1227,304 @@ function ProjectConsoleContent() {
       )}
 
       {/* ════════════════════════════════════════════════════════════════════════
-          TAB 3: LIVE LOGS (SSE TERMINAL)
+          TAB 3: LIVE LOGS (SSE TERMINAL & BUILD ERROR VIEWER)
       ════════════════════════════════════════════════════════════════════════ */}
       {activeTab === "logs" && (
-        <div className="card" style={{ padding: "0", overflow: "hidden" }}>
-          {/* Terminal Toolbar */}
-          <div
-            style={{
-              padding: "12px 16px",
-              background: "var(--bg-elevated)",
-              borderBottom: "1px solid var(--border-subtle)",
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              flexWrap: "wrap",
-              gap: "12px",
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-              <div style={{ display: "flex", gap: "6px" }}>
-                <span style={{ width: "10px", height: "10px", borderRadius: "50%", background: "#ef4444", display: "inline-block" }} />
-                <span style={{ width: "10px", height: "10px", borderRadius: "50%", background: "#f59e0b", display: "inline-block" }} />
-                <span style={{ width: "10px", height: "10px", borderRadius: "50%", background: "#22c55e", display: "inline-block" }} />
-              </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+          {/* Vercel-Style Deployment Summary Header Card */}
+          {activeDeployment && (
+            <div className="card" style={{ padding: "16px 20px", background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "16px" }}>
+                <div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "6px" }}>
+                    <span style={{ fontSize: "1.1rem", fontWeight: 700 }}>
+                      Deployment {activeDeployment.id.slice(0, 8)}
+                    </span>
+                    <span
+                      className={`badge ${
+                        activeDeployment.status === "ACTIVE"
+                          ? "badge-active"
+                          : activeDeployment.status === "BUILDING" || activeDeployment.status === "DEPLOYING"
+                          ? "badge-building"
+                          : activeDeployment.status === "FAILED" || activeDeployment.status === "CRASHED"
+                          ? "badge-failed"
+                          : "badge-queued"
+                      }`}
+                      style={{ fontSize: "0.75rem", textTransform: "uppercase" }}
+                    >
+                      {activeDeployment.status}
+                    </span>
+                    <span className="badge badge-queued" style={{ fontSize: "0.6875rem" }}>
+                      {defaultEnv?.name || "production"}
+                    </span>
+                  </div>
 
-              {/* Service & Deployment Pickers */}
-              <select
-                className="input"
-                style={{ width: "auto", padding: "4px 8px", fontSize: "0.8125rem", height: "auto" }}
-                value={activeService?.id}
-                onChange={(e) => {
-                  setSelectedServiceId(e.target.value);
-                  const svc = defaultEnv?.services?.find((s) => s.id === e.target.value);
-                  if (svc?.deployments?.[0]) {
-                    setSelectedDeploymentId(svc.deployments[0].id);
-                  }
+                  <div style={{ display: "flex", alignItems: "center", gap: "16px", flexWrap: "wrap", fontSize: "0.8125rem", color: "var(--text-secondary)" }}>
+                    <div>
+                      <strong>Commit:</strong> <code>{activeDeployment.build?.commitSha?.substring(0, 7) || "manual"}</code> {activeDeployment.build?.commitMessage && `— "${activeDeployment.build.commitMessage}"`}
+                    </div>
+                    <div>
+                      <strong>Service:</strong> {activeService?.name}
+                    </div>
+                    <div>
+                      <strong>Triggered:</strong> {new Date(activeDeployment.createdAt).toLocaleString()}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Redeploy Action Buttons */}
+                <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                  <button
+                    onClick={() => handleRedeploy(activeDeployment.id, false)}
+                    className="btn btn-ghost btn-sm"
+                    title="Redeploy with cached build"
+                  >
+                    ↺ Fast Redeploy
+                  </button>
+                  <button
+                    onClick={() => handleRedeploy(activeDeployment.id, true)}
+                    className="btn btn-primary btn-sm"
+                    title="Clean Rebuild: compile from scratch"
+                  >
+                    ⚡ Clean Rebuild
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Vercel-Style Build Error Banner */}
+          {buildError && (
+            <div
+              style={{
+                background: "rgba(239, 68, 68, 0.08)",
+                border: "1px solid rgba(239, 68, 68, 0.35)",
+                borderRadius: "var(--radius-md)",
+                padding: "16px 20px",
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px", marginBottom: "8px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "#f87171", fontWeight: 700 }}>
+                  <span style={{ fontSize: "1.1rem" }}>⚠️</span>
+                  <span>Build / Compilation Failed</span>
+                </div>
+                {activeDeployment && (
+                  <button
+                    onClick={() => handleRedeploy(activeDeployment.id, true)}
+                    className="btn btn-danger btn-sm"
+                    style={{ fontSize: "0.75rem" }}
+                  >
+                    ⚡ Re-run Build
+                  </button>
+                )}
+              </div>
+              <p style={{ fontSize: "0.8125rem", color: "var(--text-secondary)", marginBottom: "10px" }}>
+                The application build or execution pipeline encountered the following error during compilation:
+              </p>
+              <pre
+                style={{
+                  background: "#08080c",
+                  color: "#f87171",
+                  padding: "12px 14px",
+                  borderRadius: "6px",
+                  border: "1px solid rgba(239, 68, 68, 0.2)",
+                  fontSize: "0.8125rem",
+                  fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-all",
+                  maxHeight: "220px",
+                  overflowY: "auto",
+                  margin: 0,
                 }}
               >
-                {defaultEnv?.services?.map((svc) => (
-                  <option key={svc.id} value={svc.id}>
-                    Service: {svc.name}
-                  </option>
-                ))}
-              </select>
+                {buildError}
+              </pre>
+            </div>
+          )}
 
-              {activeService?.deployments && (
+          {/* Terminal & Logs Container */}
+          <div className="card" style={{ padding: "0", overflow: "hidden" }}>
+            {/* Terminal Toolbar */}
+            <div
+              style={{
+                padding: "12px 16px",
+                background: "var(--bg-elevated)",
+                borderBottom: "1px solid var(--border-subtle)",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: "12px",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+                <div style={{ display: "flex", gap: "6px" }}>
+                  <span style={{ width: "10px", height: "10px", borderRadius: "50%", background: "#ef4444", display: "inline-block" }} />
+                  <span style={{ width: "10px", height: "10px", borderRadius: "50%", background: "#f59e0b", display: "inline-block" }} />
+                  <span style={{ width: "10px", height: "10px", borderRadius: "50%", background: "#22c55e", display: "inline-block" }} />
+                </div>
+
+                {/* Service & Deployment Pickers */}
                 <select
                   className="input"
                   style={{ width: "auto", padding: "4px 8px", fontSize: "0.8125rem", height: "auto" }}
-                  value={activeDeployment?.id}
-                  onChange={(e) => setSelectedDeploymentId(e.target.value)}
+                  value={activeService?.id}
+                  onChange={(e) => {
+                    setSelectedServiceId(e.target.value);
+                    const svc = defaultEnv?.services?.find((s) => s.id === e.target.value);
+                    if (svc?.deployments?.[0]) {
+                      setSelectedDeploymentId(svc.deployments[0].id);
+                    }
+                  }}
                 >
-                  {activeService.deployments.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      Deploy: {d.id.slice(0, 8)} ({d.status})
+                  {defaultEnv?.services?.map((svc) => (
+                    <option key={svc.id} value={svc.id}>
+                      Service: {svc.name}
                     </option>
                   ))}
                 </select>
-              )}
 
-              <span
-                className={`badge ${sseConnected ? "badge-active" : "badge-queued"}`}
-                style={{ fontSize: "0.6875rem" }}
-              >
-                {sseConnected ? "● Live SSE Connected" : "○ Disconnected"}
-              </span>
-            </div>
+                {activeService?.deployments && (
+                  <select
+                    className="input"
+                    style={{ width: "auto", padding: "4px 8px", fontSize: "0.8125rem", height: "auto" }}
+                    value={activeDeployment?.id}
+                    onChange={(e) => setSelectedDeploymentId(e.target.value)}
+                  >
+                    {activeService.deployments.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        Deploy: {d.id.slice(0, 8)} ({d.status})
+                      </option>
+                    ))}
+                  </select>
+                )}
 
-            <div style={{ display: "flex", gap: "8px" }}>
-              <button
-                onClick={() => setAutoScrollLogs(!autoScrollLogs)}
-                className={`btn btn-sm ${autoScrollLogs ? "btn-secondary" : "btn-ghost"}`}
-                style={{ fontSize: "0.75rem" }}
-              >
-                {autoScrollLogs ? "Autoscroll ON" : "Autoscroll OFF"}
-              </button>
-              <button
-                onClick={() => setLogs([])}
-                className="btn btn-ghost btn-sm"
-                style={{ fontSize: "0.75rem" }}
-              >
-                Clear
-              </button>
-              <button
-                onClick={() => {
-                  const text = logs.map((l) => `[${l.timestamp}] [${l.stream}] ${l.message}`).join("\n");
-                  navigator.clipboard.writeText(text);
-                  alert("Copied logs to clipboard");
-                }}
-                className="btn btn-ghost btn-sm"
-                style={{ fontSize: "0.75rem" }}
-              >
-                Copy Logs
-              </button>
-            </div>
-          </div>
-
-          {/* Terminal Output Area */}
-          <div
-            style={{
-              background: "#08080c",
-              padding: "16px",
-              height: "440px",
-              overflowY: "auto",
-              fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
-              fontSize: "0.8125rem",
-              lineHeight: 1.5,
-              color: "#e2e8f0",
-            }}
-          >
-            {logs.length === 0 ? (
-              <div style={{ color: "var(--text-muted)", padding: "20px 0" }}>
-                Listening for container output and build steps via Server-Sent Events...
+                <span
+                  className={`badge ${sseConnected ? "badge-active" : "badge-queued"}`}
+                  style={{ fontSize: "0.6875rem" }}
+                >
+                  {sseConnected ? "● Live SSE Connected" : "○ Disconnected"}
+                </span>
               </div>
-            ) : (
-              logs.map((log) => {
-                const streamColor =
-                  log.stream === "stderr"
-                    ? "#f87171"
-                    : log.stream === "system"
-                    ? "#60a5fa"
-                    : "#4ade80";
 
-                return (
-                  <div key={log.id} style={{ display: "flex", gap: "8px", marginBottom: "2px" }}>
-                    <span style={{ color: "#475569", flexShrink: 0 }}>
-                      {new Date(log.timestamp).toLocaleTimeString([], { hour12: false })}
-                    </span>
-                    <span style={{ color: streamColor, width: "50px", flexShrink: 0, fontWeight: 600 }}>
-                      [{log.stream}]
-                    </span>
-                    <span style={{ whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
-                      {log.message}
-                    </span>
-                  </div>
-                );
-              })
-            )}
-            <div ref={terminalBottomRef} />
+              {/* Stream Filters, Search & Controls */}
+              <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+                {/* Search Box */}
+                <input
+                  type="text"
+                  placeholder="Filter logs..."
+                  value={logSearchQuery}
+                  onChange={(e) => setLogSearchQuery(e.target.value)}
+                  className="input"
+                  style={{ width: "140px", padding: "4px 8px", fontSize: "0.75rem", height: "auto" }}
+                />
+
+                {/* Stream Filter Buttons */}
+                <div style={{ display: "flex", borderRadius: "4px", overflow: "hidden", border: "1px solid var(--border-subtle)" }}>
+                  {(["all", "stderr", "system", "stdout"] as const).map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => setLogFilterStream(s)}
+                      style={{
+                        padding: "3px 8px",
+                        fontSize: "0.7rem",
+                        border: "none",
+                        background: logFilterStream === s ? "var(--brand-accent)" : "transparent",
+                        color: logFilterStream === s ? "#fff" : "var(--text-muted)",
+                        cursor: "pointer",
+                      }}
+                    >
+                      {s === "all" ? "All" : s === "stderr" ? "Errors" : s === "system" ? "System" : "App"}
+                    </button>
+                  ))}
+                </div>
+
+                <button
+                  onClick={() => setAutoScrollLogs(!autoScrollLogs)}
+                  className={`btn btn-sm ${autoScrollLogs ? "btn-secondary" : "btn-ghost"}`}
+                  style={{ fontSize: "0.75rem" }}
+                >
+                  {autoScrollLogs ? "Autoscroll ON" : "Autoscroll OFF"}
+                </button>
+                <button
+                  onClick={() => setLogs([])}
+                  className="btn btn-ghost btn-sm"
+                  style={{ fontSize: "0.75rem" }}
+                >
+                  Clear
+                </button>
+                <button
+                  onClick={() => {
+                    const text = filteredLogs.map((l) => `[${l.timestamp}] [${l.stream}] ${l.message}`).join("\n");
+                    navigator.clipboard.writeText(text);
+                    alert("Copied logs to clipboard");
+                  }}
+                  className="btn btn-ghost btn-sm"
+                  style={{ fontSize: "0.75rem" }}
+                >
+                  Copy Logs
+                </button>
+              </div>
+            </div>
+
+            {/* Terminal Output Area */}
+            <div
+              style={{
+                background: "#08080c",
+                padding: "16px",
+                height: "460px",
+                overflowY: "auto",
+                fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+                fontSize: "0.8125rem",
+                lineHeight: 1.5,
+                color: "#e2e8f0",
+              }}
+            >
+              {filteredLogs.length === 0 ? (
+                <div style={{ color: "var(--text-muted)", padding: "20px 0" }}>
+                  {logs.length === 0
+                    ? "Listening for container output and build steps via Server-Sent Events..."
+                    : "No log lines matching current filter."}
+                </div>
+              ) : (
+                filteredLogs.map((log) => {
+                  const isBuildError = log.message.includes("[build:error]") || (log.stream === "stderr" && log.message.toLowerCase().includes("error"));
+                  const streamColor =
+                    isBuildError
+                      ? "#f87171"
+                      : log.stream === "stderr"
+                      ? "#f87171"
+                      : log.stream === "system"
+                      ? "#60a5fa"
+                      : "#4ade80";
+
+                  return (
+                    <div
+                      key={log.id}
+                      style={{
+                        display: "flex",
+                        gap: "8px",
+                        marginBottom: "2px",
+                        background: isBuildError ? "rgba(239, 68, 68, 0.08)" : undefined,
+                        padding: isBuildError ? "2px 4px" : undefined,
+                        borderRadius: "2px",
+                      }}
+                    >
+                      <span style={{ color: "#475569", flexShrink: 0 }}>
+                        {new Date(log.timestamp).toLocaleTimeString([], { hour12: false })}
+                      </span>
+                      <span style={{ color: streamColor, width: "56px", flexShrink: 0, fontWeight: 600 }}>
+                        [{isBuildError ? "error" : log.stream}]
+                      </span>
+                      <span style={{ whiteSpace: "pre-wrap", wordBreak: "break-all", color: isBuildError ? "#fca5a5" : undefined }}>
+                        {log.message}
+                      </span>
+                    </div>
+                  );
+                })
+              )}
+              <div ref={terminalBottomRef} />
+            </div>
           </div>
         </div>
       )}

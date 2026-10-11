@@ -34,7 +34,10 @@ export const deploymentRouter = createTRPCRouter({
         },
       });
       if (!deployment) throw new TRPCError({ code: "NOT_FOUND" });
-      return deployment;
+      return {
+        ...deployment,
+        errorMessage: logEventBus.getError(deployment.id) || null,
+      };
     }),
 
   /** Get live or historical log lines for a deployment */
@@ -50,7 +53,7 @@ export const deploymentRouter = createTRPCRouter({
       z.object({ serviceId: z.string(), limit: z.number().default(20) })
     )
     .query(async ({ ctx, input }) => {
-      return ctx.db.deployment.findMany({
+      const deployments = await ctx.db.deployment.findMany({
         where: {
           serviceId: input.serviceId,
           service: {
@@ -67,13 +70,17 @@ export const deploymentRouter = createTRPCRouter({
         orderBy: { createdAt: "desc" },
         take: input.limit,
       });
+      return deployments.map((d) => ({
+        ...d,
+        errorMessage: logEventBus.getError(d.id) || null,
+      }));
     }),
 
   /** Get current/latest deployment for a service */
   latest: protectedProcedure
     .input(z.object({ serviceId: z.string() }))
     .query(async ({ ctx, input }) => {
-      return ctx.db.deployment.findFirst({
+      const deployment = await ctx.db.deployment.findFirst({
         where: {
           serviceId: input.serviceId,
           service: {
@@ -89,6 +96,11 @@ export const deploymentRouter = createTRPCRouter({
         include: { build: true },
         orderBy: { createdAt: "desc" },
       });
+      if (!deployment) return null;
+      return {
+        ...deployment,
+        errorMessage: logEventBus.getError(deployment.id) || null,
+      };
     }),
 
   /**
@@ -158,9 +170,14 @@ export const deploymentRouter = createTRPCRouter({
       return { build, deployment };
     }),
 
-  /** Rollback to a previous deployment — FR-DEP-04 */
+  /** Rollback / Redeploy to a previous deployment — FR-DEP-04 (with optional clean rebuild) */
   redeploy: protectedProcedure
-    .input(z.object({ deploymentId: z.string() }))
+    .input(
+      z.object({
+        deploymentId: z.string(),
+        rebuild: z.boolean().optional(),
+      })
+    )
     .mutation(async ({ ctx, input }) => {
       const prev = await ctx.db.deployment.findFirst({
         where: {
@@ -184,20 +201,41 @@ export const deploymentRouter = createTRPCRouter({
       });
       if (!prev) throw new TRPCError({ code: "NOT_FOUND" });
 
-      // Reuse cached build image — FR-BLD-07
+      let targetBuildId = prev.buildId;
+      const shouldRebuild = input.rebuild || !prev.build || prev.build.status === "FAILED";
+
+      if (shouldRebuild) {
+        const newBuild = await ctx.db.build.create({
+          data: {
+            serviceId: prev.serviceId,
+            commitSha: prev.build?.commitSha || Math.random().toString(16).slice(2, 9),
+            commitMessage: prev.build?.commitMessage
+              ? `Rebuild: ${prev.build.commitMessage}`
+              : `Redeploy with fresh build of ${prev.id.slice(0, 8)}`,
+            triggeredBy: ctx.session.user.id,
+            status: "QUEUED",
+          },
+        });
+        targetBuildId = newBuild.id;
+      }
+
+      // Create new deployment
       const deployment = await ctx.db.deployment.create({
         data: {
           serviceId: prev.serviceId,
-          buildId: prev.buildId,
+          buildId: targetBuildId,
           triggeredBy: ctx.session.user.id,
           status: "QUEUED",
         },
       });
 
-      executeDeployment(deployment.id, prev.buildId, prev.serviceId, {
+      executeDeployment(deployment.id, targetBuildId, prev.serviceId, {
         serviceId: prev.serviceId,
         commitSha: prev.build?.commitSha || undefined,
-        commitMessage: `Rollback to deployment ${prev.id.slice(0, 8)}`,
+        commitMessage: shouldRebuild
+          ? `Clean rebuild of deployment ${prev.id.slice(0, 8)}`
+          : `Fast redeploy of deployment ${prev.id.slice(0, 8)}`,
+        cleanBuild: shouldRebuild,
         userId: ctx.session.user.id,
       }).catch((err) => {
         console.error("Redeploy error:", err);

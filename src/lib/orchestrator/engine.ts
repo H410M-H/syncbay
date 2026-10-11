@@ -16,6 +16,7 @@ export interface TriggerOptions {
   commitSha?: string;
   commitMessage?: string;
   userId?: string;
+  cleanBuild?: boolean;
   driverType?: "LOCAL" | "CLOUD" | "webhook" | "queue" | "ssh" | "local";
 }
 
@@ -197,6 +198,33 @@ export async function executeDeployment(
     const driver = getRunnerDriver(options.driverType);
     log(`[runner] Executing deployment via ${driver.type.toUpperCase()} runner driver...`, "system");
 
+    const dispatchOnLog = (line: string) => {
+      let stream: "stdout" | "stderr" | "system" = "stdout";
+      const trimmed = line.trim();
+      if (
+        trimmed.includes("[build:error]") ||
+        trimmed.includes("[app:error]") ||
+        trimmed.includes("[app:stderr]") ||
+        trimmed.includes("[error]") ||
+        trimmed.startsWith("Error:") ||
+        /error:\s+/i.test(trimmed)
+      ) {
+        stream = "stderr";
+      } else if (
+        trimmed.startsWith("[pipeline]") ||
+        trimmed.startsWith("[runner]") ||
+        trimmed.startsWith("[build]") ||
+        trimmed.startsWith("[deploy]") ||
+        trimmed.startsWith("[proxy]") ||
+        trimmed.startsWith("[syncbay]") ||
+        trimmed.startsWith("[health]") ||
+        trimmed.startsWith("[env]")
+      ) {
+        stream = "system";
+      }
+      log(line, stream);
+    };
+
     const dispatchParams: BuildDispatchParams = {
       deploymentId,
       buildId,
@@ -212,9 +240,10 @@ export async function executeDeployment(
       dockerfile: service?.dockerImage || undefined,
       port: service?.port || 3000,
       targetPort: service?.port || 3000,
+      cleanBuild: options.cleanBuild,
       environmentVariables: envMap,
       subdomain: defaultUrl,
-      onLog: (line: string) => log(line, "stdout"),
+      onLog: dispatchOnLog,
     };
 
     const dispatchRes = await driver.dispatchBuild(dispatchParams);
@@ -222,25 +251,41 @@ export async function executeDeployment(
     let finalStatus = dispatchRes.status;
     let assignedPort = dispatchRes.assignedPort || service?.port || 3000;
     let containerId = dispatchRes.containerId;
+    let lastErrorMessage: string | undefined;
 
     if (finalStatus !== "ACTIVE" && finalStatus !== "FAILED" && finalStatus !== "CANCELLED") {
       log(`[runner] Build job ${dispatchRes.jobId} enqueued/running. Awaiting completion...`, "system");
       const pollStart = Date.now();
       const timeoutMs = 120000;
+      let lastLogCount = 0;
       while (Date.now() - pollStart < timeoutMs) {
         await new Promise((r) => setTimeout(r, 1000));
         const check = await driver.checkStatus(dispatchRes.jobId);
         finalStatus = check.status;
         if (check.port) assignedPort = check.port;
         if (check.containerId) containerId = check.containerId;
+        if (check.errorMessage) lastErrorMessage = check.errorMessage;
+
+        // Relay remote runner daemon logs to event bus
+        if (check.logs && Array.isArray(check.logs) && check.logs.length > lastLogCount) {
+          for (let i = lastLogCount; i < check.logs.length; i++) {
+            dispatchOnLog(check.logs[i]);
+          }
+          lastLogCount = check.logs.length;
+        }
+
         if (finalStatus === "ACTIVE" || finalStatus === "FAILED" || finalStatus === "CANCELLED") {
+          if (check.errorMessage) {
+            logEventBus.recordError(deploymentId, check.errorMessage);
+          }
           break;
         }
       }
     }
 
     if (finalStatus !== "ACTIVE") {
-      throw new Error(`Runner build failed with status: ${finalStatus}`);
+      const err = lastErrorMessage || logEventBus.getError(deploymentId) || `Runner build failed with status: ${finalStatus}`;
+      throw new Error(err);
     }
 
     const targetPort = assignedPort || service?.port || 3000;
@@ -249,13 +294,17 @@ export async function executeDeployment(
     // Phase 3: Blue/Green Health Check Verification
     const healthPath = (service as any)?.healthCheckUrl || "/health";
     log(`[health] Running blue/green health probe on port ${targetPort}${healthPath}...`, "stdout");
-    const primaryProbeUrl = `http://127.0.0.1:${targetPort}${healthPath}`;
-    const rootProbeUrl = `http://127.0.0.1:${targetPort}/`;
+    const runnerUrlStr = process.env.RUNNER_URL ? process.env.RUNNER_URL.replace(/\/$/, '') : `http://127.0.0.1:${targetPort}`;
+    const primaryProbeUrl = process.env.RUNNER_URL ? `${runnerUrlStr}${healthPath}` : `http://127.0.0.1:${targetPort}${healthPath}`;
+    const rootProbeUrl = process.env.RUNNER_URL ? `${runnerUrlStr}/` : `http://127.0.0.1:${targetPort}/`;
     let isHealthy = false;
 
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 25; i++) {
       try {
-        const res = await fetch(primaryProbeUrl, { signal: AbortSignal.timeout(1000) });
+        const res = await fetch(primaryProbeUrl, { 
+          signal: AbortSignal.timeout(1000),
+          headers: process.env.RUNNER_URL ? { 'x-target-port': String(targetPort) } : undefined
+        });
         if (res.status >= 200 && res.status < 500) {
           isHealthy = true;
           log(`[health] Health check passed on ${primaryProbeUrl} (HTTP ${res.status})`, "stdout");
@@ -263,7 +312,10 @@ export async function executeDeployment(
         }
       } catch {
         try {
-          const resRoot = await fetch(rootProbeUrl, { signal: AbortSignal.timeout(1000) });
+          const resRoot = await fetch(rootProbeUrl, { 
+            signal: AbortSignal.timeout(1000),
+            headers: process.env.RUNNER_URL ? { 'x-target-port': String(targetPort) } : undefined
+          });
           if (resRoot.status >= 200 && resRoot.status < 500) {
             isHealthy = true;
             log(`[health] Health check passed on root fallback ${rootProbeUrl} (HTTP ${resRoot.status})`, "stdout");
@@ -308,6 +360,7 @@ export async function executeDeployment(
     return { status: "ACTIVE", url: `https://${defaultUrl}`, port: targetPort, containerId };
   } catch (error: any) {
     log(`[error] Deployment failed: ${error.message}`, "stderr");
+    logEventBus.recordError(deploymentId, error.message);
 
     for (const host of targetHostnames) {
       registerServiceRoute(host, undefined, "FAILED");

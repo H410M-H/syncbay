@@ -48,3 +48,4 @@ graphify-out/cache/
 
 # runner workspaces
 .runner_workspace/
+.runner_logs/

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { createTRPCRouter, protectedProcedure } from "@/server/trpc";
 import { TRPCError } from "@trpc/server";
+import { logEventBus } from "@/lib/telemetry/event-bus";
 
 /** Helper — verify caller is a member of the workspace containing this project */
 async function assertProjectAccess(
@@ -40,7 +41,19 @@ async function assertProjectAccess(
     },
   });
   if (!project) throw new TRPCError({ code: "NOT_FOUND" });
-  return project;
+  return {
+    ...project,
+    environments: project.environments.map((env) => ({
+      ...env,
+      services: env.services.map((svc) => ({
+        ...svc,
+        deployments: svc.deployments.map((dep) => ({
+          ...dep,
+          errorMessage: logEventBus.getError(dep.id) || null,
+        })),
+      })),
+    })),
+  };
 }
 
 import type { TRPCContext } from "@/server/trpc";

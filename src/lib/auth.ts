@@ -1,5 +1,6 @@
 import NextAuth, { NextAuthOptions, getServerSession } from "next-auth";
 import GitHubProvider from "next-auth/providers/github";
+import GoogleProvider from "next-auth/providers/google";
 import CredentialsProvider from "next-auth/providers/credentials";
 import { PrismaAdapter } from "@next-auth/prisma-adapter";
 import { db } from "@/lib/db";
@@ -12,6 +13,11 @@ export const authOptions: NextAuthOptions = {
     strategy: "jwt",
   },
   providers: [
+    GoogleProvider({
+      clientId: process.env.GOOGLE_CLIENT_ID ?? "",
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",
+      allowDangerousEmailAccountLinking: true,
+    }),
     GitHubProvider({
       clientId: process.env.GITHUB_CLIENT_ID ?? "",
       clientSecret: process.env.GITHUB_CLIENT_SECRET ?? "",
@@ -113,7 +119,7 @@ export const authOptions: NextAuthOptions = {
       if (user) {
         token.id = user.id;
       }
-      if (account?.provider === "github" && account.access_token) {
+      if ((account?.provider === "github" || account?.provider === "google") && account.access_token) {
         token.accessToken = account.access_token;
         const targetUserId = user?.id || (token.id as string);
         if (targetUserId) {
@@ -146,7 +152,7 @@ export const authOptions: NextAuthOptions = {
               },
             });
           } catch (error) {
-            console.error("[auth] Failed to persist GitHub account tokens:", error);
+            console.error("[auth] Failed to persist OAuth account tokens:", error);
           }
         }
       }

@@ -31,6 +31,7 @@ export async function validateBearerToken(
     throw new Error("Empty API token provided");
   }
 
+
   // Tokens start with pw_live_ or sb_live_
   const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
 

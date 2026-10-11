@@ -78,6 +78,7 @@ export interface BuildDispatchParams {
   hostPort?: number;
   containerPort?: number;
   targetPort?: number;
+  cleanBuild?: boolean;
   environmentVariables?: Record<string, string>;
   subdomain?: string;
   callbackUrl?: string;
@@ -386,6 +387,7 @@ export class WebhookRunnerDriver implements RunnerDriver {
       startCommand: params.startCommand,
       dockerfile: params.dockerfile,
       port: params.port,
+      cleanBuild: params.cleanBuild,
       environmentVariables: params.environmentVariables,
       subdomain: params.subdomain,
       callbackUrl: params.callbackUrl,
@@ -1161,7 +1163,7 @@ export class SshRunnerDriver implements RunnerDriver {
 
 export class LocalRunnerDriver implements RunnerDriver {
   public readonly type: RunnerDriverType = "local";
-  private containers: Map<string, { status: RunnerBuildStatus; port: number; containerId?: string }> = new Map();
+  private containers: Map<string, { status: RunnerBuildStatus; port: number; containerId?: string; errorMessage?: string }> = new Map();
   private pipeline?: any;
 
   constructor(config?: { pipeline?: any }) {
@@ -1201,12 +1203,13 @@ export class LocalRunnerDriver implements RunnerDriver {
         startCommand: params.startCommand,
         dockerfile: params.dockerfile,
         targetPort: params.targetPort || params.port || 3000,
+        cleanBuild: params.cleanBuild,
         environmentVariables: params.environmentVariables,
         onLog: params.onLog,
       });
 
       if (!result.success) {
-        this.containers.set(jobId, { status: "FAILED", port: defaultAssignedPort, containerId: defaultContainerId });
+        this.containers.set(jobId, { status: "FAILED", port: defaultAssignedPort, containerId: defaultContainerId, errorMessage: result.error });
         throw new RunnerDriverError(result.error || "Build pipeline execution failed", "PIPELINE_FAILED", "local");
       }
 
@@ -1268,6 +1271,7 @@ export class LocalRunnerDriver implements RunnerDriver {
       status: item.status,
       port: item.port,
       containerId: item.containerId,
+      errorMessage: item.errorMessage,
     };
   }
 
@@ -1346,7 +1350,8 @@ export function getRunnerDriver(
     });
   }
   if (normalized === "queue" || (process.env.RUNNER_QUEUE_MODE === "true" && normalized !== "local")) {
-    return RunnerDriverFactory.createDriver("queue", options);
+    const { db } = require("@/lib/db");
+    return RunnerDriverFactory.createDriver("queue", { ...options, dbClient: db });
   }
   if (normalized === "ssh") {
     return RunnerDriverFactory.createDriver("ssh", {

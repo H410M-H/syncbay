@@ -3,6 +3,7 @@ import { createTRPCRouter, protectedProcedure } from "@/server/trpc";
 import { TRPCError } from "@trpc/server";
 import { domainService } from "@/lib/domain-service";
 import { executeSyncVariables } from "@/lib/devops/env-sync";
+import { logEventBus } from "@/lib/telemetry/event-bus";
 
 export const serviceRouter = createTRPCRouter({
   /** List services in an environment */
@@ -33,7 +34,7 @@ export const serviceRouter = createTRPCRouter({
         where.environment.project.workspaceId = input.workspaceId;
       }
 
-      return ctx.db.service.findMany({
+      const services = await ctx.db.service.findMany({
         where,
         include: {
           domains: true,
@@ -51,6 +52,14 @@ export const serviceRouter = createTRPCRouter({
           _count: { select: { builds: true } },
         },
       });
+
+      return services.map((s) => ({
+        ...s,
+        deployments: s.deployments.map((d) => ({
+          ...d,
+          errorMessage: logEventBus.getError(d.id) || null,
+        })),
+      }));
     }),
 
   /** Get a single service by ID with full relations */
@@ -85,7 +94,13 @@ export const serviceRouter = createTRPCRouter({
       });
 
       if (!service) throw new TRPCError({ code: "NOT_FOUND", message: "Service not found" });
-      return service;
+      return {
+        ...service,
+        deployments: service.deployments.map((d) => ({
+          ...d,
+          errorMessage: logEventBus.getError(d.id) || null,
+        })),
+      };
     }),
 
   /** Create a service and auto-generate default domain — FR-SVC-01 */

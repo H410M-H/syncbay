@@ -39,7 +39,7 @@ export const tokenRouter = createTRPCRouter({
         lastUsedAt: t.lastUsedAt,
         createdAt: t.createdAt,
         revokedAt: t.revokedAt,
-        tokenPrefix: "pw_live_••••" + t.id.slice(-4),
+        tokenPrefix: "sb_live_••••" + t.id.slice(-4),
         user: t.user,
       }));
     }),
@@ -72,7 +72,7 @@ export const tokenRouter = createTRPCRouter({
       }
 
       // Generate secure random token
-      const rawToken = `pw_live_${crypto.randomBytes(24).toString("hex")}`;
+      const rawToken = `sb_live_${crypto.randomBytes(24).toString("hex")}`;
       const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
 
       const tokenRecord = await ctx.db.apiToken.create({

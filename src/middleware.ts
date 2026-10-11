@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServiceRoute } from "@/lib/edge/service-registry";
 
-export function middleware(req: NextRequest) {
+export async function middleware(req: NextRequest) {
   const host = (req.headers.get("x-forwarded-host") || req.headers.get("host") || "").toLowerCase().split(":")[0];
   const { pathname } = req.nextUrl;
 
@@ -42,7 +42,20 @@ export function middleware(req: NextRequest) {
       : host;
 
     // Resolve service route from Edge-safe registry
-    const route = registeredRoute || getServiceRoute(host);
+    let route = registeredRoute || getServiceRoute(host);
+
+    if (!route || route.status !== "ACTIVE") {
+      try {
+        const protocol = req.headers.get("x-forwarded-proto") || "https";
+        const apiUrl = `${protocol}://${req.headers.get("host")}/api/v1/services/edge-resolve?subdomain=${subdomain}`;
+        const res = await fetch(apiUrl);
+        if (res.ok) {
+          route = await res.json();
+        }
+      } catch (err) {
+        // ignore fetch errors
+      }
+    }
 
     // Return health check response for container probes reflecting real service status
     if (pathname === "/health" || pathname === "/healthz") {
@@ -101,7 +114,18 @@ export function middleware(req: NextRequest) {
 
     // If active: transparently proxy/forward to upstream origin container
     if (route && route.status === "ACTIVE") {
-      const upstreamBase = route.upstreamUrl || (route.targetPort ? `http://127.0.0.1:${route.targetPort}` : undefined);
+      let upstreamBase = route.upstreamUrl || (route.targetPort ? `http://127.0.0.1:${route.targetPort}` : undefined);
+      let targetPort = route.targetPort;
+      const runnerUrl = process.env.RUNNER_URL;
+
+      if (upstreamBase && upstreamBase.includes("127.0.0.1") && runnerUrl) {
+         if (!targetPort) {
+            const portMatch = upstreamBase.match(/:(\d+)/);
+            if (portMatch) targetPort = parseInt(portMatch[1], 10);
+         }
+         upstreamBase = runnerUrl.replace(/\/$/, '');
+      }
+
       if (upstreamBase) {
         try {
           const upstream = new URL(upstreamBase);
@@ -116,8 +140,9 @@ export function middleware(req: NextRequest) {
           requestHeaders.set("x-forwarded-host", host);
           requestHeaders.set("x-pathname", pathname);
           requestHeaders.set("x-syncbay-upstream", upstreamBase);
-          if (route.targetPort) {
-            requestHeaders.set("x-syncbay-port", String(route.targetPort));
+          if (targetPort) {
+            requestHeaders.set("x-target-port", String(targetPort));
+            requestHeaders.set("x-syncbay-port", String(targetPort));
           }
 
           return NextResponse.rewrite(target, {

@@ -4,6 +4,9 @@
  * with live telemetry metrics generator matching PROJECT.md interface contract.
  */
 
+import * as fs from "node:fs";
+import * as path from "node:path";
+
 export interface LogEntry {
   id: string;
   deploymentId: string;
@@ -23,11 +26,52 @@ export interface MetricSnapshot {
 
 export class LogEventBus {
   private ringBuffers = new Map<string, LogEntry[]>();
+  private errors = new Map<string, string>();
   private subscribers = new Map<string, Set<(log: LogEntry) => void>>();
   private maxBufferSize: number;
+  private logDir: string;
 
-  constructor(maxBufferSize = 500) {
+  constructor(maxBufferSize = 1000) {
     this.maxBufferSize = maxBufferSize;
+    this.logDir = path.join(process.cwd(), ".runner_logs");
+  }
+
+  private ensureLogDir() {
+    try {
+      if (!fs.existsSync(this.logDir)) {
+        fs.mkdirSync(this.logDir, { recursive: true });
+      }
+    } catch {}
+  }
+
+  private persistToDisk(deploymentId: string) {
+    try {
+      this.ensureLogDir();
+      const filePath = path.join(this.logDir, `${deploymentId}.json`);
+      const payload = {
+        deploymentId,
+        error: this.errors.get(deploymentId) || null,
+        logs: this.ringBuffers.get(deploymentId) || [],
+        updatedAt: new Date().toISOString(),
+      };
+      fs.writeFileSync(filePath, JSON.stringify(payload), "utf8");
+    } catch {}
+  }
+
+  private loadFromDisk(deploymentId: string) {
+    try {
+      const filePath = path.join(this.logDir, `${deploymentId}.json`);
+      if (fs.existsSync(filePath)) {
+        const raw = fs.readFileSync(filePath, "utf8");
+        const parsed = JSON.parse(raw);
+        if (parsed.logs && Array.isArray(parsed.logs)) {
+          this.ringBuffers.set(deploymentId, parsed.logs);
+        }
+        if (parsed.error) {
+          this.errors.set(deploymentId, parsed.error);
+        }
+      }
+    } catch {}
   }
 
   publish(
@@ -53,6 +97,8 @@ export class LogEventBus {
       buffer.shift(); // FIFO eviction
     }
 
+    this.persistToDisk(deploymentId);
+
     const listeners = this.subscribers.get(deploymentId);
     if (listeners) {
       listeners.forEach((listener) => {
@@ -65,6 +111,18 @@ export class LogEventBus {
     }
 
     return entry;
+  }
+
+  recordError(deploymentId: string, error: string): void {
+    this.errors.set(deploymentId, error);
+    this.persistToDisk(deploymentId);
+  }
+
+  getError(deploymentId: string): string | null {
+    if (!this.errors.has(deploymentId)) {
+      this.loadFromDisk(deploymentId);
+    }
+    return this.errors.get(deploymentId) || null;
   }
 
   subscribe(deploymentId: string, listener: (log: LogEntry) => void): () => void {
@@ -84,15 +142,20 @@ export class LogEventBus {
   }
 
   getHistory(deploymentId: string): LogEntry[] {
+    if (!this.ringBuffers.has(deploymentId) || this.ringBuffers.get(deploymentId)?.length === 0) {
+      this.loadFromDisk(deploymentId);
+    }
     return [...(this.ringBuffers.get(deploymentId) || [])];
   }
 
   clear(deploymentId?: string): void {
     if (deploymentId) {
       this.ringBuffers.delete(deploymentId);
+      this.errors.delete(deploymentId);
       this.subscribers.delete(deploymentId);
     } else {
       this.ringBuffers.clear();
+      this.errors.clear();
       this.subscribers.clear();
     }
   }
@@ -118,7 +181,7 @@ export class MetricsStreamGenerator {
   }
 }
 
-// Global singletons for production use
+// Global singletons for production use (persists across Next.js webpack/worker chunks)
 const globalForTelemetry = globalThis as unknown as {
   logEventBus?: LogEventBus;
   metricsGenerator?: MetricsStreamGenerator;
@@ -127,7 +190,5 @@ const globalForTelemetry = globalThis as unknown as {
 export const logEventBus = globalForTelemetry.logEventBus || new LogEventBus(1000);
 export const metricsGenerator = globalForTelemetry.metricsGenerator || new MetricsStreamGenerator();
 
-if (process.env.NODE_ENV !== "production") {
-  globalForTelemetry.logEventBus = logEventBus;
-  globalForTelemetry.metricsGenerator = metricsGenerator;
-}
+globalForTelemetry.logEventBus = logEventBus;
+globalForTelemetry.metricsGenerator = metricsGenerator;

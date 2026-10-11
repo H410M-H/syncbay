@@ -26,7 +26,7 @@ export interface PipelineCommandResult {
 }
 
 export interface PipelineExecutor {
-  execute(command: string, options?: { cwd?: string; env?: NodeJS.ProcessEnv }): Promise<PipelineCommandResult>;
+  execute(command: string, options?: { cwd?: string; env?: NodeJS.ProcessEnv; onLog?: (line: string) => void }): Promise<PipelineCommandResult>;
   probeHealth(url: string, timeoutMs?: number): Promise<boolean>;
   fileExists(filePath: string): Promise<boolean>;
 }
@@ -51,6 +51,7 @@ export interface PipelineOptions {
   healthCheckPath?: string;
   healthCheckTimeoutMs?: number;
   healthCheckIntervalMs?: number;
+  cleanBuild?: boolean;
   onLog?: (line: string) => void;
 }
 
@@ -71,26 +72,61 @@ export interface PipelineResult {
 export class DefaultPipelineExecutor implements PipelineExecutor {
   public async execute(
     command: string,
-    options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}
+    options: { cwd?: string; env?: NodeJS.ProcessEnv; onLog?: (line: string) => void } = {}
   ): Promise<PipelineCommandResult> {
-    try {
-      const { stdout, stderr } = await execAsync(command, {
+    return new Promise((resolve) => {
+      let stdout = "";
+      let stderr = "";
+
+      const child = spawn(command, {
         cwd: options.cwd,
         env: { ...process.env, ...options.env },
-        maxBuffer: 10 * 1024 * 1024,
+        shell: true,
       });
-      return {
-        stdout: stdout.trim(),
-        stderr: stderr.trim(),
-        exitCode: 0,
-      };
-    } catch (err: any) {
-      return {
-        stdout: (err.stdout || "").trim(),
-        stderr: (err.stderr || err.message || "").trim(),
-        exitCode: typeof err.code === "number" ? err.code : 1,
-      };
-    }
+
+      child.stdout?.on("data", (chunk: Buffer) => {
+        const text = chunk.toString();
+        stdout += text;
+        if (options.onLog) {
+          const lines = text.split("\n");
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed) options.onLog(trimmed);
+          }
+        }
+      });
+
+      child.stderr?.on("data", (chunk: Buffer) => {
+        const text = chunk.toString();
+        stderr += text;
+        if (options.onLog) {
+          const lines = text.split("\n");
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed) options.onLog(trimmed);
+          }
+        }
+      });
+
+      child.on("close", (code) => {
+        resolve({
+          stdout: stdout.trim(),
+          stderr: stderr.trim(),
+          exitCode: code ?? 0,
+        });
+      });
+
+      child.on("error", (err: any) => {
+        const msg = err?.message || String(err);
+        stderr += "\n" + msg;
+        if (options.onLog) options.onLog(msg);
+        resolve({
+          stdout: stdout.trim(),
+          stderr: stderr.trim(),
+          exitCode: 1,
+        });
+      });
+    });
   }
 
   public async probeHealth(url: string, timeoutMs: number = 3000): Promise<boolean> {
@@ -181,14 +217,40 @@ export class MockPipelineExecutor implements PipelineExecutor {
   }
 
   public setHandler(pattern: RegExp, handler: (cmd: string) => PipelineCommandResult): void {
-    this.commandHandlers.set(pattern, handler);
+    for (const key of Array.from(this.commandHandlers.keys())) {
+      if (key.source === pattern.source) {
+        this.commandHandlers.delete(key);
+      }
+    }
+    const updated = new Map<RegExp, (cmd: string) => PipelineCommandResult>();
+    updated.set(pattern, handler);
+    for (const [k, v] of this.commandHandlers.entries()) {
+      updated.set(k, v);
+    }
+    this.commandHandlers = updated;
   }
 
-  public async execute(command: string): Promise<PipelineCommandResult> {
+  public async execute(
+    command: string,
+    options?: { cwd?: string; env?: NodeJS.ProcessEnv; onLog?: (line: string) => void }
+  ): Promise<PipelineCommandResult> {
     this.commands.push(command);
     for (const [pattern, handler] of this.commandHandlers.entries()) {
       if (pattern.test(command)) {
-        return handler(command);
+        const res = handler(command);
+        if (options?.onLog) {
+          if (res.stdout) {
+            for (const line of res.stdout.split("\n")) {
+              if (line.trim()) options.onLog(line.trim());
+            }
+          }
+          if (res.stderr) {
+            for (const line of res.stderr.split("\n")) {
+              if (line.trim()) options.onLog(line.trim());
+            }
+          }
+        }
+        return res;
       }
     }
     return { stdout: "ok", stderr: "", exitCode: 0 };
@@ -297,6 +359,9 @@ export class BuildPipeline {
     let assignedPort: number | undefined;
     let containerId: string | undefined;
     let strategy: "dockerfile" | "nixpacks" = "nixpacks";
+    let childExitCode: number | null = null;
+    let childErrorMsg: string | null = null;
+    const startupStderrLines: string[] = [];
 
     try {
       // Step 1: Workspace setup
@@ -346,17 +411,25 @@ export class BuildPipeline {
             GIT_TERMINAL_PROMPT: "0",
             ...options.environmentVariables,
           },
+          onLog: log,
         });
         if (cloneRes.exitCode !== 0) {
-          throw new Error(`Git clone failed: ${cloneRes.stderr || cloneRes.stdout}`);
+          const errMsg = cloneRes.stderr || cloneRes.stdout || `Git clone exited with code ${cloneRes.exitCode}`;
+          log(`[build:error] ${errMsg}`);
+          throw new Error(`Git clone failed: ${errMsg}`);
         }
 
         if (options.commitSha) {
           const safeSha = options.commitSha.trim();
           log(`Checking out target commit: ${safeSha}`);
-          const checkoutRes = await this.executor.execute(`git checkout -- "${safeSha}"`, { cwd: baseWorkDir });
+          const checkoutRes = await this.executor.execute(`git checkout -- "${safeSha}"`, {
+            cwd: baseWorkDir,
+            onLog: log,
+          });
           if (checkoutRes.exitCode !== 0) {
-            throw new Error(`Git checkout failed: ${checkoutRes.stderr || checkoutRes.stdout}`);
+            const errMsg = checkoutRes.stderr || checkoutRes.stdout || `Git checkout exited with code ${checkoutRes.exitCode}`;
+            log(`[build:error] ${errMsg}`);
+            throw new Error(`Git checkout failed: ${errMsg}`);
           }
         }
       } else {
@@ -371,7 +444,11 @@ export class BuildPipeline {
       const hasPkg = await this.executor.fileExists(path.join(sourceDir, "package.json"));
       const hasDf = await this.executor.fileExists(path.join(sourceDir, "Dockerfile"));
       const hasIdx = (await this.executor.fileExists(path.join(sourceDir, "index.js"))) || (await this.executor.fileExists(path.join(sourceDir, "server.js")));
-      if (!hasPkg && !hasDf && !hasIdx && !options.repoUrl) {
+      const hasHtml = (await this.executor.fileExists(path.join(sourceDir, "index.html"))) ||
+                      (await this.executor.fileExists(path.join(sourceDir, "dist", "index.html"))) ||
+                      (await this.executor.fileExists(path.join(sourceDir, "build", "index.html"))) ||
+                      (await this.executor.fileExists(path.join(sourceDir, "out", "index.html")));
+      if (!hasPkg && !hasDf && !hasIdx && !hasHtml && !options.repoUrl) {
         const starter = `const http = require("http");
 const port = parseInt(process.env.PORT || "${targetPort}", 10);
 const server = http.createServer((req, res) => {
@@ -404,14 +481,19 @@ server.listen(port, "0.0.0.0", () => {
         log(`Dockerfile detected at ${dockerfilePath} — using Docker build strategy`);
 
         let buildCmd = `docker build -t ${imageTag} -f "${dockerfilePath}" "${sourceDir}"`;
+        if (options.cleanBuild) {
+          buildCmd += " --no-cache";
+        }
         if (options.buildCommand) {
           buildCmd += ` --build-arg BUILD_CMD="${options.buildCommand}"`;
         }
 
         log(`Compiling container image: ${buildCmd}`);
-        const buildRes = await this.executor.execute(buildCmd, { cwd: sourceDir });
+        const buildRes = await this.executor.execute(buildCmd, { cwd: sourceDir, onLog: log });
         if (buildRes.exitCode !== 0) {
-          throw new Error(`Docker build failed: ${buildRes.stderr || buildRes.stdout}`);
+          const errMsg = buildRes.stderr || buildRes.stdout || `Docker build exited with code ${buildRes.exitCode}`;
+          log(`[build:error] ${errMsg}`);
+          throw new Error(`Docker build failed: ${errMsg}`);
         }
         log(`Docker build succeeded for image ${imageTag}`);
 
@@ -446,6 +528,9 @@ server.listen(port, "0.0.0.0", () => {
         log(`Using Nixpacks automated runtime detection & Docker containerization`);
 
         let nixpacksCmd = `nixpacks build "${sourceDir}" --name ${imageTag}`;
+        if (options.cleanBuild) {
+          nixpacksCmd += " --no-cache";
+        }
         if (options.buildCommand) {
           nixpacksCmd += ` --build-cmd "${options.buildCommand}"`;
         }
@@ -454,9 +539,11 @@ server.listen(port, "0.0.0.0", () => {
         }
 
         log(`Compiling container image via Nixpacks: ${nixpacksCmd}`);
-        const nixRes = await this.executor.execute(nixpacksCmd, { cwd: sourceDir });
+        const nixRes = await this.executor.execute(nixpacksCmd, { cwd: sourceDir, onLog: log });
         if (nixRes.exitCode !== 0) {
-          throw new Error(`Nixpacks build failed: ${nixRes.stderr || nixRes.stdout}`);
+          const errMsg = nixRes.stderr || nixRes.stdout || `Nixpacks build exited with code ${nixRes.exitCode}`;
+          log(`[build:error] ${errMsg}`);
+          throw new Error(`Nixpacks build failed: ${errMsg}`);
         }
         log(`Nixpacks compilation succeeded for image ${imageTag}`);
 
@@ -501,40 +588,65 @@ server.listen(port, "0.0.0.0", () => {
         const execEnv: NodeJS.ProcessEnv = {
           ...process.env,
           ...options.environmentVariables,
+          NODE_ENV: (options.environmentVariables?.NODE_ENV as any) || "development",
           PATH: `${nmBin}:${currentPath}`,
         };
+
+        if (options.cleanBuild) {
+          log(`Clean rebuild requested — removing cached build artifacts and dependencies`);
+          await fs.rm(path.join(sourceDir, "node_modules"), { recursive: true, force: true }).catch(() => null);
+          await fs.rm(path.join(sourceDir, "dist"), { recursive: true, force: true }).catch(() => null);
+          await fs.rm(path.join(sourceDir, ".next"), { recursive: true, force: true }).catch(() => null);
+          await fs.rm(path.join(sourceDir, "build"), { recursive: true, force: true }).catch(() => null);
+          await fs.rm(path.join(sourceDir, "out"), { recursive: true, force: true }).catch(() => null);
+        }
 
         if (packageJsonExists) {
           // Install dependencies first if not already present
           const hasNodeModules = await this.executor.fileExists(path.join(sourceDir, "node_modules"));
           if (!hasNodeModules) {
-            let installCmd = "npm install --no-audit --prefer-offline";
+            let installCmd = "npm install --no-audit --prefer-offline --include=dev";
             if (await this.executor.fileExists(path.join(sourceDir, "pnpm-lock.yaml"))) {
-              installCmd = "pnpm install --prefer-offline || npm install --no-audit --prefer-offline";
+              installCmd = "pnpm install --prefer-offline || npm install --no-audit --prefer-offline --include=dev";
             } else if (await this.executor.fileExists(path.join(sourceDir, "yarn.lock"))) {
-              installCmd = "yarn install --prefer-offline || npm install --no-audit --prefer-offline";
+              installCmd = "yarn install --prefer-offline || npm install --no-audit --prefer-offline --include=dev";
             }
             log(`Installing dependencies via: ${installCmd}`);
-            const iRes = await this.executor.execute(installCmd, { cwd: sourceDir, env: execEnv });
+            const iRes = await this.executor.execute(installCmd, { cwd: sourceDir, env: execEnv, onLog: log });
             if (iRes.exitCode !== 0) {
-              log(`Notice: Dependency installation returned exit code ${iRes.exitCode}: ${iRes.stderr || iRes.stdout}`);
+              const errMsg = iRes.stderr || iRes.stdout || `Exit code ${iRes.exitCode}`;
+              log(`[build:error] Dependency installation failed: ${errMsg}`);
+              if (!options.buildCommand) {
+                try {
+                  const pkgContent = JSON.parse(await fs.readFile(pkgPath, "utf8"));
+                  if (pkgContent.scripts?.build) {
+                    throw new Error(`Dependency installation failed: ${errMsg}`);
+                  }
+                } catch (e: any) {
+                  if (e.message?.includes("Dependency installation failed")) throw e;
+                }
+              }
             }
           }
 
           if (options.buildCommand) {
             log(`Compiling application with custom build command: ${options.buildCommand}`);
-            const bRes = await this.executor.execute(options.buildCommand, { cwd: sourceDir, env: execEnv });
+            const bRes = await this.executor.execute(options.buildCommand, { cwd: sourceDir, env: execEnv, onLog: log });
             if (bRes.exitCode !== 0) {
-              throw new Error(`Build command failed: ${bRes.stderr || bRes.stdout}`);
+              const errMsg = bRes.stderr || bRes.stdout || `Build command exited with code ${bRes.exitCode}`;
+              log(`[build:error] ${errMsg}`);
+              throw new Error(`Build command failed: ${errMsg}`);
             }
           } else {
             try {
               const pkgContent = JSON.parse(await fs.readFile(pkgPath, "utf8"));
               if (pkgContent.scripts?.build) {
                 log(`Running npm run build...`);
-                const bRes = await this.executor.execute("npm run build", { cwd: sourceDir, env: execEnv });
+                const bRes = await this.executor.execute("npm run build", { cwd: sourceDir, env: execEnv, onLog: log });
                 if (bRes.exitCode !== 0) {
-                  throw new Error(`npm run build failed: ${bRes.stderr || bRes.stdout}`);
+                  const errMsg = bRes.stderr || bRes.stdout || `npm run build exited with code ${bRes.exitCode}`;
+                  log(`[build:error] ${errMsg}`);
+                  throw new Error(`npm run build failed: ${errMsg}`);
                 }
               }
             } catch (err: any) {
@@ -543,9 +655,11 @@ server.listen(port, "0.0.0.0", () => {
           }
         } else if (options.buildCommand) {
           log(`Compiling application with custom build command: ${options.buildCommand}`);
-          const bRes = await this.executor.execute(options.buildCommand, { cwd: sourceDir, env: execEnv });
+          const bRes = await this.executor.execute(options.buildCommand, { cwd: sourceDir, env: execEnv, onLog: log });
           if (bRes.exitCode !== 0) {
-            throw new Error(`Build command failed: ${bRes.stderr || bRes.stdout}`);
+            const errMsg = bRes.stderr || bRes.stdout || `Build command exited with code ${bRes.exitCode}`;
+            log(`[build:error] ${errMsg}`);
+            throw new Error(`Build command failed: ${errMsg}`);
           }
         }
 
@@ -566,9 +680,13 @@ server.listen(port, "0.0.0.0", () => {
 
         if (!runCmd) {
           const candidateFiles = [
+            path.join(".next", "standalone", "server.js"),
             "server.js",
             "server.cjs",
+            "server.mjs",
             "index.js",
+            "index.cjs",
+            "index.mjs",
             "app.js",
             "main.js",
             path.join("src", "server.js"),
@@ -599,13 +717,13 @@ server.listen(port, "0.0.0.0", () => {
         }
 
         if (!runCmd) {
-          // Static web site detection
+          // Static web site / compiled frontend detection (compiled bundles in dist/build/out MUST take priority over raw uncompiled source)
           const staticDirs = [
-            sourceDir,
             path.join(sourceDir, "dist"),
             path.join(sourceDir, "build"),
             path.join(sourceDir, "out"),
             path.join(sourceDir, "public"),
+            sourceDir,
           ];
           for (const sDir of staticDirs) {
             if (await this.executor.fileExists(path.join(sDir, "index.html"))) {
@@ -617,14 +735,24 @@ const root = process.argv[2] || process.cwd();
 const port = parseInt(process.env.PORT || "3000", 10);
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
-  ".css": "text/css",
-  ".js": "application/javascript",
-  ".json": "application/json",
+  ".css": "text/css; charset=utf-8",
+  ".js": "application/javascript; charset=utf-8",
+  ".mjs": "application/javascript; charset=utf-8",
+  ".cjs": "application/javascript; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
   ".png": "image/png",
   ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
   ".svg": "image/svg+xml",
   ".ico": "image/x-icon",
-  ".txt": "text/plain"
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".ttf": "font/ttf",
+  ".wasm": "application/wasm",
+  ".txt": "text/plain; charset=utf-8",
+  ".map": "application/json"
 };
 const server = http.createServer((req, res) => {
   if (req.url === "/health" || req.url === "/healthz") {
@@ -708,8 +836,9 @@ server.listen(port, "0.0.0.0");
         this.activeProcessPorts.set(activeContainerId, assignedPort);
         this.activeProcessPorts.set(jobId, assignedPort);
 
-        let childExitCode: number | null = null;
-        let childErrorMsg: string | null = null;
+        childExitCode = null;
+        childErrorMsg = null;
+        startupStderrLines.length = 0;
 
         child.on("error", (err: any) => {
           childErrorMsg = err?.message || String(err);
@@ -722,7 +851,11 @@ server.listen(port, "0.0.0.0");
         });
         child.stderr?.on("data", (chunk: Buffer) => {
           const line = chunk.toString().trim();
-          if (line) log(`[app:stderr] ${line}`);
+          if (line) {
+            startupStderrLines.push(line);
+            if (startupStderrLines.length > 25) startupStderrLines.shift();
+            log(`[app:stderr] ${line}`);
+          }
         });
         child.on("exit", (code: number | null, signal: string | null) => {
           childExitCode = code !== null ? code : (signal ? 128 : 1);
@@ -749,7 +882,9 @@ server.listen(port, "0.0.0.0");
       while (Date.now() < deadline) {
         // If native child process died, fail fast without waiting for probe timeout
         if (containerId?.startsWith("proc_") && !this.activeProcesses.has(containerId)) {
-          throw new Error(`Application process terminated prematurely during startup`);
+          const detail = childErrorMsg || (startupStderrLines.length > 0 ? startupStderrLines.join("\n") : `Process exited with code ${childExitCode ?? 1}`);
+          log(`[build:error] Application crashed during startup: ${detail}`);
+          throw new Error(`Application process terminated prematurely during startup: ${detail}`);
         }
 
         isHealthy = await this.executor.probeHealth(probeUrl, 1000);
@@ -783,9 +918,12 @@ server.listen(port, "0.0.0.0");
       }
 
       if (!isHealthy) {
-        throw new Error(
-          `Health check failed: application did not respond to HTTP probes on port ${assignedPort} within ${timeoutMs}ms`
-        );
+        const detail = childErrorMsg || (startupStderrLines.length > 0 ? startupStderrLines.join("\n") : "");
+        const errMsg = detail
+          ? `Health check failed on port ${assignedPort}: ${detail}`
+          : `Health check failed: application did not respond to HTTP probes on port ${assignedPort} within ${timeoutMs}ms`;
+        log(`[build:error] ${errMsg}`);
+        throw new Error(errMsg);
       }
 
       const durationMs = Date.now() - startTime;

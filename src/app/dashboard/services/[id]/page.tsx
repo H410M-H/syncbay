@@ -16,7 +16,18 @@ export default function ServiceDetailsPage(props: { params: Promise<{ id: string
     refetch,
   } = trpc.service.byId.useQuery({ serviceId }, { enabled: !!serviceId });
 
+  const redeployMutation = trpc.deployment.redeploy.useMutation();
   const [viewLogsDeployId, setViewLogsDeployId] = useState<string | null>(null);
+
+  const handleRedeploy = async (deploymentId: string, rebuild: boolean = false) => {
+    try {
+      await redeployMutation.mutateAsync({ deploymentId, rebuild });
+      refetch();
+      setViewLogsDeployId(deploymentId);
+    } catch (e: any) {
+      alert(`Redeploy failed: ${e.message}`);
+    }
+  };
 
   if (isLoading) {
     return (
@@ -119,12 +130,28 @@ export default function ServiceDetailsPage(props: { params: Promise<{ id: string
                       )}
                     </div>
                   </div>
-                  <button
-                    onClick={() => setViewLogsDeployId(dep.id)}
-                    className="btn btn-ghost btn-sm"
-                  >
-                    View Logs
-                  </button>
+                  <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                    <button
+                      onClick={() => setViewLogsDeployId(dep.id)}
+                      className="btn btn-ghost btn-sm"
+                    >
+                      View Logs
+                    </button>
+                    <button
+                      onClick={() => handleRedeploy(dep.id, false)}
+                      className="btn btn-ghost btn-sm"
+                      title="Fast Redeploy with cached build"
+                    >
+                      ↺ Redeploy
+                    </button>
+                    <button
+                      onClick={() => handleRedeploy(dep.id, true)}
+                      className="btn btn-secondary btn-sm"
+                      title="Clean Rebuild from source"
+                    >
+                      ⚡ Rebuild
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -161,15 +188,30 @@ export default function ServiceDetailsPage(props: { params: Promise<{ id: string
       </div>
 
       {viewLogsDeployId && (
-        <LogsModal deployId={viewLogsDeployId} onClose={() => setViewLogsDeployId(null)} />
+        <LogsModal
+          deployId={viewLogsDeployId}
+          onClose={() => setViewLogsDeployId(null)}
+          onRedeploy={handleRedeploy}
+        />
       )}
     </div>
   );
 }
 
-function LogsModal({ deployId, onClose }: { deployId: string; onClose: () => void }) {
+function LogsModal({
+  deployId,
+  onClose,
+  onRedeploy,
+}: {
+  deployId: string;
+  onClose: () => void;
+  onRedeploy?: (deploymentId: string, rebuild: boolean) => void;
+}) {
   const [logs, setLogs] = useState<any[]>([]);
+  const [filterStream, setFilterStream] = useState<"all" | "stderr" | "system" | "stdout">("all");
+  const [searchFilter, setSearchFilter] = useState("");
   const { data: initialLogs } = trpc.deployment.logs.useQuery({ deploymentId: deployId });
+  const { data: deployment } = trpc.deployment.byId.useQuery({ deploymentId: deployId });
 
   useEffect(() => {
     if (initialLogs) setLogs(initialLogs as any[]);
@@ -189,32 +231,140 @@ function LogsModal({ deployId, onClose }: { deployId: string; onClose: () => voi
     return () => eventSource.close();
   }, [deployId]);
 
+  const buildError =
+    deployment?.errorMessage ||
+    logs.find((l) => l.message.includes("[build:error]") || l.message.includes("[error] Deployment failed"))?.message?.replace(/^\[.*?\]\s*/, "");
+
+  const filteredLogs = logs.filter((l) => {
+    if (filterStream !== "all" && l.stream !== filterStream) return false;
+    if (searchFilter.trim() && !l.message.toLowerCase().includes(searchFilter.toLowerCase())) return false;
+    return true;
+  });
+
   return (
     <div style={{
       position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
-      background: "rgba(0,0,0,0.6)", zIndex: 1000,
+      background: "rgba(0,0,0,0.7)", zIndex: 1000,
       display: "flex", justifyContent: "center", alignItems: "center",
       padding: "20px"
     }}>
       <div className="card" style={{
-        width: "100%", maxWidth: "900px", height: "80vh",
+        width: "100%", maxWidth: "960px", height: "85vh",
         display: "flex", flexDirection: "column",
         background: "var(--bg-card)",
+        border: "1px solid var(--border-subtle)",
+        overflow: "hidden"
       }}>
-        <div style={{ padding: "16px", borderBottom: "1px solid var(--border-subtle)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <h3 style={{ margin: 0 }}>Deployment Logs</h3>
-          <button className="btn btn-ghost btn-sm" onClick={onClose}>Close</button>
-        </div>
-        <div style={{ flex: 1, overflowY: "auto", padding: "16px", background: "#0a0a0a", color: "#d4d4d4", fontFamily: "monospace", fontSize: "13px" }}>
-          {logs.map((log, i) => (
-            <div key={log.id || i} style={{ marginBottom: "4px" }}>
-              <span style={{ color: "#888", marginRight: "8px" }}>[{new Date(log.timestamp).toLocaleTimeString()}]</span>
-              <span style={{ color: log.stream === "stderr" ? "#ff7b72" : log.stream === "system" ? "#79c0ff" : "inherit" }}>
-                {log.message}
+        {/* Modal Header */}
+        <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--border-subtle)", display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--bg-elevated)", flexWrap: "wrap", gap: "10px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <h3 style={{ margin: 0, fontSize: "1.1rem" }}>Deployment Logs ({deployId.slice(0, 8)})</h3>
+            {deployment && (
+              <span className={`badge ${deployment.status === "ACTIVE" ? "badge-active" : deployment.status === "FAILED" ? "badge-failed" : "badge-building"}`} style={{ fontSize: "0.7rem" }}>
+                {deployment.status}
               </span>
+            )}
+          </div>
+          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+            {onRedeploy && (
+              <>
+                <button className="btn btn-ghost btn-sm" onClick={() => onRedeploy(deployId, false)} title="Fast Redeploy">
+                  ↺ Fast Redeploy
+                </button>
+                <button className="btn btn-primary btn-sm" onClick={() => onRedeploy(deployId, true)} title="Clean Rebuild">
+                  ⚡ Clean Rebuild
+                </button>
+              </>
+            )}
+            <button className="btn btn-ghost btn-sm" onClick={onClose}>Close</button>
+          </div>
+        </div>
+
+        {/* Build Error Banner */}
+        {buildError && (
+          <div style={{ padding: "12px 20px", background: "rgba(239, 68, 68, 0.1)", borderBottom: "1px solid rgba(239, 68, 68, 0.3)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "#f87171", fontWeight: 600, fontSize: "0.875rem", marginBottom: "6px" }}>
+              <span>⚠️ Build / Deployment Error</span>
             </div>
-          ))}
-          {logs.length === 0 && <div style={{ color: "#888" }}>Waiting for logs...</div>}
+            <pre style={{
+              background: "#08080c",
+              color: "#f87171",
+              padding: "8px 12px",
+              borderRadius: "4px",
+              fontFamily: "monospace",
+              fontSize: "0.8rem",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-all",
+              margin: 0,
+              maxHeight: "120px",
+              overflowY: "auto"
+            }}>
+              {buildError}
+            </pre>
+          </div>
+        )}
+
+        {/* Filters Toolbar */}
+        <div style={{ padding: "10px 20px", borderBottom: "1px solid var(--border-subtle)", background: "var(--bg-elevated)", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+            <input
+              type="text"
+              placeholder="Search logs..."
+              value={searchFilter}
+              onChange={(e) => setSearchFilter(e.target.value)}
+              className="input"
+              style={{ width: "160px", padding: "4px 8px", fontSize: "0.75rem", height: "auto" }}
+            />
+            <div style={{ display: "flex", borderRadius: "4px", overflow: "hidden", border: "1px solid var(--border-subtle)" }}>
+              {(["all", "stderr", "system", "stdout"] as const).map((s) => (
+                <button
+                  key={s}
+                  onClick={() => setFilterStream(s)}
+                  style={{
+                    padding: "3px 8px",
+                    fontSize: "0.7rem",
+                    border: "none",
+                    background: filterStream === s ? "var(--brand-accent)" : "transparent",
+                    color: filterStream === s ? "#fff" : "var(--text-muted)",
+                    cursor: "pointer",
+                  }}
+                >
+                  {s === "all" ? "All" : s === "stderr" ? "Errors" : s === "system" ? "System" : "App"}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <button
+            onClick={() => {
+              const text = filteredLogs.map((l) => `[${l.timestamp}] [${l.stream}] ${l.message}`).join("\n");
+              navigator.clipboard.writeText(text);
+              alert("Copied logs to clipboard");
+            }}
+            className="btn btn-ghost btn-sm"
+            style={{ fontSize: "0.75rem" }}
+          >
+            Copy Logs
+          </button>
+        </div>
+
+        {/* Logs Terminal Area */}
+        <div style={{ flex: 1, overflowY: "auto", padding: "16px", background: "#08080c", color: "#e2e8f0", fontFamily: "'JetBrains Mono', monospace", fontSize: "0.8125rem", lineHeight: 1.5 }}>
+          {filteredLogs.map((log, i) => {
+            const isError = log.message.includes("[build:error]") || (log.stream === "stderr" && log.message.toLowerCase().includes("error"));
+            return (
+              <div key={log.id || i} style={{ display: "flex", gap: "8px", marginBottom: "3px", background: isError ? "rgba(239, 68, 68, 0.08)" : undefined }}>
+                <span style={{ color: "#475569", flexShrink: 0 }}>[{new Date(log.timestamp).toLocaleTimeString()}]</span>
+                <span style={{ color: isError ? "#f87171" : log.stream === "stderr" ? "#f87171" : log.stream === "system" ? "#60a5fa" : "#4ade80", width: "54px", flexShrink: 0, fontWeight: 600 }}>
+                  [{isError ? "error" : log.stream}]
+                </span>
+                <span style={{ color: isError ? "#fca5a5" : "inherit", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+                  {log.message}
+                </span>
+              </div>
+            );
+          })}
+          {filteredLogs.length === 0 && <div style={{ color: "var(--text-muted)", padding: "16px 0" }}>No log lines to display.</div>}
         </div>
       </div>
     </div>
