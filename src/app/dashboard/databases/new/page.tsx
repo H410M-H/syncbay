@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { trpc } from "@/lib/trpc-client";
 import { DatabaseProvider } from "@prisma/client";
+import { BackButton } from "@/components/ui/back-button";
 
 function NewDatabaseWizardContent() {
   const router = useRouter();
@@ -91,13 +92,10 @@ function NewDatabaseWizardContent() {
     <div className="fade-in" style={{ maxWidth: "760px", margin: "0 auto" }}>
       {/* ── Header ── */}
       <div style={{ marginBottom: "28px" }}>
-        <Link
-          href={selectedProjectId ? `/dashboard/projects/${selectedProjectId}?tab=databases` : "/dashboard/projects"}
-          className="btn btn-ghost btn-sm"
-          style={{ paddingLeft: 0, marginBottom: "8px" }}
-        >
-          ← Back to Project
-        </Link>
+        <BackButton
+          fallbackUrl={selectedProjectId ? `/dashboard/projects/${selectedProjectId}?tab=databases` : "/dashboard/projects"}
+          label="Back to Project"
+        />
         <h1 className="page-title">Provision a Managed Database</h1>
         <p className="page-subtitle">
           Dedicated, fully-managed PostgreSQL, Redis, or MySQL instance with automated connection pooling.

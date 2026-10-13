@@ -5,6 +5,7 @@ import { trpc } from "@/lib/trpc-client";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { signIn } from "next-auth/react";
+import { BackButton } from "@/components/ui/back-button";
 
 export default function NewProjectPage() {
   const router = useRouter();
@@ -146,13 +147,7 @@ export default function NewProjectPage() {
   return (
     <div className="fade-in" style={{ maxWidth: "800px", margin: "0 auto" }}>
       <div style={{ marginBottom: "32px" }}>
-        <Link
-          href="/dashboard"
-          className="btn btn-ghost btn-sm"
-          style={{ marginBottom: "16px", paddingLeft: 0 }}
-        >
-          ← Back to Dashboard
-        </Link>
+        <BackButton fallbackUrl="/dashboard" label="Back to Dashboard" />
         <h1 className="page-title">Deploy a new project</h1>
         <p className="page-subtitle">
           Import a repository from GitHub or deploy from any public Git URL.

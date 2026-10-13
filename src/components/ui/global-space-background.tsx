@@ -11,24 +11,31 @@ export function GlobalSpaceBackground() {
 
   useEffect(() => {
     setMounted(true);
-    const saved = localStorage.getItem("syncbay_cosmic_motion");
-    if (saved && ["auto", "subtle", "hero", "paused"].includes(saved)) {
-      setMotionMode(saved as any);
-    }
-  }, []);
+    const updateMode = (val: string | null) => {
+      if (val && ["auto", "subtle", "hero", "paused"].includes(val)) {
+        setMotionMode(val as any);
+      }
+    };
 
-  const handleToggle = () => {
-    const nextMode =
-      motionMode === "auto"
-        ? "subtle"
-        : motionMode === "subtle"
-        ? "hero"
-        : motionMode === "hero"
-        ? "paused"
-        : "auto";
-    setMotionMode(nextMode);
-    localStorage.setItem("syncbay_cosmic_motion", nextMode);
-  };
+    updateMode(localStorage.getItem("syncbay_cosmic_motion"));
+
+    const handleCustomChange = (e: any) => {
+      if (e?.detail) updateMode(e.detail);
+    };
+
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === "syncbay_cosmic_motion") {
+        updateMode(e.newValue);
+      }
+    };
+
+    window.addEventListener("syncbay-cosmic-motion-change", handleCustomChange as any);
+    window.addEventListener("storage", handleStorage);
+    return () => {
+      window.removeEventListener("syncbay-cosmic-motion-change", handleCustomChange as any);
+      window.removeEventListener("storage", handleStorage);
+    };
+  }, []);
 
   if (!mounted) return null;
 
@@ -62,56 +69,6 @@ export function GlobalSpaceBackground() {
         }}
         aria-hidden="true"
       />
-
-      {/* Discrete Cosmic Atmosphere Toggle Pill */}
-      <div
-        style={{
-          position: "fixed",
-          bottom: "16px",
-          right: "16px",
-          zIndex: 40,
-        }}
-      >
-        <button
-          onClick={handleToggle}
-          title={`Space Atmosphere: ${motionMode.toUpperCase()} (Click to cycle)`}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "6px",
-            background: "rgba(18, 18, 24, 0.75)",
-            border: "1px solid rgba(6, 182, 212, 0.3)",
-            backdropFilter: "blur(12px)",
-            padding: "5px 10px",
-            borderRadius: "9999px",
-            fontSize: "11px",
-            color: "#a1a1aa",
-            cursor: "pointer",
-            boxShadow: "0 0 15px rgba(6, 182, 212, 0.15)",
-            transition: "all 0.2s ease",
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.borderColor = "#06b6d4";
-            e.currentTarget.style.color = "#ffffff";
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.borderColor = "rgba(6, 182, 212, 0.3)";
-            e.currentTarget.style.color = "#a1a1aa";
-          }}
-        >
-          <span style={{ fontSize: "12px" }}>🚀</span>
-          <span>Cosmic BG:</span>
-          <span
-            style={{
-              color: effectiveMode === "paused" ? "#ef4444" : "#06b6d4",
-              fontWeight: 600,
-              textTransform: "uppercase",
-            }}
-          >
-            {motionMode}
-          </span>
-        </button>
-      </div>
     </>
   );
 }

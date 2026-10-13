@@ -10,6 +10,7 @@ import { CliManifestConsole } from "@/components/dashboard/cli-manifest-console"
 import { WebShell } from "@/components/dashboard/web-shell";
 import { QueryStudio } from "@/components/dashboard/query-studio";
 import { DevOpsSuite } from "@/components/dashboard/devops-suite";
+import { BackButton } from "@/components/ui/back-button";
 
 type ConsoleTab =
   | "services"
@@ -95,6 +96,7 @@ function ProjectConsoleContent() {
   const redeployMutation = trpc.deployment.redeploy.useMutation();
   const cancelDeployMutation = trpc.deployment.cancel.useMutation();
   const instantRollbackMutation = trpc.deployment.instantRollback.useMutation();
+  const deleteDeploymentMutation = trpc.deployment.delete.useMutation();
   const setPausedMutation = trpc.service.setPaused.useMutation();
   const deleteServiceMutation = trpc.service.delete.useMutation();
   const setVariableMutation = trpc.service.setVariable.useMutation();
@@ -491,6 +493,20 @@ function ProjectConsoleContent() {
     }
   };
 
+  const handleDeleteDeployment = async (deploymentId: string) => {
+    if (!confirm(`Are you sure you want to permanently delete deployment ${deploymentId.slice(0, 8)}? This cannot be undone.`)) {
+      return;
+    }
+    try {
+      await deleteDeploymentMutation.mutateAsync({ deploymentId });
+      await refetchProject();
+      setActionNotice(`Deployment ${deploymentId.slice(0, 8)} deleted successfully.`);
+      setTimeout(() => setActionNotice(null), 4000);
+    } catch (e: any) {
+      alert(`Delete failed: ${e.message}`);
+    }
+  };
+
   const handleTogglePause = async (serviceId: string, currentPaused: boolean) => {
     try {
       await setPausedMutation.mutateAsync({ serviceId, paused: !currentPaused });
@@ -662,13 +678,7 @@ function ProjectConsoleContent() {
     <div className="fade-in" style={{ maxWidth: "1100px", margin: "0 auto" }}>
       {/* ── Console Header ── */}
       <div style={{ marginBottom: "20px" }}>
-        <Link
-          href="/dashboard/projects"
-          className="btn btn-ghost btn-sm"
-          style={{ paddingLeft: 0, marginBottom: "8px" }}
-        >
-          ← Back to Projects
-        </Link>
+        <BackButton fallbackUrl="/dashboard/projects" label="Back to Projects" />
 
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "16px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
@@ -1283,6 +1293,16 @@ function ProjectConsoleContent() {
                                         style={{ display: "block", width: "100%", textAlign: "left" }}
                                       >
                                         Roll back to this
+                                      </button>
+                                      <hr style={{ border: "none", borderTop: "1px solid var(--border-subtle)", margin: "4px 0" }} />
+                                      <button
+                                        type="button"
+                                        role="menuitem"
+                                        onClick={() => { setOpenDeploymentMenuId(null); handleDeleteDeployment(dep.id); }}
+                                        className="btn btn-ghost btn-sm"
+                                        style={{ display: "block", width: "100%", textAlign: "left", color: "#ef4444", fontWeight: 600 }}
+                                      >
+                                        🗑️ Delete deployment
                                       </button>
                                     </>
                                   )}

@@ -40,37 +40,59 @@ export async function POST(req: Request) {
 
   // Handle push event
   if (eventName === "push") {
-    const rawRepoUrl = payload.repository.html_url || ""; // e.g., https://github.com/H410M-H/syncbay
-    const normalizedRepoUrl = rawRepoUrl.replace(/\/$/, "").replace(/\.git$/, "");
-    const branchRef = payload.ref; // e.g., refs/heads/main
-    const branch = branchRef.replace("refs/heads/", "");
     const commitSha = payload.after;
-    const commitMessage = payload.head_commit?.message?.split("\n")[0] || "Update from GitHub";
+    if (payload.deleted || !commitSha || commitSha === "0000000000000000000000000000000000000000") {
+      return NextResponse.json({ message: "Branch deleted, skipping push event." }, { status: 200 });
+    }
 
-    // Find services linked to this repo and branch (robust to .git and trailing slash variants)
+    const rawRepoUrl = payload.repository?.html_url || payload.repository?.clone_url || "";
+    const fullName = payload.repository?.full_name || ""; // e.g. "H410M-H/portfolio"
+    const normalizedRepoUrl = rawRepoUrl.replace(/\/$/, "").replace(/\.git$/, "");
+    const branchRef = payload.ref || ""; // e.g. refs/heads/master
+    const branch = branchRef.replace(/^refs\/heads\//, "");
+    const commitMessage = payload.head_commit?.message?.split("\n")[0] || "Update from GitHub push";
+
+    // Find services linked to this repository and branch (case-insensitive & URL flexible)
+    const urlConditions: any[] = [
+      { repoUrl: { equals: normalizedRepoUrl, mode: "insensitive" } },
+      { repoUrl: { equals: `${normalizedRepoUrl}.git`, mode: "insensitive" } },
+      { repoUrl: { equals: `${normalizedRepoUrl}/`, mode: "insensitive" } },
+      { repoUrl: { equals: rawRepoUrl, mode: "insensitive" } },
+    ];
+    if (fullName) {
+      urlConditions.push({ repoUrl: { contains: fullName, mode: "insensitive" } });
+    }
+
+    const branchConditions: any[] = [
+      { branch },
+      { branch: null },
+      { branch: "" },
+    ];
+    if (branch === "main") branchConditions.push({ branch: "master" });
+    if (branch === "master") branchConditions.push({ branch: "main" });
+
     const services = await db.service.findMany({
       where: {
-        OR: [
-          { repoUrl: normalizedRepoUrl },
-          { repoUrl: `${normalizedRepoUrl}.git` },
-          { repoUrl: `${normalizedRepoUrl}/` },
-          { repoUrl: rawRepoUrl },
+        OR: urlConditions,
+        AND: [
+          { OR: branchConditions },
+          { sourceType: "github" },
+          { isPaused: false },
+          { deletedAt: null },
         ],
-        branch: branch,
-        sourceType: "github",
-        isPaused: false,
-        deletedAt: null,
       },
     });
 
     if (services.length === 0) {
-      return NextResponse.json({ message: "No services linked to this repository/branch." }, { status: 200 });
+      return NextResponse.json({
+        message: `No active services linked to repository "${fullName || normalizedRepoUrl}" on branch "${branch}".`,
+      }, { status: 200 });
     }
 
-    // For each matching service, trigger a build
+    // For each matching service, automatically trigger deployment
     const results = [];
     for (const service of services) {
-      // Create a Build record
+      // Create Build record
       const build = await db.build.create({
         data: {
           serviceId: service.id,
@@ -81,7 +103,7 @@ export async function POST(req: Request) {
         },
       });
 
-      // Create a Deployment record
+      // Create Deployment record
       const deployment = await db.deployment.create({
         data: {
           serviceId: service.id,
@@ -96,12 +118,15 @@ export async function POST(req: Request) {
         serviceId: service.id,
         commitSha,
         commitMessage,
-      }).catch((e) => console.error("Webhook deployment error:", e));
+      }).catch((e) => console.error("Webhook auto-deployment error:", e));
 
       results.push({ serviceId: service.id, buildId: build.id, deploymentId: deployment.id });
     }
 
-    return NextResponse.json({ message: "Push received, builds triggered", data: results }, { status: 202 });
+    return NextResponse.json({
+      message: `Push received for ${commitSha.slice(0, 7)}. Automated deployment started for ${results.length} service(s).`,
+      data: results,
+    }, { status: 202 });
   }
 
   // Handle pull_request event for ephemeral preview environments (F20)

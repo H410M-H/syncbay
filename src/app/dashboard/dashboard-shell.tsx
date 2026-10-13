@@ -58,6 +58,45 @@ export function DashboardShell({ user, children }: DashboardShellProps) {
   const [inviteResult, setInviteResult] = useState<{ token: string; link: string } | null>(null);
   const [inviteError, setInviteError] = useState("");
 
+  // Background theme state & synchronization
+  const [bgTheme, setBgTheme] = useState<"auto" | "subtle" | "hero" | "paused">("auto");
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("syncbay_cosmic_motion");
+      if (saved && ["auto", "subtle", "hero", "paused"].includes(saved)) {
+        setBgTheme(saved as any);
+      }
+
+      const handleThemeChange = (e: any) => {
+        if (e?.detail && ["auto", "subtle", "hero", "paused"].includes(e.detail)) {
+          setBgTheme(e.detail);
+        }
+      };
+
+      const handleStorage = (e: StorageEvent) => {
+        if (e.key === "syncbay_cosmic_motion" && e.newValue && ["auto", "subtle", "hero", "paused"].includes(e.newValue)) {
+          setBgTheme(e.newValue as any);
+        }
+      };
+
+      window.addEventListener("syncbay-cosmic-motion-change", handleThemeChange as any);
+      window.addEventListener("storage", handleStorage);
+      return () => {
+        window.removeEventListener("syncbay-cosmic-motion-change", handleThemeChange as any);
+        window.removeEventListener("storage", handleStorage);
+      };
+    }
+  }, []);
+
+  const handleBgThemeChange = (newTheme: "auto" | "subtle" | "hero" | "paused") => {
+    setBgTheme(newTheme);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("syncbay_cosmic_motion", newTheme);
+      window.dispatchEvent(new CustomEvent("syncbay-cosmic-motion-change", { detail: newTheme }));
+    }
+  };
+
   const topbarDropdownRef = useRef<HTMLDivElement>(null);
   const sidebarDropdownRef = useRef<HTMLDivElement>(null);
 
@@ -875,8 +914,117 @@ export function DashboardShell({ user, children }: DashboardShellProps) {
             {isCollapsed && <span className="sidebar-tooltip">Invite Teammate</span>}
           </button>
 
-          {/* Expand / Collapse Sidebar Toggle Button */}
+          {/* Background Atmosphere Theme Selector */}
           <div style={{ marginTop: "auto", paddingTop: "12px", borderTop: "1px solid var(--border-subtle)", width: "100%" }}>
+            {!isCollapsed ? (
+              <div style={{ marginBottom: "10px", padding: "0 2px" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px" }}>
+                  <span style={{ fontSize: "0.6875rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700 }}>
+                    🚀 Background
+                  </span>
+                  <span style={{ fontSize: "0.6875rem", color: "var(--brand-primary)", fontWeight: 600 }}>
+                    {bgTheme === "auto" ? "Auto" : bgTheme === "subtle" ? "Subtle" : bgTheme === "hero" ? "Hero 3D" : "Off"}
+                  </span>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "3px" }}>
+                  <button
+                    type="button"
+                    onClick={() => handleBgThemeChange("subtle")}
+                    title="Subtle Cosmic Motion"
+                    className="btn btn-ghost btn-sm"
+                    style={{
+                      padding: "4px 2px",
+                      fontSize: "0.6875rem",
+                      justifyContent: "center",
+                      borderRadius: "6px",
+                      background: bgTheme === "subtle" ? "rgba(6, 182, 212, 0.2)" : "var(--bg-overlay)",
+                      color: bgTheme === "subtle" ? "var(--brand-primary)" : "var(--text-secondary)",
+                      border: bgTheme === "subtle" ? "1px solid rgba(6, 182, 212, 0.4)" : "1px solid var(--border-subtle)",
+                    }}
+                  >
+                    Subtle
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleBgThemeChange("hero")}
+                    title="Hero 3D Space & Server Cluster"
+                    className="btn btn-ghost btn-sm"
+                    style={{
+                      padding: "4px 2px",
+                      fontSize: "0.6875rem",
+                      justifyContent: "center",
+                      borderRadius: "6px",
+                      background: bgTheme === "hero" ? "rgba(6, 182, 212, 0.2)" : "var(--bg-overlay)",
+                      color: bgTheme === "hero" ? "var(--brand-primary)" : "var(--text-secondary)",
+                      border: bgTheme === "hero" ? "1px solid rgba(6, 182, 212, 0.4)" : "1px solid var(--border-subtle)",
+                    }}
+                  >
+                    Hero
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleBgThemeChange("auto")}
+                    title="Automatic (Hero on home, Subtle in dashboard)"
+                    className="btn btn-ghost btn-sm"
+                    style={{
+                      padding: "4px 2px",
+                      fontSize: "0.6875rem",
+                      justifyContent: "center",
+                      borderRadius: "6px",
+                      background: bgTheme === "auto" ? "rgba(6, 182, 212, 0.2)" : "var(--bg-overlay)",
+                      color: bgTheme === "auto" ? "var(--brand-primary)" : "var(--text-secondary)",
+                      border: bgTheme === "auto" ? "1px solid rgba(6, 182, 212, 0.4)" : "1px solid var(--border-subtle)",
+                    }}
+                  >
+                    Auto
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleBgThemeChange("paused")}
+                    title="Off (Clean Dark Surface)"
+                    className="btn btn-ghost btn-sm"
+                    style={{
+                      padding: "4px 2px",
+                      fontSize: "0.6875rem",
+                      justifyContent: "center",
+                      borderRadius: "6px",
+                      background: bgTheme === "paused" ? "rgba(239, 68, 68, 0.2)" : "var(--bg-overlay)",
+                      color: bgTheme === "paused" ? "#f87171" : "var(--text-secondary)",
+                      border: bgTheme === "paused" ? "1px solid rgba(239, 68, 68, 0.4)" : "1px solid var(--border-subtle)",
+                    }}
+                  >
+                    Off
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: "flex", justifyContent: "center", marginBottom: "8px" }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = bgTheme === "auto" ? "subtle" : bgTheme === "subtle" ? "hero" : bgTheme === "hero" ? "paused" : "auto";
+                    handleBgThemeChange(next);
+                  }}
+                  className="btn btn-ghost btn-sm"
+                  style={{
+                    width: "36px",
+                    height: "36px",
+                    padding: 0,
+                    borderRadius: "8px",
+                    display: "grid",
+                    placeItems: "center",
+                    background: "var(--bg-overlay)",
+                    border: "1px solid var(--border-subtle)",
+                    fontSize: "0.9rem",
+                  }}
+                  title={`Background: ${bgTheme.toUpperCase()} (Click to cycle)`}
+                >
+                  🚀
+                </button>
+              </div>
+            )}
+
+            {/* Expand / Collapse Sidebar Toggle Button */}
             <button
               onClick={toggleCollapse}
               className="btn btn-ghost btn-sm"
@@ -1009,6 +1157,79 @@ export function DashboardShell({ user, children }: DashboardShellProps) {
           <Link href="/dashboard/buckets/new" className="nav-item" onClick={() => setMobileOpen(false)}>
             <span className="nav-icon">🪣</span> New Bucket
           </Link>
+
+          <div style={{ marginTop: "16px", padding: "12px", background: "var(--bg-overlay)", borderRadius: "var(--radius-md)", border: "1px solid var(--border-subtle)" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
+              <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700 }}>
+                🚀 Background Theme
+              </span>
+              <span style={{ fontSize: "0.75rem", color: "var(--brand-primary)", fontWeight: 600 }}>
+                {bgTheme === "auto" ? "Auto" : bgTheme === "subtle" ? "Subtle" : bgTheme === "hero" ? "Hero 3D" : "Off"}
+              </span>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "6px" }}>
+              <button
+                type="button"
+                onClick={() => handleBgThemeChange("subtle")}
+                className="btn btn-ghost btn-sm"
+                style={{
+                  padding: "6px 4px",
+                  fontSize: "0.75rem",
+                  justifyContent: "center",
+                  borderRadius: "6px",
+                  background: bgTheme === "subtle" ? "rgba(6, 182, 212, 0.2)" : "var(--bg-base)",
+                  color: bgTheme === "subtle" ? "var(--brand-primary)" : "var(--text-secondary)",
+                }}
+              >
+                Subtle
+              </button>
+              <button
+                type="button"
+                onClick={() => handleBgThemeChange("hero")}
+                className="btn btn-ghost btn-sm"
+                style={{
+                  padding: "6px 4px",
+                  fontSize: "0.75rem",
+                  justifyContent: "center",
+                  borderRadius: "6px",
+                  background: bgTheme === "hero" ? "rgba(6, 182, 212, 0.2)" : "var(--bg-base)",
+                  color: bgTheme === "hero" ? "var(--brand-primary)" : "var(--text-secondary)",
+                }}
+              >
+                Hero
+              </button>
+              <button
+                type="button"
+                onClick={() => handleBgThemeChange("auto")}
+                className="btn btn-ghost btn-sm"
+                style={{
+                  padding: "6px 4px",
+                  fontSize: "0.75rem",
+                  justifyContent: "center",
+                  borderRadius: "6px",
+                  background: bgTheme === "auto" ? "rgba(6, 182, 212, 0.2)" : "var(--bg-base)",
+                  color: bgTheme === "auto" ? "var(--brand-primary)" : "var(--text-secondary)",
+                }}
+              >
+                Auto
+              </button>
+              <button
+                type="button"
+                onClick={() => handleBgThemeChange("paused")}
+                className="btn btn-ghost btn-sm"
+                style={{
+                  padding: "6px 4px",
+                  fontSize: "0.75rem",
+                  justifyContent: "center",
+                  borderRadius: "6px",
+                  background: bgTheme === "paused" ? "rgba(239, 68, 68, 0.2)" : "var(--bg-base)",
+                  color: bgTheme === "paused" ? "#f87171" : "var(--text-secondary)",
+                }}
+              >
+                Off
+              </button>
+            </div>
+          </div>
 
           <div style={{ marginTop: "auto", paddingTop: "16px", borderTop: "1px solid var(--border-subtle)" }}>
             <button

@@ -4,6 +4,7 @@ import { useState, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { trpc } from "@/lib/trpc-client";
+import { BackButton } from "@/components/ui/back-button";
 
 function NewServiceWizardContent() {
   const router = useRouter();
@@ -117,13 +118,10 @@ function NewServiceWizardContent() {
     <div className="fade-in" style={{ maxWidth: "760px", margin: "0 auto" }}>
       {/* ── Header ── */}
       <div style={{ marginBottom: "28px" }}>
-        <Link
-          href={selectedProjectId ? `/dashboard/projects/${selectedProjectId}` : "/dashboard/projects"}
-          className="btn btn-ghost btn-sm"
-          style={{ paddingLeft: 0, marginBottom: "8px" }}
-        >
-          ← Back to Project
-        </Link>
+        <BackButton
+          fallbackUrl={selectedProjectId ? `/dashboard/projects/${selectedProjectId}` : "/dashboard/projects"}
+          label="Back to Project"
+        />
         <h1 className="page-title">Create a New Service</h1>
         <p className="page-subtitle">
           Configure a web application, API server, or background container to run on Syncbay.

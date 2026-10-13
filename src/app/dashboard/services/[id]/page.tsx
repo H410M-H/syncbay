@@ -4,6 +4,7 @@ import { useState, useEffect, use } from "react";
 import Link from "next/link";
 import { trpc } from "@/lib/trpc-client";
 import { useDashboard } from "../../dashboard-shell";
+import { BackButton } from "@/components/ui/back-button";
 
 export default function ServiceDetailsPage(props: { params: Promise<{ id: string }> }) {
   const params = use(props.params);
@@ -59,9 +60,7 @@ export default function ServiceDetailsPage(props: { params: Promise<{ id: string
     <div className="fade-in">
       <div className="page-header" style={{ marginBottom: "24px" }}>
         <div>
-          <Link href="/dashboard/services" style={{ color: "var(--text-muted)", fontSize: "0.875rem", textDecoration: "none", marginBottom: "8px", display: "inline-block" }}>
-            ← Back to Services
-          </Link>
+          <BackButton fallbackUrl="/dashboard/services" label="Back to Services" />
           <h1 className="page-title" style={{ display: "flex", alignItems: "center", gap: "12px" }}>
             {service.name}
             <span className={`badge ${service.isPaused ? "badge-queued" : "badge-active"}`} style={{ fontSize: "0.75rem", verticalAlign: "middle" }}>

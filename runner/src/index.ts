@@ -11,6 +11,8 @@
 
 import * as http from "node:http";
 import * as crypto from "node:crypto";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { BuildPipeline, type PipelineResult } from "./pipeline";
 import { PortManager, defaultPortManager } from "./port-manager";
 
@@ -340,6 +342,13 @@ export class RunnerDaemon {
       sseClients: new Set(),
     };
     this.jobs.set(jobId, jobState);
+    if (params.deploymentId && params.deploymentId !== jobId) {
+      this.jobs.set(params.deploymentId, jobState);
+    }
+    this.saveJobToDisk(jobId, jobState);
+    if (params.deploymentId && params.deploymentId !== jobId) {
+      this.saveJobToDisk(params.deploymentId, jobState);
+    }
 
     // Return 202 Accepted with stream URL
     res.writeHead(202, { "Content-Type": "application/json" });
@@ -355,12 +364,84 @@ export class RunnerDaemon {
     this.runJobPipeline(jobId, params);
   }
 
+  private getLogFilePath(jobId: string): string {
+    const candidates = [
+      path.resolve(process.cwd(), ".runner_logs"),
+      path.resolve(process.cwd(), "..", ".runner_logs"),
+      path.resolve(process.cwd(), ".runner_workspace", "logs"),
+    ];
+    for (const dir of candidates) {
+      try {
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        return path.join(dir, `${jobId}.json`);
+      } catch {}
+    }
+    return path.join(process.cwd(), `${jobId}.json`);
+  }
+
+  private saveJobToDisk(jobId: string, job: JobState): void {
+    try {
+      const filePath = this.getLogFilePath(jobId);
+      const data = {
+        jobId: job.jobId,
+        status: job.status,
+        containerId: job.containerId,
+        assignedPort: job.assignedPort,
+        strategy: job.strategy,
+        startedAt: job.startedAt,
+        completedAt: job.completedAt,
+        error: job.error,
+        logs: job.logs,
+      };
+      fs.writeFileSync(filePath, JSON.stringify(data), "utf8");
+    } catch {}
+  }
+
+  private loadJobFromDisk(jobId: string): JobState | null {
+    try {
+      const candidates = [
+        path.resolve(process.cwd(), ".runner_logs", `${jobId}.json`),
+        path.resolve(process.cwd(), "..", ".runner_logs", `${jobId}.json`),
+        path.resolve(process.cwd(), ".runner_workspace", "logs", `${jobId}.json`),
+      ];
+      for (const p of candidates) {
+        if (fs.existsSync(p)) {
+          const raw = fs.readFileSync(p, "utf8");
+          const data = JSON.parse(raw);
+          const state: JobState = {
+            jobId: data.jobId || jobId,
+            status: data.status || "ACTIVE",
+            containerId: data.containerId,
+            assignedPort: data.assignedPort,
+            strategy: data.strategy,
+            startedAt: data.startedAt || new Date().toISOString(),
+            completedAt: data.completedAt,
+            error: data.error,
+            logs: data.logs || [],
+            sseClients: new Set(),
+          };
+          this.jobs.set(jobId, state);
+          return state;
+        }
+      }
+    } catch {}
+    return null;
+  }
+
   private async runJobPipeline(jobId: string, params: any): Promise<void> {
     const job = this.jobs.get(jobId);
     if (!job) return;
 
+    let logCounter = 0;
     const log = (msg: string) => {
       job.logs.push(msg);
+      logCounter++;
+      if (logCounter % 5 === 0) {
+        this.saveJobToDisk(jobId, job);
+        if (params.deploymentId && params.deploymentId !== jobId) {
+          this.saveJobToDisk(params.deploymentId, job);
+        }
+      }
       // Stream to active SSE clients
       for (const client of job.sseClients) {
         try {
@@ -406,6 +487,10 @@ export class RunnerDaemon {
       job.completedAt = new Date().toISOString();
       log(`[runner] Pipeline error: ${err.message}`);
     } finally {
+      this.saveJobToDisk(jobId, job);
+      if (params.deploymentId && params.deploymentId !== jobId) {
+        this.saveJobToDisk(params.deploymentId, job);
+      }
       // Send termination event to SSE streams
       for (const client of job.sseClients) {
         try {
@@ -418,7 +503,7 @@ export class RunnerDaemon {
   }
 
   private handleGetBuild(jobId: string, res: http.ServerResponse): void {
-    const job = this.jobs.get(jobId);
+    const job = this.jobs.get(jobId) || this.loadJobFromDisk(jobId);
     if (!job) {
       res.writeHead(404, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: `Job ${jobId} not found` }));
@@ -443,7 +528,7 @@ export class RunnerDaemon {
   }
 
   private handleStreamLogs(jobId: string, req: http.IncomingMessage, res: http.ServerResponse): void {
-    const job = this.jobs.get(jobId);
+    const job = this.jobs.get(jobId) || this.loadJobFromDisk(jobId);
     if (!job) {
       res.writeHead(404, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: `Job ${jobId} not found` }));

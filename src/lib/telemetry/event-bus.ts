@@ -44,6 +44,21 @@ export class LogEventBus {
     } catch {}
   }
 
+  public deletePersistedLog(deploymentId: string) {
+    try {
+      const candidates = [
+        path.join(this.logDir, `${deploymentId}.json`),
+        path.join(process.cwd(), ".runner_logs", `${deploymentId}.json`),
+        path.join(process.cwd(), "runner", ".runner_workspace", "logs", `${deploymentId}.json`),
+      ];
+      for (const p of candidates) {
+        if (fs.existsSync(p)) {
+          fs.unlinkSync(p);
+        }
+      }
+    } catch {}
+  }
+
   private persistToDisk(deploymentId: string) {
     try {
       this.ensureLogDir();
@@ -60,15 +75,23 @@ export class LogEventBus {
 
   private loadFromDisk(deploymentId: string) {
     try {
-      const filePath = path.join(this.logDir, `${deploymentId}.json`);
-      if (fs.existsSync(filePath)) {
-        const raw = fs.readFileSync(filePath, "utf8");
-        const parsed = JSON.parse(raw);
-        if (parsed.logs && Array.isArray(parsed.logs)) {
-          this.ringBuffers.set(deploymentId, parsed.logs);
-        }
-        if (parsed.error) {
-          this.errors.set(deploymentId, parsed.error);
+      const candidates = [
+        path.join(this.logDir, `${deploymentId}.json`),
+        path.join(process.cwd(), ".runner_logs", `${deploymentId}.json`),
+        path.join(process.cwd(), "runner", ".runner_workspace", "logs", `${deploymentId}.json`),
+        path.join(process.cwd(), "..", ".runner_logs", `${deploymentId}.json`),
+      ];
+      for (const filePath of candidates) {
+        if (fs.existsSync(filePath)) {
+          const raw = fs.readFileSync(filePath, "utf8");
+          const parsed = JSON.parse(raw);
+          if (parsed.logs && Array.isArray(parsed.logs) && parsed.logs.length > 0) {
+            this.ringBuffers.set(deploymentId, parsed.logs);
+          }
+          if (parsed.error) {
+            this.errors.set(deploymentId, parsed.error);
+          }
+          if (this.ringBuffers.has(deploymentId)) break;
         }
       }
     } catch {}
@@ -153,6 +176,7 @@ export class LogEventBus {
       this.ringBuffers.delete(deploymentId);
       this.errors.delete(deploymentId);
       this.subscribers.delete(deploymentId);
+      this.deletePersistedLog(deploymentId);
     } else {
       this.ringBuffers.clear();
       this.errors.clear();

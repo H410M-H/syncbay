@@ -142,6 +142,10 @@ export function DeepSpaceScene({
     const databasePods: THREE.Group[] = [];
 
     if (mode === "hero" || mode === "full") {
+      // Position off-center to the right and deeper in z so it never overlaps or clutters foreground content/cards
+      cloudClusterGroup.position.set(mode === "hero" ? 220 : 280, -40, -280);
+      cloudClusterGroup.scale.setScalar(mode === "hero" ? 0.75 : 0.52);
+
       // 1. Central Hyper-Plane Core Node (Metallic Server Rack Cluster)
       const coreGeo = new THREE.BoxGeometry(45, 75, 45);
       const coreMat = new THREE.MeshStandardMaterial({
@@ -152,22 +156,24 @@ export function DeepSpaceScene({
       const coreRack = new THREE.Mesh(coreGeo, coreMat);
       coreRack.position.set(0, 0, 0);
 
-      // Server rack wireframe edges for cyber aesthetic
+      // Server rack wireframe edges for cyber aesthetic (toned down opacity to avoid clutter)
       const edges = new THREE.EdgesGeometry(coreGeo);
       const lineMat = new THREE.LineBasicMaterial({
         color: 0x06b6d4,
-        linewidth: 2,
+        linewidth: 1.5,
         transparent: true,
-        opacity: 0.85,
+        opacity: 0.2,
       });
       const wireframe = new THREE.LineSegments(edges, lineMat);
       coreRack.add(wireframe);
 
-      // Server LED lights
+      // Server LED lights (dimmed)
       for (let j = 0; j < 8; j++) {
         const ledGeo = new THREE.BoxGeometry(35, 2, 2);
         const ledMat = new THREE.MeshBasicMaterial({
           color: j % 2 === 0 ? 0x22c55e : 0x06b6d4,
+          transparent: true,
+          opacity: 0.35,
         });
         const led = new THREE.Mesh(ledGeo, ledMat);
         led.position.set(0, -28 + j * 8, 23);
@@ -177,7 +183,6 @@ export function DeepSpaceScene({
       serverRacks.push(coreRack);
 
       // 2. Glowing Database Cylinder Pods (PostgreSQL & Redis)
-      const dbNames = ["PostgreSQL", "Redis"];
       const dbColors = [0x336791, 0xdc2626];
 
       for (let d = 0; d < 2; d++) {
@@ -194,7 +199,7 @@ export function DeepSpaceScene({
         const ringMat = new THREE.MeshBasicMaterial({
           color: dbColors[d],
           transparent: true,
-          opacity: 0.9,
+          opacity: 0.25,
         });
         const ring = new THREE.Mesh(ringGeo, ringMat);
         ring.rotation.x = Math.PI / 2;
@@ -208,7 +213,6 @@ export function DeepSpaceScene({
 
       // 3. Orbiting Edge POP Satellites (iad1, sfo1, fra1, lhr1, sin1, syd1)
       const popColors = [0x06b6d4, 0x3b82f6, 0x8b5cf6, 0xec4899, 0x10b981, 0xf59e0b];
-      const popLabels = ["iad1", "sfo1", "fra1", "lhr1", "sin1", "syd1"];
 
       for (let s = 0; s < 6; s++) {
         const satGroup = new THREE.Group();
@@ -223,12 +227,12 @@ export function DeepSpaceScene({
         const podMesh = new THREE.Mesh(podGeo, podMat);
         satGroup.add(podMesh);
 
-        // Glowing solar arrays
+        // Glowing solar arrays (subtle)
         const panelGeo = new THREE.BoxGeometry(20, 0.8, 6);
         const panelMat = new THREE.MeshBasicMaterial({
           color: popColors[s],
           transparent: true,
-          opacity: 0.85,
+          opacity: 0.25,
         });
         const panelMesh = new THREE.Mesh(panelGeo, panelMat);
         satGroup.add(panelMesh);
@@ -237,19 +241,21 @@ export function DeepSpaceScene({
         const beaconGeo = new THREE.SphereGeometry(2, 12, 12);
         const beaconMat = new THREE.MeshBasicMaterial({
           color: 0xffffff,
+          transparent: true,
+          opacity: 0.4,
         });
         const beacon = new THREE.Mesh(beaconGeo, beaconMat);
         beacon.position.y = 9;
         satGroup.add(beacon);
 
-        // Orbit ring guide
+        // Orbit ring guide (ultra-subtle)
         const orbitRadius = 160 + s * 30;
         const orbitRingGeo = new THREE.RingGeometry(orbitRadius - 0.5, orbitRadius + 0.5, 64);
         const orbitRingMat = new THREE.MeshBasicMaterial({
           color: popColors[s],
           side: THREE.DoubleSide,
           transparent: true,
-          opacity: 0.12,
+          opacity: 0.03,
         });
         const orbitRing = new THREE.Mesh(orbitRingGeo, orbitRingMat);
         orbitRing.rotation.x = Math.PI / 2 + (s * 0.1);
@@ -266,15 +272,15 @@ export function DeepSpaceScene({
         cloudClusterGroup.add(satGroup);
       }
 
-      // Lights for realistic 4K 3D shading
-      const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+      // Lights for soft realistic 4K 3D shading
+      const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
       scene.add(ambientLight);
 
-      const dirLight1 = new THREE.DirectionalLight(0x06b6d4, 2.5);
+      const dirLight1 = new THREE.DirectionalLight(0x06b6d4, 1.2);
       dirLight1.position.set(200, 300, 400);
       scene.add(dirLight1);
 
-      const dirLight2 = new THREE.DirectionalLight(0x8b5cf6, 2.0);
+      const dirLight2 = new THREE.DirectionalLight(0x8b5cf6, 1.0);
       dirLight2.position.set(-200, -200, -300);
       scene.add(dirLight2);
 
@@ -395,7 +401,7 @@ export function DeepSpaceScene({
       ref={mountRef}
       className="pointer-events-none fixed inset-0 z-0 overflow-hidden"
       style={{
-        opacity: mode === "subtle" ? 0.75 : 0.95,
+        opacity: mode === "subtle" ? 0.35 : mode === "hero" ? 0.80 : 0.55,
         transition: "opacity 0.6s ease-in-out",
       }}
       aria-hidden="true"

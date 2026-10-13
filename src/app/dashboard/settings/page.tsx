@@ -75,6 +75,36 @@ export default function SettingsPage() {
   const [capSuccessMsg, setCapSuccessMsg] = useState("");
   const [capErrorMsg, setCapErrorMsg] = useState("");
 
+  // Appearance & 3D Background Theme State
+  const [bgMotionMode, setBgMotionMode] = useState<"auto" | "subtle" | "hero" | "paused">("auto");
+  const [appearanceSaved, setAppearanceSaved] = useState(false);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("syncbay_cosmic_motion");
+      if (saved && ["auto", "subtle", "hero", "paused"].includes(saved)) {
+        setBgMotionMode(saved as any);
+      }
+      const handleThemeChange = (e: any) => {
+        if (e?.detail && ["auto", "subtle", "hero", "paused"].includes(e.detail)) {
+          setBgMotionMode(e.detail);
+        }
+      };
+      window.addEventListener("syncbay-cosmic-motion-change", handleThemeChange as any);
+      return () => window.removeEventListener("syncbay-cosmic-motion-change", handleThemeChange as any);
+    }
+  }, []);
+
+  const handleSelectBgMode = (mode: "auto" | "subtle" | "hero" | "paused") => {
+    setBgMotionMode(mode);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("syncbay_cosmic_motion", mode);
+      window.dispatchEvent(new CustomEvent("syncbay-cosmic-motion-change", { detail: mode }));
+      setAppearanceSaved(true);
+      setTimeout(() => setAppearanceSaved(false), 2500);
+    }
+  };
+
   const handleCreateToken = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!workspaceId || !newTokenName.trim()) return;
@@ -233,6 +263,90 @@ export default function SettingsPage() {
             </>
           );
         })()}
+      </div>
+
+      {/* ── Section: Appearance & Cosmic 3D Atmosphere ── */}
+      <div className="card" style={{ marginBottom: "28px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+          <h3 style={{ margin: 0 }}>Appearance &amp; 3D Atmosphere</h3>
+          {appearanceSaved && (
+            <span className="badge badge-active" style={{ fontSize: "0.75rem" }}>
+              Saved ✓
+            </span>
+          )}
+        </div>
+        <p style={{ fontSize: "0.875rem", marginBottom: "20px" }}>
+          Customize the WebGL 3D deep space background and server rack cluster visual effects across your workspace.
+        </p>
+
+        <div className="grid-2" style={{ gap: "16px" }}>
+          {[
+            {
+              id: "auto",
+              title: "Auto / Adaptive",
+              desc: "Dynamic experience: Full 3D Cyber Core on landing pages and subtle periphery in the console.",
+              badge: "Default",
+              icon: "✨",
+            },
+            {
+              id: "subtle",
+              title: "Subtle (Recommended)",
+              desc: "Gentle warp starfield, low opacity dimmed server rack, zero distraction over data cards.",
+              badge: "Minimal Clutter",
+              icon: "🌌",
+            },
+            {
+              id: "hero",
+              title: "Hero 3D Core",
+              desc: "Full high-fidelity metallic server cluster, orbiting POP satellites, and interactive mouse parallax.",
+              badge: "Full 3D",
+              icon: "🚀",
+            },
+            {
+              id: "paused",
+              title: "Off (High Contrast)",
+              desc: "Disables WebGL canvas completely for maximum battery life and ultra-clean dark slate look.",
+              badge: "Performance",
+              icon: "⚡",
+            },
+          ].map((item) => {
+            const isSelected = bgMotionMode === item.id;
+            return (
+              <div
+                key={item.id}
+                onClick={() => handleSelectBgMode(item.id as any)}
+                style={{
+                  padding: "16px",
+                  borderRadius: "var(--radius-md)",
+                  border: isSelected ? "2px solid var(--brand-primary)" : "1px solid var(--border-subtle)",
+                  background: isSelected ? "rgba(6, 182, 212, 0.08)" : "var(--bg-overlay)",
+                  cursor: "pointer",
+                  transition: "all 0.2s ease",
+                  display: "flex",
+                  flexDirection: "column",
+                  justifyContent: "space-between",
+                }}
+              >
+                <div>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <span style={{ fontSize: "1.25rem" }}>{item.icon}</span>
+                      <strong style={{ fontSize: "0.9375rem", color: isSelected ? "var(--brand-primary)" : "var(--text-primary)" }}>
+                        {item.title}
+                      </strong>
+                    </div>
+                    <span className={`badge ${isSelected ? "badge-active" : "badge-queued"}`} style={{ fontSize: "0.7rem" }}>
+                      {isSelected ? "Active ✓" : item.badge}
+                    </span>
+                  </div>
+                  <p style={{ fontSize: "0.8125rem", color: "var(--text-secondary)", margin: 0 }}>
+                    {item.desc}
+                  </p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       {/* ── Section 2: GitHub Connection ── */}
