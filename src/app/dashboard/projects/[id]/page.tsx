@@ -116,6 +116,21 @@ function ProjectConsoleContent() {
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [openDeploymentMenuId, setOpenDeploymentMenuId] = useState<string | null>(null);
 
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (openDeploymentMenuId) {
+        const target = e.target as HTMLElement;
+        if (!target.closest?.("[data-deployment-menu]")) {
+          setOpenDeploymentMenuId(null);
+        }
+      }
+    }
+    if (openDeploymentMenuId) {
+      document.addEventListener("mousedown", handleClickOutside);
+    }
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [openDeploymentMenuId]);
+
   const handleRestartService = async (serviceId: string) => {
     try {
       const res = await restartServiceMutation.mutateAsync({ serviceId });
@@ -1221,7 +1236,7 @@ function ProjectConsoleContent() {
                             >
                               View deployment
                             </Link>
-                            <div style={{ position: "relative" }}>
+                            <div style={{ position: "relative" }} data-deployment-menu="true">
                               <button
                                 type="button"
                                 className="btn btn-ghost btn-sm"
@@ -1229,13 +1244,13 @@ function ProjectConsoleContent() {
                                 aria-expanded={openDeploymentMenuId === dep.id}
                                 onClick={() => setOpenDeploymentMenuId((current) => current === dep.id ? null : dep.id)}
                               >
-                                More
+                                More ▾
                               </button>
                               {openDeploymentMenuId === dep.id && (
                                 <div
                                   role="menu"
                                   aria-label={`Deployment ${dep.id.slice(0, 8)} actions`}
-                                  style={{ position: "absolute", right: 0, top: "calc(100% + 6px)", zIndex: 20, minWidth: "180px", padding: "6px", border: "1px solid var(--border-subtle)", borderRadius: "10px", background: "var(--bg-elevated)", boxShadow: "var(--shadow-lg)", textAlign: "left" }}
+                                  style={{ position: "absolute", right: 0, top: "calc(100% + 6px)", zIndex: 20, minWidth: "190px", padding: "6px", border: "1px solid var(--border-subtle)", borderRadius: "10px", background: "var(--bg-elevated)", boxShadow: "var(--shadow-lg)", textAlign: "left" }}
                                 >
                                   <Link
                                     href={`/dashboard/deployments/${dep.id}`}
@@ -1255,17 +1270,18 @@ function ProjectConsoleContent() {
                                   >
                                     View logs
                                   </Link>
-                                  {isRunning ? (
+                                  {isRunning && (
                                     <button
                                       type="button"
                                       role="menuitem"
                                       onClick={() => { setOpenDeploymentMenuId(null); handleCancelDeploy(dep.id); }}
                                       className="btn btn-ghost btn-sm"
-                                      style={{ display: "block", width: "100%", textAlign: "left" }}
+                                      style={{ display: "block", width: "100%", textAlign: "left", color: "#f87171" }}
                                     >
                                       Cancel deployment
                                     </button>
-                                  ) : (
+                                  )}
+                                  {!isRunning && (
                                     <>
                                       <button
                                         type="button"
@@ -1294,18 +1310,18 @@ function ProjectConsoleContent() {
                                       >
                                         Roll back to this
                                       </button>
-                                      <hr style={{ border: "none", borderTop: "1px solid var(--border-subtle)", margin: "4px 0" }} />
-                                      <button
-                                        type="button"
-                                        role="menuitem"
-                                        onClick={() => { setOpenDeploymentMenuId(null); handleDeleteDeployment(dep.id); }}
-                                        className="btn btn-ghost btn-sm"
-                                        style={{ display: "block", width: "100%", textAlign: "left", color: "#ef4444", fontWeight: 600 }}
-                                      >
-                                        🗑️ Delete deployment
-                                      </button>
                                     </>
                                   )}
+                                  <hr style={{ border: "none", borderTop: "1px solid var(--border-subtle)", margin: "4px 0" }} />
+                                  <button
+                                    type="button"
+                                    role="menuitem"
+                                    onClick={() => { setOpenDeploymentMenuId(null); handleDeleteDeployment(dep.id); }}
+                                    className="btn btn-ghost btn-sm"
+                                    style={{ display: "block", width: "100%", textAlign: "left", color: "#ef4444", fontWeight: 600 }}
+                                  >
+                                    🗑️ Delete deployment
+                                  </button>
                                 </div>
                               )}
                             </div>

@@ -106,45 +106,54 @@ export function DeepSpaceScene({
     const starField = new THREE.Points(starGeometry, starMaterial);
     scene.add(starField);
 
-    // --- Nebula Glow Particles ---
-    const nebulaCount = mode === "subtle" ? 8 : 18;
+    // --- Nebula Glow Particles (subtle ambient depth) ---
+    const nebulaCount = mode === "subtle" ? 3 : 8;
     const nebulaGroup = new THREE.Group();
 
     const nebulaColors = [0x06b6d4, 0x7c3aed, 0xec4899, 0x1d4ed8];
     for (let i = 0; i < nebulaCount; i++) {
       const geo = new THREE.SphereGeometry(
-        Math.random() * 80 + 50,
-        16,
-        16
+        Math.random() * 60 + 40,
+        12,
+        12
       );
       const mat = new THREE.MeshBasicMaterial({
         color: nebulaColors[i % nebulaColors.length],
         transparent: true,
-        opacity: mode === "subtle" ? 0.03 : 0.06,
+        opacity: mode === "subtle" ? 0.015 : 0.035,
         blending: THREE.AdditiveBlending,
         wireframe: true,
       });
       const mesh = new THREE.Mesh(geo, mat);
       mesh.position.set(
-        (Math.random() - 0.5) * 1200,
-        (Math.random() - 0.5) * 800,
-        (Math.random() - 0.5) * 800 - 200
+        (Math.random() - 0.5) * 1400,
+        (Math.random() - 0.5) * 900,
+        (Math.random() - 0.5) * 600 - 450
       );
       mesh.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, 0);
       nebulaGroup.add(mesh);
     }
     scene.add(nebulaGroup);
 
-    // --- 3D Cloud Services Themed Elements (When in 'hero' or 'full' mode) ---
+    // --- 3D Cloud Services Themed Elements (Server Box & Moving Satellites) ---
     const cloudClusterGroup = new THREE.Group();
     const serverRacks: THREE.Mesh[] = [];
     const satellites: { mesh: THREE.Group; orbitRadius: number; speed: number; angle: number; tilt: number }[] = [];
     const databasePods: THREE.Group[] = [];
 
-    if (mode === "hero" || mode === "full") {
-      // Position off-center to the right and deeper in z so it never overlaps or clutters foreground content/cards
-      cloudClusterGroup.position.set(mode === "hero" ? 220 : 280, -40, -280);
-      cloudClusterGroup.scale.setScalar(mode === "hero" ? 0.75 : 0.52);
+    const isHero = mode === "hero";
+    const isSubtle = mode === "subtle";
+
+    // Improvise: Render in all active modes (hero, full, subtle) with tuned subtlety and offset coordinates
+    if (isHero || isSubtle || mode === "full") {
+      // In subtle mode: position off-center to the bottom-right and deep in z so it never overlaps foreground text/cards
+      const clusterX = isHero ? 220 : 320;
+      const clusterY = isHero ? -40 : -80;
+      const clusterZ = isHero ? -280 : -390;
+      const clusterScale = isHero ? 0.70 : 0.36;
+
+      cloudClusterGroup.position.set(clusterX, clusterY, clusterZ);
+      cloudClusterGroup.scale.setScalar(clusterScale);
 
       // 1. Central Hyper-Plane Core Node (Metallic Server Rack Cluster)
       const coreGeo = new THREE.BoxGeometry(45, 75, 45);
@@ -156,13 +165,13 @@ export function DeepSpaceScene({
       const coreRack = new THREE.Mesh(coreGeo, coreMat);
       coreRack.position.set(0, 0, 0);
 
-      // Server rack wireframe edges for cyber aesthetic (toned down opacity to avoid clutter)
+      // Server rack wireframe edges for cyber aesthetic (subtle)
       const edges = new THREE.EdgesGeometry(coreGeo);
       const lineMat = new THREE.LineBasicMaterial({
         color: 0x06b6d4,
-        linewidth: 1.5,
+        linewidth: 1,
         transparent: true,
-        opacity: 0.2,
+        opacity: isHero ? 0.22 : 0.08,
       });
       const wireframe = new THREE.LineSegments(edges, lineMat);
       coreRack.add(wireframe);
@@ -173,7 +182,7 @@ export function DeepSpaceScene({
         const ledMat = new THREE.MeshBasicMaterial({
           color: j % 2 === 0 ? 0x22c55e : 0x06b6d4,
           transparent: true,
-          opacity: 0.35,
+          opacity: isHero ? 0.35 : 0.16,
         });
         const led = new THREE.Mesh(ledGeo, ledMat);
         led.position.set(0, -28 + j * 8, 23);
@@ -199,7 +208,7 @@ export function DeepSpaceScene({
         const ringMat = new THREE.MeshBasicMaterial({
           color: dbColors[d],
           transparent: true,
-          opacity: 0.25,
+          opacity: isHero ? 0.22 : 0.08,
         });
         const ring = new THREE.Mesh(ringGeo, ringMat);
         ring.rotation.x = Math.PI / 2;
@@ -232,7 +241,7 @@ export function DeepSpaceScene({
         const panelMat = new THREE.MeshBasicMaterial({
           color: popColors[s],
           transparent: true,
-          opacity: 0.25,
+          opacity: isHero ? 0.22 : 0.09,
         });
         const panelMesh = new THREE.Mesh(panelGeo, panelMat);
         satGroup.add(panelMesh);
@@ -242,7 +251,7 @@ export function DeepSpaceScene({
         const beaconMat = new THREE.MeshBasicMaterial({
           color: 0xffffff,
           transparent: true,
-          opacity: 0.4,
+          opacity: isHero ? 0.35 : 0.15,
         });
         const beacon = new THREE.Mesh(beaconGeo, beaconMat);
         beacon.position.y = 9;
@@ -255,7 +264,7 @@ export function DeepSpaceScene({
           color: popColors[s],
           side: THREE.DoubleSide,
           transparent: true,
-          opacity: 0.03,
+          opacity: isHero ? 0.025 : 0.010,
         });
         const orbitRing = new THREE.Mesh(orbitRingGeo, orbitRingMat);
         orbitRing.rotation.x = Math.PI / 2 + (s * 0.1);
@@ -273,14 +282,14 @@ export function DeepSpaceScene({
       }
 
       // Lights for soft realistic 4K 3D shading
-      const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+      const ambientLight = new THREE.AmbientLight(0xffffff, isHero ? 0.6 : 0.4);
       scene.add(ambientLight);
 
-      const dirLight1 = new THREE.DirectionalLight(0x06b6d4, 1.2);
+      const dirLight1 = new THREE.DirectionalLight(0x06b6d4, isHero ? 1.2 : 0.7);
       dirLight1.position.set(200, 300, 400);
       scene.add(dirLight1);
 
-      const dirLight2 = new THREE.DirectionalLight(0x8b5cf6, 1.0);
+      const dirLight2 = new THREE.DirectionalLight(0x8b5cf6, isHero ? 1.0 : 0.5);
       dirLight2.position.set(-200, -200, -300);
       scene.add(dirLight2);
 
@@ -331,7 +340,7 @@ export function DeepSpaceScene({
       nebulaGroup.rotation.x = Math.sin(elapsedTime * 0.015) * 0.1;
 
       // 3. Cloud Services Models Animations
-      if (mode === "hero" || mode === "full") {
+      if (mode === "hero" || mode === "full" || mode === "subtle") {
         // Rotate central server cluster
         serverRacks.forEach((rack) => {
           rack.rotation.y = elapsedTime * 0.35;

@@ -86,7 +86,28 @@ export class LogEventBus {
           const raw = fs.readFileSync(filePath, "utf8");
           const parsed = JSON.parse(raw);
           if (parsed.logs && Array.isArray(parsed.logs) && parsed.logs.length > 0) {
-            this.ringBuffers.set(deploymentId, parsed.logs);
+            const normalized: LogEntry[] = parsed.logs.map((item: any, idx: number) => {
+              if (typeof item === "string") {
+                let stream: "stdout" | "stderr" | "system" = "stdout";
+                if (item.includes("[error]") || item.includes("Error:") || item.startsWith("err:")) stream = "stderr";
+                else if (item.startsWith("[syncbay]") || item.startsWith("[proxy]") || item.startsWith("[deploy]") || item.startsWith("[runner]")) stream = "system";
+                return {
+                  id: `log_${deploymentId}_${idx}`,
+                  deploymentId,
+                  timestamp: parsed.updatedAt || parsed.startedAt || new Date().toISOString(),
+                  stream,
+                  message: item,
+                };
+              }
+              return {
+                id: item.id || `log_${deploymentId}_${idx}`,
+                deploymentId: item.deploymentId || deploymentId,
+                timestamp: item.timestamp || parsed.updatedAt || new Date().toISOString(),
+                stream: item.stream || "stdout",
+                message: item.message || String(item || ""),
+              };
+            });
+            this.ringBuffers.set(deploymentId, normalized);
           }
           if (parsed.error) {
             this.errors.set(deploymentId, parsed.error);

@@ -4,6 +4,7 @@ import { useState } from "react";
 import { trpc } from "@/lib/trpc-client";
 import { WorkspaceRole } from "@prisma/client";
 import { useDashboard } from "../dashboard-shell";
+import { BackButton } from "@/components/ui/back-button";
 
 export default function MembersPage() {
   const dashboard = useDashboard();
@@ -115,6 +116,10 @@ export default function MembersPage() {
 
   return (
     <div className="fade-in" style={{ maxWidth: "960px", margin: "0 auto" }}>
+      <div style={{ marginBottom: "16px" }}>
+        <BackButton fallbackUrl="/dashboard" label="Back to Dashboard" />
+      </div>
+
       {/* ── Page Header ── */}
       <div className="page-header">
         <div>

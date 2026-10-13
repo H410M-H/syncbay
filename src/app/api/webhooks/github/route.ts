@@ -76,7 +76,6 @@ export async function POST(req: Request) {
         OR: urlConditions,
         AND: [
           { OR: branchConditions },
-          { sourceType: "github" },
           { isPaused: false },
           { deletedAt: null },
         ],

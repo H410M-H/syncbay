@@ -99,6 +99,20 @@ export function DashboardShell({ user, children }: DashboardShellProps) {
 
   const topbarDropdownRef = useRef<HTMLDivElement>(null);
   const sidebarDropdownRef = useRef<HTMLDivElement>(null);
+  const sidebarAccountRef = useRef<HTMLDivElement>(null);
+  const [sidebarAccountOpen, setSidebarAccountOpen] = useState(false);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (sidebarAccountRef.current && !sidebarAccountRef.current.contains(e.target as Node)) {
+        setSidebarAccountOpen(false);
+      }
+    };
+    if (sidebarAccountOpen) {
+      document.addEventListener("mousedown", handleClickOutside);
+    }
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [sidebarAccountOpen]);
 
   const createWorkspaceMutation = trpc.workspace.create.useMutation();
   const inviteMutation = trpc.workspace.invite.useMutation();
@@ -914,115 +928,198 @@ export function DashboardShell({ user, children }: DashboardShellProps) {
             {isCollapsed && <span className="sidebar-tooltip">Invite Teammate</span>}
           </button>
 
-          {/* Background Atmosphere Theme Selector */}
+          {/* Sidebar Account & Appearance Settings (Theme Switcher moved into Account Settings) */}
           <div style={{ marginTop: "auto", paddingTop: "12px", borderTop: "1px solid var(--border-subtle)", width: "100%" }}>
-            {!isCollapsed ? (
-              <div style={{ marginBottom: "10px", padding: "0 2px" }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px" }}>
-                  <span style={{ fontSize: "0.6875rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700 }}>
-                    🚀 Background
-                  </span>
-                  <span style={{ fontSize: "0.6875rem", color: "var(--brand-primary)", fontWeight: 600 }}>
-                    {bgTheme === "auto" ? "Auto" : bgTheme === "subtle" ? "Subtle" : bgTheme === "hero" ? "Hero 3D" : "Off"}
-                  </span>
+            <div style={{ position: "relative", marginBottom: "8px" }} ref={sidebarAccountRef}>
+              <button
+                type="button"
+                onClick={() => setSidebarAccountOpen((prev) => !prev)}
+                className="btn btn-ghost btn-sm"
+                style={{
+                  width: "100%",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: isCollapsed ? "center" : "space-between",
+                  padding: "8px",
+                  borderRadius: "var(--radius-md)",
+                  background: sidebarAccountOpen ? "rgba(6, 182, 212, 0.12)" : "var(--bg-overlay)",
+                  border: sidebarAccountOpen ? "1px solid var(--brand-primary)" : "1px solid var(--border-subtle)",
+                }}
+                aria-expanded={sidebarAccountOpen}
+                aria-label="Account Settings & Appearance"
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", overflow: "hidden" }}>
+                  <div
+                    style={{
+                      width: "24px",
+                      height: "24px",
+                      borderRadius: "50%",
+                      background: "linear-gradient(135deg, var(--brand-primary), var(--brand-secondary))",
+                      display: "grid",
+                      placeItems: "center",
+                      fontSize: "11px",
+                      fontWeight: 700,
+                      color: "#fff",
+                      flexShrink: 0,
+                    }}
+                  >
+                    {user.name ? user.name.slice(0, 1).toUpperCase() : user.email?.slice(0, 1).toUpperCase() || "U"}
+                  </div>
+                  {!isCollapsed && (
+                    <div style={{ textAlign: "left", overflow: "hidden" }}>
+                      <div style={{ fontSize: "0.75rem", fontWeight: 700, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {user.name || user.email?.split("@")[0]}
+                      </div>
+                      <div style={{ fontSize: "0.6875rem", color: "var(--text-muted)" }}>
+                        Account &amp; Theme
+                      </div>
+                    </div>
+                  )}
                 </div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "3px" }}>
-                  <button
-                    type="button"
-                    onClick={() => handleBgThemeChange("subtle")}
-                    title="Subtle Cosmic Motion"
-                    className="btn btn-ghost btn-sm"
-                    style={{
-                      padding: "4px 2px",
-                      fontSize: "0.6875rem",
-                      justifyContent: "center",
-                      borderRadius: "6px",
-                      background: bgTheme === "subtle" ? "rgba(6, 182, 212, 0.2)" : "var(--bg-overlay)",
-                      color: bgTheme === "subtle" ? "var(--brand-primary)" : "var(--text-secondary)",
-                      border: bgTheme === "subtle" ? "1px solid rgba(6, 182, 212, 0.4)" : "1px solid var(--border-subtle)",
-                    }}
-                  >
-                    Subtle
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleBgThemeChange("hero")}
-                    title="Hero 3D Space & Server Cluster"
-                    className="btn btn-ghost btn-sm"
-                    style={{
-                      padding: "4px 2px",
-                      fontSize: "0.6875rem",
-                      justifyContent: "center",
-                      borderRadius: "6px",
-                      background: bgTheme === "hero" ? "rgba(6, 182, 212, 0.2)" : "var(--bg-overlay)",
-                      color: bgTheme === "hero" ? "var(--brand-primary)" : "var(--text-secondary)",
-                      border: bgTheme === "hero" ? "1px solid rgba(6, 182, 212, 0.4)" : "1px solid var(--border-subtle)",
-                    }}
-                  >
-                    Hero
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleBgThemeChange("auto")}
-                    title="Automatic (Hero on home, Subtle in dashboard)"
-                    className="btn btn-ghost btn-sm"
-                    style={{
-                      padding: "4px 2px",
-                      fontSize: "0.6875rem",
-                      justifyContent: "center",
-                      borderRadius: "6px",
-                      background: bgTheme === "auto" ? "rgba(6, 182, 212, 0.2)" : "var(--bg-overlay)",
-                      color: bgTheme === "auto" ? "var(--brand-primary)" : "var(--text-secondary)",
-                      border: bgTheme === "auto" ? "1px solid rgba(6, 182, 212, 0.4)" : "1px solid var(--border-subtle)",
-                    }}
-                  >
-                    Auto
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleBgThemeChange("paused")}
-                    title="Off (Clean Dark Surface)"
-                    className="btn btn-ghost btn-sm"
-                    style={{
-                      padding: "4px 2px",
-                      fontSize: "0.6875rem",
-                      justifyContent: "center",
-                      borderRadius: "6px",
-                      background: bgTheme === "paused" ? "rgba(239, 68, 68, 0.2)" : "var(--bg-overlay)",
-                      color: bgTheme === "paused" ? "#f87171" : "var(--text-secondary)",
-                      border: bgTheme === "paused" ? "1px solid rgba(239, 68, 68, 0.4)" : "1px solid var(--border-subtle)",
-                    }}
-                  >
-                    Off
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div style={{ display: "flex", justifyContent: "center", marginBottom: "8px" }}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const next = bgTheme === "auto" ? "subtle" : bgTheme === "subtle" ? "hero" : bgTheme === "hero" ? "paused" : "auto";
-                    handleBgThemeChange(next);
-                  }}
-                  className="btn btn-ghost btn-sm"
+                {!isCollapsed && (
+                  <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>
+                    {sidebarAccountOpen ? "▲" : "▼"}
+                  </span>
+                )}
+              </button>
+
+              {sidebarAccountOpen && (
+                <div
                   style={{
-                    width: "36px",
-                    height: "36px",
-                    padding: 0,
-                    borderRadius: "8px",
-                    display: "grid",
-                    placeItems: "center",
-                    background: "var(--bg-overlay)",
-                    border: "1px solid var(--border-subtle)",
-                    fontSize: "0.9rem",
+                    position: "absolute",
+                    bottom: "calc(100% + 6px)",
+                    left: isCollapsed ? "100%" : 0,
+                    marginLeft: isCollapsed ? "8px" : 0,
+                    width: isCollapsed ? "250px" : "100%",
+                    minWidth: "240px",
+                    background: "var(--bg-elevated)",
+                    border: "1px solid var(--border-default)",
+                    borderRadius: "var(--radius-md)",
+                    boxShadow: "var(--shadow-lg)",
+                    padding: "12px",
+                    zIndex: 1000,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "10px",
+                    backdropFilter: "blur(20px)",
                   }}
-                  title={`Background: ${bgTheme.toUpperCase()} (Click to cycle)`}
                 >
-                  🚀
-                </button>
-              </div>
-            )}
+                  {/* Account Header */}
+                  <div>
+                    <div style={{ fontSize: "0.6875rem", fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                      Account Settings
+                    </div>
+                    <div style={{ fontSize: "0.8125rem", fontWeight: 600, color: "var(--text-primary)", marginTop: "2px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {user.email}
+                    </div>
+                  </div>
+
+                  <hr style={{ border: "none", borderTop: "1px solid var(--border-subtle)", margin: "0" }} />
+
+                  {/* 3D Cosmic Background Atmosphere Selector */}
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px" }}>
+                      <span style={{ fontSize: "0.6875rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700 }}>
+                        🚀 Default BG Theme
+                      </span>
+                      <span style={{ fontSize: "0.6875rem", color: "var(--brand-primary)", fontWeight: 600 }}>
+                        {bgTheme === "auto" ? "Auto" : bgTheme === "subtle" ? "Subtle" : bgTheme === "hero" ? "Hero 3D" : "Off"}
+                      </span>
+                    </div>
+
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "4px" }}>
+                      <button
+                        type="button"
+                        onClick={() => handleBgThemeChange("subtle")}
+                        className="btn btn-ghost btn-sm"
+                        style={{
+                          padding: "6px 8px",
+                          fontSize: "0.75rem",
+                          justifyContent: "flex-start",
+                          borderRadius: "6px",
+                          background: bgTheme === "subtle" ? "rgba(6, 182, 212, 0.2)" : "var(--bg-overlay)",
+                          color: bgTheme === "subtle" ? "var(--brand-primary)" : "var(--text-secondary)",
+                          border: bgTheme === "subtle" ? "1px solid rgba(6, 182, 212, 0.4)" : "1px solid var(--border-subtle)",
+                        }}
+                      >
+                        🌌 Subtle (Default)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleBgThemeChange("hero")}
+                        className="btn btn-ghost btn-sm"
+                        style={{
+                          padding: "6px 8px",
+                          fontSize: "0.75rem",
+                          justifyContent: "flex-start",
+                          borderRadius: "6px",
+                          background: bgTheme === "hero" ? "rgba(6, 182, 212, 0.2)" : "var(--bg-overlay)",
+                          color: bgTheme === "hero" ? "var(--brand-primary)" : "var(--text-secondary)",
+                          border: bgTheme === "hero" ? "1px solid rgba(6, 182, 212, 0.4)" : "1px solid var(--border-subtle)",
+                        }}
+                      >
+                        🚀 Hero 3D
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleBgThemeChange("auto")}
+                        className="btn btn-ghost btn-sm"
+                        style={{
+                          padding: "6px 8px",
+                          fontSize: "0.75rem",
+                          justifyContent: "flex-start",
+                          borderRadius: "6px",
+                          background: bgTheme === "auto" ? "rgba(6, 182, 212, 0.2)" : "var(--bg-overlay)",
+                          color: bgTheme === "auto" ? "var(--brand-primary)" : "var(--text-secondary)",
+                          border: bgTheme === "auto" ? "1px solid rgba(6, 182, 212, 0.4)" : "1px solid var(--border-subtle)",
+                        }}
+                      >
+                        ✨ Adaptive
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleBgThemeChange("paused")}
+                        className="btn btn-ghost btn-sm"
+                        style={{
+                          padding: "6px 8px",
+                          fontSize: "0.75rem",
+                          justifyContent: "flex-start",
+                          borderRadius: "6px",
+                          background: bgTheme === "paused" ? "rgba(239, 68, 68, 0.2)" : "var(--bg-overlay)",
+                          color: bgTheme === "paused" ? "#f87171" : "var(--text-secondary)",
+                          border: bgTheme === "paused" ? "1px solid rgba(239, 68, 68, 0.4)" : "1px solid var(--border-subtle)",
+                        }}
+                      >
+                        ⚡ Canvas Off
+                      </button>
+                    </div>
+                  </div>
+
+                  <hr style={{ border: "none", borderTop: "1px solid var(--border-subtle)", margin: "0" }} />
+
+                  {/* Settings Link */}
+                  <Link
+                    href="/dashboard/settings"
+                    onClick={() => setSidebarAccountOpen(false)}
+                    className="btn btn-ghost btn-sm"
+                    style={{ justifyContent: "flex-start", fontSize: "0.75rem", padding: "6px 8px" }}
+                  >
+                    ⚙ Full Settings Page
+                  </Link>
+
+                  {/* Sign out */}
+                  <form action="/api/auth/signout" method="POST">
+                    <button
+                      type="submit"
+                      className="btn btn-ghost btn-sm"
+                      style={{ width: "100%", justifyContent: "flex-start", color: "var(--text-muted)", fontSize: "0.75rem", padding: "6px 8px" }}
+                    >
+                      🚪 Sign Out
+                    </button>
+                  </form>
+                </div>
+              )}
+            </div>
 
             {/* Expand / Collapse Sidebar Toggle Button */}
             <button

@@ -69,6 +69,7 @@ function NewServiceWizardContent() {
 
   const createServiceMutation = trpc.service.create.useMutation();
   const triggerDeployMutation = trpc.deployment.trigger.useMutation();
+  const setupWebhookMutation = trpc.github.setupWebhook.useMutation();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -99,6 +100,21 @@ function NewServiceWizardContent() {
         instanceType,
         scaleToZero,
       });
+
+      // Automatically register GitHub webhook for automatic deployments on commit push
+      if (sourceType === "github" && selectedRepoUrl) {
+        const clean = selectedRepoUrl.replace(/\.git$/, "").replace(/\/$/, "");
+        const parts = clean.split(/[/:]/);
+        const repo = parts.pop();
+        const owner = parts.pop();
+        if (owner && repo) {
+          try {
+            await setupWebhookMutation.mutateAsync({ owner, repo });
+          } catch {
+            // Best-effort: user may have custom token or existing webhook
+          }
+        }
+      }
 
       if (deployImmediately) {
         await triggerDeployMutation.mutateAsync({

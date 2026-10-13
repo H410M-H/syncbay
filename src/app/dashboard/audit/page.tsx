@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { trpc } from "@/lib/trpc-client";
 import { useDashboard } from "../dashboard-shell";
+import { BackButton } from "@/components/ui/back-button";
 
 export default function AuditPage() {
   const dashboard = useDashboard();
@@ -60,6 +61,10 @@ export default function AuditPage() {
 
   return (
     <div className="fade-in" style={{ maxWidth: "1000px", margin: "0 auto" }}>
+      <div style={{ marginBottom: "16px" }}>
+        <BackButton fallbackUrl="/dashboard" label="Back to Dashboard" />
+      </div>
+
       {/* ── Page Header ── */}
       <div className="page-header">
         <div>

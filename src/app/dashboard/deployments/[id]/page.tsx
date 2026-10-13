@@ -126,20 +126,44 @@ export default function DeploymentDetailPage() {
 
   // Merge static query logs with live streamed logs
   const allLogs = useMemo(() => {
-    const fromQuery = (logsQuery.data || []) as LogEntry[];
-    const combined = [...fromQuery];
-    const existingMessages = new Set(fromQuery.map((l) => `${l.timestamp}_${l.message}`));
+    const normalize = (l: any, idx: number): LogEntry => {
+      if (typeof l === "string") {
+        return {
+          id: `log_${idx}`,
+          deploymentId,
+          timestamp: new Date().toISOString(),
+          stream: l.includes("[error]") || l.includes("Error:") ? "stderr" : "stdout",
+          message: l,
+        };
+      }
+      return {
+        id: l?.id || `log_${idx}`,
+        deploymentId: l?.deploymentId || deploymentId,
+        timestamp: l?.timestamp || new Date().toISOString(),
+        stream: l?.stream || "stdout",
+        message: l?.message || String(l || ""),
+      };
+    };
 
-    for (const log of liveLogs) {
+    const fromQuery = ((logsQuery.data || []) as any[]).map((l, i) => normalize(l, i));
+    const combined = [...fromQuery];
+    const existingKeys = new Set(fromQuery.map((l) => `${l.timestamp}_${l.message}`));
+
+    for (let i = 0; i < liveLogs.length; i++) {
+      const log = normalize(liveLogs[i], fromQuery.length + i);
       const key = `${log.timestamp}_${log.message}`;
-      if (!existingMessages.has(key)) {
-        existingMessages.add(key);
+      if (!existingKeys.has(key)) {
+        existingKeys.add(key);
         combined.push(log);
       }
     }
 
-    return combined.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-  }, [logsQuery.data, liveLogs]);
+    return combined.sort((a, b) => {
+      const timeA = new Date(a.timestamp).getTime() || 0;
+      const timeB = new Date(b.timestamp).getTime() || 0;
+      return timeA - timeB;
+    });
+  }, [logsQuery.data, liveLogs, deploymentId]);
 
   const runAction = async (action: () => Promise<any>, successMessage: string) => {
     try {
@@ -402,6 +426,31 @@ export default function DeploymentDetailPage() {
                 </button>
               )}
 
+              {/* Service & Project navigation */}
+              <hr style={{ border: "none", borderTop: "1px solid var(--border-subtle)", margin: "4px 0" }} />
+              <Link
+                href={`/dashboard/services/${deployment.serviceId}`}
+                role="menuitem"
+                className="btn btn-ghost btn-sm"
+                style={{ display: "flex", alignItems: "center", gap: "8px", width: "100%", textAlign: "left", fontSize: "0.8125rem" }}
+                onClick={() => setMenuOpen(false)}
+              >
+                <span>⚡</span>
+                <span>View Service Console</span>
+              </Link>
+              {deployment.service?.environment?.projectId && (
+                <Link
+                  href={`/dashboard/projects/${deployment.service.environment.projectId}?tab=deployments`}
+                  role="menuitem"
+                  className="btn btn-ghost btn-sm"
+                  style={{ display: "flex", alignItems: "center", gap: "8px", width: "100%", textAlign: "left", fontSize: "0.8125rem" }}
+                  onClick={() => setMenuOpen(false)}
+                >
+                  <span>📦</span>
+                  <span>View Project Deployments</span>
+                </Link>
+              )}
+
               <hr style={{ border: "none", borderTop: "1px solid var(--border-subtle)", margin: "4px 0" }} />
 
               {/* Danger: Delete Deployment */}
@@ -579,8 +628,25 @@ export default function DeploymentDetailPage() {
               );
             })
           ) : (
-            <div style={{ color: "var(--text-muted)", fontStyle: "italic" }}>
-              Waiting for runner agent logs...
+            <div style={{ color: "var(--text-muted)", fontStyle: "italic", padding: "16px 0", textAlign: "center" }}>
+              <div style={{ marginBottom: "8px" }}>
+                {isRunning
+                  ? "Connecting to runner agent log stream..."
+                  : logsQuery.isLoading
+                  ? "Loading deployment logs..."
+                  : "No logs recorded for this deployment yet."}
+              </div>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => {
+                  logsQuery.refetch();
+                  deploymentQuery.refetch();
+                }}
+                style={{ fontSize: "0.75rem" }}
+              >
+                🔄 Sync Deployment Logs
+              </button>
             </div>
           )}
         </pre>

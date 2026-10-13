@@ -3,6 +3,7 @@
 import { trpc } from "@/lib/trpc-client";
 import Link from "next/link";
 import { useState } from "react";
+import { BackButton } from "@/components/ui/back-button";
 
 export default function ProjectsPage() {
   const { data: workspaces, isLoading: wsLoading } = trpc.workspace.list.useQuery();
@@ -17,6 +18,9 @@ export default function ProjectsPage() {
 
   return (
     <div className="fade-in">
+      <div style={{ marginBottom: "16px" }}>
+        <BackButton fallbackUrl="/dashboard" label="Back to Dashboard" />
+      </div>
       <div className="page-header">
         <div>
           <h1 className="page-title">Projects</h1>

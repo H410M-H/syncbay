@@ -6,6 +6,7 @@ import { trpc } from "@/lib/trpc-client";
 import { ApiTokenScope } from "@prisma/client";
 import { useDashboard } from "../dashboard-shell";
 import { signIn } from "next-auth/react";
+import { BackButton } from "@/components/ui/back-button";
 
 export default function SettingsPage() {
   const dashboard = useDashboard();
@@ -163,6 +164,10 @@ export default function SettingsPage() {
 
   return (
     <div className="fade-in" style={{ maxWidth: "960px", margin: "0 auto" }}>
+      <div style={{ marginBottom: "16px" }}>
+        <BackButton fallbackUrl="/dashboard" label="Back to Dashboard" />
+      </div>
+
       {/* ── Page Header ── */}
       <div className="page-header">
         <div>

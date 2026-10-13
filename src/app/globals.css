@@ -279,7 +279,7 @@ a:hover { color: #67e8f9; }
 .card {
   position: relative;
   z-index: 1;
-  background: rgba(15, 15, 31, 0.90);
+  background: rgba(13, 13, 27, 0.94);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
   border: 1px solid var(--border-subtle);

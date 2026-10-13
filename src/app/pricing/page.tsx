@@ -4,6 +4,7 @@ import React, { useState } from "react";
 import Link from "next/link";
 import { AsciiBackground } from "@/components/ui/ascii-background";
 import { BrandLogo } from "@/components/ui/brand-logo";
+import { ComparisonTable } from "@/components/marketing/comparison-table";
 
 export default function PricingPage() {
   const [billingCycle, setBillingCycle] = useState<"monthly" | "annual">("annual");
@@ -382,94 +383,8 @@ export default function PricingPage() {
         </section>
 
         {/* ── COMPETITOR FEATURE BREAKDOWN MATRIX ── */}
-        <section id="comparison" className="rounded-3xl border border-zinc-800 bg-zinc-950/80 overflow-hidden">
-          <div className="p-6 sm:p-8 border-b border-zinc-800 bg-zinc-900/50">
-            <h3 className="text-2xl font-black text-white tracking-tight">
-              Feature-by-Feature Competitor Tear-Down
-            </h3>
-            <p className="text-xs text-zinc-400 mt-1">
-              Engineered to dominate Vercel, Railway, and Render on every developer metric.
-            </p>
-          </div>
-
-          <div className="overflow-x-auto">
-            <table className="w-full text-left font-mono text-xs">
-              <thead>
-                <tr className="border-b border-zinc-800 bg-zinc-900/30 text-zinc-400">
-                  <th className="p-4 pl-6">Feature Dimension</th>
-                  <th className="p-4 text-cyan-400 font-bold bg-cyan-950/20">Syncbay PaaS</th>
-                  <th className="p-4 text-zinc-300">Vercel</th>
-                  <th className="p-4 text-zinc-300">Railway</th>
-                  <th className="p-4 pr-6 text-zinc-300">Render</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-zinc-800/60 font-sans text-xs">
-                <tr>
-                  <td className="p-4 pl-6 font-semibold text-white">Team Seat Fees</td>
-                  <td className="p-4 text-cyan-300 font-bold bg-cyan-950/10">Included (Free Seats)</td>
-                  <td className="p-4 text-red-400">$20 / seat / mo tax</td>
-                  <td className="p-4 text-zinc-400">$20 / seat on Pro</td>
-                  <td className="p-4 text-zinc-400">$19 / user / mo</td>
-                </tr>
-                <tr>
-                  <td className="p-4 pl-6 font-semibold text-white">Execution Timeouts</td>
-                  <td className="p-4 text-cyan-300 font-bold bg-cyan-950/10">No Timeouts (Persistent)</td>
-                  <td className="p-4 text-red-400">10s – 60s hard limit</td>
-                  <td className="p-4 text-emerald-400">No timeout</td>
-                  <td className="p-4 text-emerald-400">No timeout</td>
-                </tr>
-                <tr>
-                  <td className="p-4 pl-6 font-semibold text-white">Cold Start Latency</td>
-                  <td className="p-4 text-cyan-300 font-bold bg-cyan-950/10">0 ms (Edge Containers)</td>
-                  <td className="p-4 text-zinc-400">250ms – 900ms</td>
-                  <td className="p-4 text-amber-400">2,000ms – 6,000ms</td>
-                  <td className="p-4 text-red-400">50,000ms (Free spin-up)</td>
-                </tr>
-                <tr>
-                  <td className="p-4 pl-6 font-semibold text-white">Multi-Region Edge Routing</td>
-                  <td className="p-4 text-cyan-300 font-bold bg-cyan-950/10">6 Tier-1 Global POPs</td>
-                  <td className="p-4 text-zinc-400">Serverless Edge only</td>
-                  <td className="p-4 text-red-400">Single region locked</td>
-                  <td className="p-4 text-red-400">Single region locked</td>
-                </tr>
-                <tr>
-                  <td className="p-4 pl-6 font-semibold text-white">Interactive Web Terminal</td>
-                  <td className="p-4 text-cyan-300 font-bold bg-cyan-950/10">Full VT100 Web Shell</td>
-                  <td className="p-4 text-red-400">Not Available</td>
-                  <td className="p-4 text-zinc-400">Log viewer only</td>
-                  <td className="p-4 text-zinc-400">Render Shell Add-on</td>
-                </tr>
-                <tr>
-                  <td className="p-4 pl-6 font-semibold text-white">Embedded Query Studio</td>
-                  <td className="p-4 text-cyan-300 font-bold bg-cyan-950/10">SQL &amp; Redis Runner</td>
-                  <td className="p-4 text-red-400">Not Available</td>
-                  <td className="p-4 text-zinc-400">Basic schema view</td>
-                  <td className="p-4 text-red-400">Not Available</td>
-                </tr>
-                <tr>
-                  <td className="p-4 pl-6 font-semibold text-white">Automated Edge Crons</td>
-                  <td className="p-4 text-cyan-300 font-bold bg-cyan-950/10">Built-in (Zero extra charge)</td>
-                  <td className="p-4 text-zinc-400">Limited (1/day on hobby)</td>
-                  <td className="p-4 text-zinc-400">Requires worker runner</td>
-                  <td className="p-4 text-zinc-400">Cron Jobs (Paid)</td>
-                </tr>
-                <tr>
-                  <td className="p-4 pl-6 font-semibold text-white">Edge WAF &amp; Rate Limiting</td>
-                  <td className="p-4 text-cyan-300 font-bold bg-cyan-950/10">Included in Team ($39)</td>
-                  <td className="p-4 text-red-400">Enterprise Add-on ($$$$)</td>
-                  <td className="p-4 text-red-400">Not Available</td>
-                  <td className="p-4 text-red-400">Not Available</td>
-                </tr>
-                <tr>
-                  <td className="p-4 pl-6 font-semibold text-white">Network Egress Cost</td>
-                  <td className="p-4 text-cyan-300 font-bold bg-cyan-950/10">$0.04 / GB (Fair-Cost)</td>
-                  <td className="p-4 text-red-400">$0.15 / GB (3.7x markup)</td>
-                  <td className="p-4 text-amber-400">$0.10 / GB</td>
-                  <td className="p-4 text-amber-400">$0.10 / GB</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+        <section id="comparison">
+          <ComparisonTable />
         </section>
 
         {/* ── OFFICIAL AMERICAN COMPANY & HEADQUARTERS SECTION ── */}

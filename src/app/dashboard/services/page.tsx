@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import { trpc } from "@/lib/trpc-client";
 import { useDashboard } from "../dashboard-shell";
+import { BackButton } from "@/components/ui/back-button";
 
 export default function ServicesPage() {
   const dashboard = useDashboard();
@@ -76,6 +77,9 @@ export default function ServicesPage() {
 
   return (
     <div className="fade-in">
+      <div style={{ marginBottom: "16px" }}>
+        <BackButton fallbackUrl="/dashboard" label="Back to Dashboard" />
+      </div>
       <div className="page-header">
         <div>
           <h1 className="page-title">Edge Microservices</h1>

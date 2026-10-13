@@ -4,6 +4,7 @@ import { useState } from "react";
 import { trpc } from "@/lib/trpc-client";
 import Link from "next/link";
 import { useDashboard } from "../dashboard-shell";
+import { BackButton } from "@/components/ui/back-button";
 import {
   detectCardBrand,
   formatCardNumber,
@@ -250,6 +251,10 @@ export default function UsagePage() {
 
   return (
     <div className="fade-in" style={{ maxWidth: "1000px", margin: "0 auto", paddingBottom: "40px" }}>
+      <div style={{ marginBottom: "16px" }}>
+        <BackButton fallbackUrl="/dashboard" label="Back to Dashboard" />
+      </div>
+
       {/* ── Page Header ── */}
       <div className="page-header">
         <div>

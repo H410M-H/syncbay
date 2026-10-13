@@ -4,6 +4,7 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { trpc } from "@/lib/trpc-client";
 import { useState } from "react";
+import { BackButton } from "@/components/ui/back-button";
 
 export default function WorkspaceSlugPage() {
   const params = useParams();
@@ -94,6 +95,10 @@ export default function WorkspaceSlugPage() {
 
   return (
     <div className="fade-in">
+      <div style={{ marginBottom: "16px" }}>
+        <BackButton fallbackUrl="/dashboard" label="Back to Dashboard" />
+      </div>
+
       {/* ── Page Header ── */}
       <div className="page-header">
         <div>
