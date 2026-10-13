@@ -13,6 +13,9 @@ export async function GET(
 
   const stream = new ReadableStream({
     start(controller) {
+      // 0. Immediately flush connection keepalive to establish HTTP 200 stream
+      controller.enqueue(encoder.encode(`: connected\n\n`));
+
       // 1. Send all existing buffered logs first
       const history = logEventBus.getHistory(deploymentId);
       for (const entry of history) {

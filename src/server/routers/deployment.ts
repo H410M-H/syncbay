@@ -43,8 +43,47 @@ export const deploymentRouter = createTRPCRouter({
   /** Get live or historical log lines for a deployment */
   logs: protectedProcedure
     .input(z.object({ deploymentId: z.string() }))
-    .query(async ({ input }) => {
-      return logEventBus.getHistory(input.deploymentId);
+    .query(async ({ ctx, input }) => {
+      const history = logEventBus.getHistory(input.deploymentId);
+      if (history.length > 0) return history;
+
+      const deployment = await ctx.db.deployment.findUnique({
+        where: { id: input.deploymentId },
+        include: { build: true },
+      });
+
+      const runnerUrl = process.env.RUNNER_URL;
+      const runnerSecret = process.env.RUNNER_SECRET || process.env.SYNCBAY_WEBHOOK_SECRET || "syncbay-runner-secret";
+      if (runnerUrl && deployment?.buildId) {
+        try {
+          const timestamp = Date.now().toString();
+          const { generateHmacSignature } = await import("@/lib/orchestrator/runner-driver");
+          const { headerValue } = generateHmacSignature({ jobId: deployment.buildId }, runnerSecret, timestamp);
+          const res = await fetch(`${runnerUrl.replace(/\/$/, '')}/api/builds/${encodeURIComponent(deployment.buildId)}`, {
+            headers: {
+              "X-Syncbay-Signature": headerValue,
+              "X-Syncbay-Timestamp": timestamp,
+            },
+            signal: AbortSignal.timeout(3000),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data.logs && Array.isArray(data.logs)) {
+              return data.logs.map((msg: string, idx: number) => ({
+                id: `log_${idx}`,
+                deploymentId: input.deploymentId,
+                timestamp: new Date().toISOString(),
+                stream: msg.includes("[error]") ? "stderr" : msg.includes("[stdout]") ? "stdout" : "system",
+                message: msg,
+              }));
+            }
+          }
+        } catch {
+          // ignore runner lookup errors
+        }
+      }
+
+      return history;
     }),
 
   /** Get deployment history for a service */

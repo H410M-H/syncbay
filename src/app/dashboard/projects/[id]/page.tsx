@@ -184,10 +184,19 @@ function ProjectConsoleContent() {
     return null;
   }, [activeDeployment, logs]);
 
-  // Fetch initial logs buffer via tRPC
+  // Fetch initial logs buffer via tRPC with automatic background polling fallback
   const { data: initialLogs } = trpc.deployment.logs.useQuery(
     { deploymentId: activeDeployment?.id! },
-    { enabled: !!activeDeployment?.id && activeTab === "logs" }
+    {
+      enabled: !!activeDeployment?.id && activeTab === "logs",
+      refetchInterval: () => {
+        const isBuilding =
+          activeDeployment?.status === "BUILDING" ||
+          activeDeployment?.status === "DEPLOYING" ||
+          activeDeployment?.status === "QUEUED";
+        return isBuilding ? 2000 : sseConnected ? false : 5000;
+      },
+    }
   );
 
   // Clear logs when deployment changes to avoid cross-deployment mixing
@@ -196,8 +205,13 @@ function ProjectConsoleContent() {
   }, [activeDeployment?.id]);
 
   useEffect(() => {
-    if (initialLogs) {
-      setLogs(initialLogs as LogLine[]);
+    if (initialLogs && initialLogs.length > 0) {
+      setLogs((prev) => {
+        if (initialLogs.length >= prev.length) {
+          return initialLogs as LogLine[];
+        }
+        return prev;
+      });
     }
   }, [initialLogs]);
 

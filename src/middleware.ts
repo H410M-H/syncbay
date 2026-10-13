@@ -7,11 +7,10 @@ export async function middleware(req: NextRequest) {
 
   // Static assets and internal endpoints should never be rewritten
   if (
-    pathname.startsWith("/_next") ||
     pathname.startsWith("/api/trpc") ||
     pathname.startsWith("/api/auth") ||
     pathname.startsWith("/api/webhooks") ||
-    pathname === "/favicon.ico" ||
+    pathname.startsWith("/api/v1/services/edge-resolve") ||
     pathname.startsWith("/service-preview")
   ) {
     return NextResponse.next();
@@ -24,6 +23,12 @@ export async function middleware(req: NextRequest) {
     host === "cname.syncbay.app" ||
     host === "localhost" ||
     host === "127.0.0.1";
+
+  if (isControlPlane) {
+    if (pathname.startsWith("/_next") || pathname === "/favicon.ico") {
+      return NextResponse.next();
+    }
+  }
 
   const registeredRoute = !isControlPlane ? getServiceRoute(host) : null;
   const isSyncbaySubdomain =
@@ -143,6 +148,7 @@ export async function middleware(req: NextRequest) {
           if (targetPort) {
             requestHeaders.set("x-target-port", String(targetPort));
             requestHeaders.set("x-syncbay-port", String(targetPort));
+            target.searchParams.set("__sb_port", String(targetPort));
           }
 
           return NextResponse.rewrite(target, {
@@ -157,6 +163,11 @@ export async function middleware(req: NextRequest) {
       }
 
       // If active without specific upstream URL, pass-through
+      return NextResponse.next();
+    }
+
+    // Static assets for the service preview page
+    if (pathname.startsWith("/_next") || pathname === "/favicon.ico") {
       return NextResponse.next();
     }
 

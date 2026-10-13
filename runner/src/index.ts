@@ -246,12 +246,21 @@ export class RunnerDaemon {
     }
 
     // Reverse Proxy for Deployed Applications
-    const targetPortStr = req.headers["x-target-port"];
+    let targetPort: number | undefined;
+    const targetPortStr = (req.headers["x-target-port"] || url.searchParams.get("__sb_port")) as string | undefined;
     if (targetPortStr) {
-      const targetPort = parseInt(targetPortStr as string, 10);
-      if (targetPort && targetPort > 0) {
-        return this.proxyRequest(req, res, targetPort, body);
+      targetPort = parseInt(targetPortStr, 10);
+    }
+
+    if (!targetPort) {
+      const allocated = this.portManager.getAllocatedPorts();
+      if (allocated.length === 1) {
+        targetPort = allocated[0];
       }
+    }
+
+    if (targetPort && targetPort > 0) {
+      return this.proxyRequest(req, res, targetPort, body);
     }
 
     // 404 Not Found fallback

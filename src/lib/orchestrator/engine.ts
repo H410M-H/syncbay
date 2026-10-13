@@ -355,6 +355,11 @@ export async function executeDeployment(
       },
     }).catch(() => null);
 
+    await db.service.update({
+      where: { id: serviceId },
+      data: { port: targetPort },
+    }).catch(() => null);
+
     log(`[syncbay] Deployment ${deploymentId} is ACTIVE and serving traffic 🚀`, "system");
 
     return { status: "ACTIVE", url: `https://${defaultUrl}`, port: targetPort, containerId };

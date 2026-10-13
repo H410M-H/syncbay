@@ -8,21 +8,38 @@ export async function GET(req: NextRequest) {
   const subdomain = searchParams.get("subdomain");
   if (!subdomain) return NextResponse.json({ error: "Missing subdomain" }, { status: 400 });
 
-  // Generated hostnames include the service name plus an environment and
-  // deployment suffix (for example, portfolio-production-fpk1). Resolve the
-  // owning service instead of treating the complete hostname as its name.
-  const serviceSlug = subdomain.split("-")[0];
-  const service = await db.service.findFirst({
+  // 1. Resolve exact registered Domain record first
+  const domain = await db.domain.findFirst({
     where: {
       OR: [
-        { name: subdomain },
-        { id: subdomain },
-        { name: serviceSlug },
-        { name: { startsWith: `${serviceSlug}-` } },
+        { hostname: subdomain },
+        { hostname: `${subdomain}.syncbay.app` },
+        { hostname: { startsWith: `${subdomain}.` } },
       ],
     },
-    include: { deployments: { orderBy: { createdAt: "desc" }, take: 1 } },
+    include: {
+      service: {
+        include: { deployments: { orderBy: { createdAt: "desc" }, take: 1 } },
+      },
+    },
   });
+
+  const serviceSlug = subdomain.split("-")[0];
+  const service =
+    domain?.service ||
+    (await db.service.findFirst({
+      where: {
+        deletedAt: null,
+        OR: [
+          { id: subdomain },
+          { name: subdomain },
+          { name: serviceSlug },
+          { name: { startsWith: `${serviceSlug}-` } },
+        ],
+      },
+      orderBy: { createdAt: "desc" },
+      include: { deployments: { orderBy: { createdAt: "desc" }, take: 1 } },
+    }));
 
   if (!service) return NextResponse.json({ status: "NOT_FOUND" }, { status: 404 });
 
