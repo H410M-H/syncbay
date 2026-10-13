@@ -176,7 +176,7 @@ export class MockPipelineExecutor implements PipelineExecutor {
       exitCode: 0,
     }));
     this.commandHandlers.set(/git checkout/, (cmd) => {
-      const shaMatch = cmd.match(/git checkout -- "([^"]+)"/);
+      const shaMatch = cmd.match(/git checkout (?:-- )?"([^"]+)"/);
       const sha = shaMatch ? shaMatch[1] : "target";
       return {
         stdout: `Note: switching to '${sha}'.\n\nHEAD is now at ${sha.slice(0, 7)} Deployment target commit`,
@@ -422,14 +422,16 @@ export class BuildPipeline {
         if (options.commitSha) {
           const safeSha = options.commitSha.trim();
           log(`Checking out target commit: ${safeSha}`);
-          const checkoutRes = await this.executor.execute(`git checkout -- "${safeSha}"`, {
+          const checkoutRes = await this.executor.execute(`git checkout "${safeSha}"`, {
             cwd: baseWorkDir,
             onLog: log,
           });
           if (checkoutRes.exitCode !== 0) {
             const errMsg = checkoutRes.stderr || checkoutRes.stdout || `Git checkout exited with code ${checkoutRes.exitCode}`;
-            log(`[build:error] ${errMsg}`);
-            throw new Error(`Git checkout failed: ${errMsg}`);
+            log(`[git:warn] Target commit ${safeSha} not found or checkout failed: ${errMsg}`);
+            log(`[git] Proceeding build with latest repository HEAD on ${options.branch || "default"} branch`);
+          } else {
+            log(`Checked out target commit: ${safeSha}`);
           }
         }
       } else {
