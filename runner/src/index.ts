@@ -428,6 +428,7 @@ export class RunnerDaemon {
         completedAt: job.completedAt,
         error: job.error,
         errorMessage: job.error,
+        logs: job.logs,
       })
     );
   }

@@ -590,7 +590,7 @@ server.listen(port, "0.0.0.0", () => {
         const execEnv: NodeJS.ProcessEnv = {
           ...process.env,
           ...options.environmentVariables,
-          NODE_ENV: (options.environmentVariables?.NODE_ENV as any) || "development",
+          NODE_ENV: (options.environmentVariables?.NODE_ENV as any) || "production",
           PATH: `${nmBin}:${currentPath}`,
         };
 

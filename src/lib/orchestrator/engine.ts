@@ -256,7 +256,7 @@ export async function executeDeployment(
     if (finalStatus !== "ACTIVE" && finalStatus !== "FAILED" && finalStatus !== "CANCELLED") {
       log(`[runner] Build job ${dispatchRes.jobId} enqueued/running. Awaiting completion...`, "system");
       const pollStart = Date.now();
-      const timeoutMs = 120000;
+      const timeoutMs = 360000;
       let lastLogCount = 0;
       while (Date.now() - pollStart < timeoutMs) {
         await new Promise((r) => setTimeout(r, 1000));
