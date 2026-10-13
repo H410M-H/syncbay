@@ -8,7 +8,7 @@ export async function GET(req: NextRequest) {
   const subdomain = searchParams.get("subdomain");
   if (!subdomain) return NextResponse.json({ error: "Missing subdomain" }, { status: 400 });
 
-  // 1. Resolve exact registered Domain record first
+  // 1. Resolve exact registered Domain record first (excluding deleted services)
   const domain = await db.domain.findFirst({
     where: {
       OR: [
@@ -16,6 +16,9 @@ export async function GET(req: NextRequest) {
         { hostname: `${subdomain}.syncbay.app` },
         { hostname: { startsWith: `${subdomain}.` } },
       ],
+      service: {
+        deletedAt: null,
+      },
     },
     include: {
       service: {
