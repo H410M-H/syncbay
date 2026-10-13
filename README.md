@@ -81,7 +81,7 @@ Open [http://localhost:3000](http://localhost:3000).
 | Phase | Theme | Status |
 |---|---|---|
 | **Phase 0** | Control-plane skeleton (auth, schema, tRPC, UI shell) | ✅ Complete |
-| **Phase 1** | MVP Deploy Loop (GitHub → build → deploy → domain → logs sync & management) | ✅ Complete |
+| **Phase 1** | MVP Deploy Loop (GitHub → build → deploy → domain → logs sync & management) | ✅ Complete (`a8b4562`) |
 | **Phase 2** | Team & Confidence (custom domains, metrics, billing) | 🚀 In Progress |
 | **Phase 3** | Platform Depth (private net, volumes, feature flags) | Planned |
 | **Phase 4** | Ecosystem (CLI, public API, AI agent, templates) | Planned |
