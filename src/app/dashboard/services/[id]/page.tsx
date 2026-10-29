@@ -20,6 +20,63 @@ export default function ServiceDetailsPage(props: { params: Promise<{ id: string
   const redeployMutation = trpc.deployment.redeploy.useMutation();
   const [viewLogsDeployId, setViewLogsDeployId] = useState<string | null>(null);
 
+  const { data: domainsList, refetch: refetchDomains } = trpc.domain.list.useQuery(
+    { serviceId },
+    { enabled: !!serviceId }
+  );
+  const createDomainMutation = trpc.domain.create.useMutation();
+  const verifyDomainMutation = trpc.domain.verify.useMutation();
+  const deleteDomainMutation = trpc.domain.delete.useMutation();
+
+  const [newHostname, setNewHostname] = useState("");
+  const [addingDomain, setAddingDomain] = useState(false);
+  const [selectedDomainInstructions, setSelectedDomainInstructions] = useState<string | null>(null);
+  const [verifyingDomainId, setVerifyingDomainId] = useState<string | null>(null);
+
+  const handleAddDomain = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newHostname.trim()) return;
+    try {
+      setAddingDomain(true);
+      await createDomainMutation.mutateAsync({ serviceId, hostname: newHostname.trim() });
+      setNewHostname("");
+      refetchDomains();
+      refetch();
+    } catch (err: any) {
+      alert(`Failed to add custom domain: ${err.message}`);
+    } finally {
+      setAddingDomain(false);
+    }
+  };
+
+  const handleVerifyDomain = async (domainId: string) => {
+    try {
+      setVerifyingDomainId(domainId);
+      const res = await verifyDomainMutation.mutateAsync({ domainId });
+      refetchDomains();
+      if (res.status === "ACTIVE") {
+        alert("Domain verified successfully! SSL certificate is active.");
+      } else {
+        alert(`Domain status: ${res.status}. Please check your DNS records and try again in a few moments.`);
+      }
+    } catch (err: any) {
+      alert(`Verification failed: ${err.message}`);
+    } finally {
+      setVerifyingDomainId(null);
+    }
+  };
+
+  const handleDeleteDomain = async (domainId: string, hostname: string) => {
+    if (!confirm(`Are you sure you want to remove ${hostname}?`)) return;
+    try {
+      await deleteDomainMutation.mutateAsync({ domainId });
+      refetchDomains();
+      refetch();
+    } catch (err: any) {
+      alert(`Failed to remove domain: ${err.message}`);
+    }
+  };
+
   const handleRedeploy = async (deploymentId: string, rebuild: boolean = false) => {
     try {
       await redeployMutation.mutateAsync({ deploymentId, rebuild });
@@ -102,6 +159,134 @@ export default function ServiceDetailsPage(props: { params: Promise<{ id: string
               <div style={{ color: "var(--text-muted)", fontSize: "0.875rem", marginBottom: "4px" }}>Repository</div>
               <div>{service.repoUrl || "N/A"} ({service.branch || "N/A"})</div>
             </div>
+          </div>
+        </div>
+
+        {/* Custom Domains & Ingress Card */}
+        <div className="card" style={{ padding: "24px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", borderBottom: "1px solid var(--border-subtle)", paddingBottom: "12px", flexWrap: "wrap", gap: "10px" }}>
+            <div>
+              <h2 style={{ fontSize: "1.25rem", margin: 0 }}>Domains & Edge Ingress</h2>
+              <p style={{ color: "var(--text-muted)", fontSize: "0.85rem", margin: "4px 0 0 0" }}>
+                Traffic multiplexed through Cloudflare Tunnels & Global Edge Ingress with auto-managed SSL/TLS.
+              </p>
+            </div>
+          </div>
+
+          {/* Add Custom Domain Form */}
+          <form onSubmit={handleAddDomain} style={{ display: "flex", gap: "10px", marginBottom: "20px", flexWrap: "wrap" }}>
+            <input
+              type="text"
+              placeholder="e.g. api.yourcompany.com"
+              value={newHostname}
+              onChange={(e) => setNewHostname(e.target.value)}
+              className="input"
+              style={{ flex: 1, minWidth: "220px" }}
+              disabled={addingDomain}
+            />
+            <button
+              type="submit"
+              className="btn btn-primary"
+              disabled={addingDomain || !newHostname.trim()}
+            >
+              {addingDomain ? "Adding Domain..." : "+ Add Custom Domain"}
+            </button>
+          </form>
+
+          {/* Domain List */}
+          <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+            {/* Generated Subdomain */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 16px", background: "var(--bg-overlay)", borderRadius: "var(--radius-md)", border: "1px solid var(--border-subtle)", flexWrap: "wrap", gap: "12px" }}>
+              <div>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <a href={`https://${primaryDomain}`} target="_blank" rel="noreferrer" style={{ fontWeight: 600, color: "var(--brand-accent)", textDecoration: "underline" }}>
+                    https://{primaryDomain}
+                  </a>
+                  <span className="badge badge-active" style={{ fontSize: "0.65rem" }}>
+                    ACTIVE · Wildcard SSL (TLSv1.3)
+                  </span>
+                </div>
+                <div style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginTop: "4px" }}>
+                  Default platform edge route · Instant live ingress
+                </div>
+              </div>
+            </div>
+
+            {/* Custom Domains */}
+            {domainsList && domainsList.filter((d: any) => !d.isGenerated).map((dom: any) => {
+              const isSelected = selectedDomainInstructions === dom.id;
+              const isVerifying = verifyingDomainId === dom.id;
+              return (
+                <div key={dom.id} style={{ display: "flex", flexDirection: "column", padding: "14px 16px", background: "var(--bg-overlay)", borderRadius: "var(--radius-md)", border: "1px solid var(--border-subtle)", gap: "12px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px" }}>
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <span style={{ fontWeight: 600, fontSize: "0.95rem" }}>{dom.hostname}</span>
+                        <span className={`badge ${dom.status === "ACTIVE" ? "badge-active" : dom.status === "FAILED" ? "badge-danger" : "badge-queued"}`} style={{ fontSize: "0.65rem" }}>
+                          {dom.status === "ACTIVE" ? "ACTIVE · Cloudflare Managed SSL" : dom.status === "FAILED" ? "FAILED" : "PENDING DNS VERIFICATION"}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginTop: "4px" }}>
+                        {dom.status === "ACTIVE" ? `Verified ${dom.verifiedAt ? new Date(dom.verifiedAt).toLocaleDateString() : "Active"}` : "Requires DNS configuration"}
+                      </div>
+                    </div>
+
+                    <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedDomainInstructions(isSelected ? null : dom.id)}
+                        className="btn btn-ghost btn-sm"
+                      >
+                        {isSelected ? "Hide DNS Checklist" : "DNS Checklist"}
+                      </button>
+
+                      {dom.status !== "ACTIVE" && (
+                        <button
+                          type="button"
+                          onClick={() => handleVerifyDomain(dom.id)}
+                          className="btn btn-secondary btn-sm"
+                          disabled={isVerifying}
+                        >
+                          {isVerifying ? "Verifying..." : "⚡ Verify DNS & SSL"}
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteDomain(dom.id, dom.hostname)}
+                        className="btn btn-ghost btn-sm"
+                        style={{ color: "#f87171" }}
+                      >
+                        ✕ Remove
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Verification DNS Checklist */}
+                  {isSelected && dom.verificationRecords && (
+                    <div style={{ marginTop: "8px", padding: "12px 14px", background: "#09090b", borderRadius: "8px", border: "1px solid var(--border-subtle)" }}>
+                      <div style={{ fontWeight: 600, fontSize: "0.825rem", color: "var(--text-secondary)", marginBottom: "8px" }}>
+                        DNS Configuration Instructions:
+                      </div>
+                      <div style={{ display: "grid", gap: "8px", fontSize: "0.8rem", fontFamily: "monospace" }}>
+                        <div style={{ padding: "8px", background: "#18181b", borderRadius: "6px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
+                          <div>
+                            <span style={{ color: "#38bdf8", fontWeight: 600 }}>CNAME</span> {dom.hostname} → <span style={{ color: "#22c55e" }}>{dom.verificationRecords.cnameTarget}</span>
+                          </div>
+                          <span style={{ color: "var(--text-muted)", fontSize: "0.75rem" }}>Traffic Routing</span>
+                        </div>
+                        <div style={{ padding: "8px", background: "#18181b", borderRadius: "6px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
+                          <div>
+                            <span style={{ color: "#fbbf24", fontWeight: 600 }}>TXT</span> {dom.verificationRecords.txtHost} → <span style={{ color: "#22c55e" }}>{dom.verificationRecords.txtRecord}</span>
+                          </div>
+                          <span style={{ color: "var(--text-muted)", fontSize: "0.75rem" }}>SSL & Ownership Verification</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
 

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServiceRoute } from "@/lib/edge/service-registry";
+import { getServiceRoute, registerServiceRoute } from "@/lib/edge/service-registry";
 
 export async function middleware(req: NextRequest) {
   const host = (req.headers.get("x-forwarded-host") || req.headers.get("host") || "").toLowerCase().split(":")[0];
@@ -11,6 +11,7 @@ export async function middleware(req: NextRequest) {
     pathname.startsWith("/api/auth") ||
     pathname.startsWith("/api/webhooks") ||
     pathname.startsWith("/api/v1/services/edge-resolve") ||
+    pathname.startsWith("/api/v1/services/edge-register") ||
     pathname.startsWith("/service-preview")
   ) {
     return NextResponse.next();
@@ -37,6 +38,8 @@ export async function middleware(req: NextRequest) {
       host !== "syncbay.app" &&
       host !== "www.syncbay.app" &&
       host !== "cname.syncbay.app") ||
+      host.endsWith(".localhost") ||
+      host.includes(".") ||
       !!registeredRoute);
 
   if (isSyncbaySubdomain) {
@@ -49,13 +52,16 @@ export async function middleware(req: NextRequest) {
     // Resolve service route from Edge-safe registry
     let route = registeredRoute || getServiceRoute(host);
 
-    if (!route || route.status !== "ACTIVE") {
+    if (!route) {
       try {
-        const protocol = req.headers.get("x-forwarded-proto") || "https";
-        const apiUrl = `${protocol}://${req.headers.get("host")}/api/v1/services/edge-resolve?subdomain=${subdomain}`;
-        const res = await fetch(apiUrl);
+        const origin = process.env.INTERNAL_API_URL || process.env.NEXTAUTH_URL || `http://127.0.0.1:${process.env.PORT || 3000}`;
+        const apiUrl = `${origin.replace(/\/$/, "")}/api/v1/services/edge-resolve?subdomain=${encodeURIComponent(subdomain)}`;
+        const res = await fetch(apiUrl, { signal: AbortSignal.timeout(1500) });
         if (res.ok) {
           route = await res.json();
+          if (route && (route.status === "ACTIVE" || route.targetPort)) {
+            registerServiceRoute(host, route.targetPort, route.status, route.upstreamUrl);
+          }
         }
       } catch (err) {
         // ignore fetch errors
@@ -80,12 +86,15 @@ export async function middleware(req: NextRequest) {
       // return HTTP 503 to prevent premature splash screen redirect reload loops.
       if (!route || route.status !== "ACTIVE") {
         const currentStatus = route ? route.status : "BOOTING";
+        const isReconnecting = currentStatus === "RECONNECTING";
         return NextResponse.json(
           {
-            status: "starting",
+            status: isReconnecting ? "reconnecting" : "starting",
             serviceStatus: currentStatus,
             subdomain,
-            message: `Service is currently ${currentStatus}. Container probe warming up.`,
+            message: isReconnecting
+              ? "Edge tunnel ingress is reconnecting. Restoring connection."
+              : `Service is currently ${currentStatus}. Container probe warming up.`,
             runtime: "Syncbay Edge Container Fabric",
             edgePop: "iad1",
             timestamp: new Date().toISOString(),
@@ -175,6 +184,9 @@ export async function middleware(req: NextRequest) {
     // rewrite customer traffic to the dynamic service preview container route
     const url = req.nextUrl.clone();
     url.pathname = `/service-preview/${subdomain}`;
+    if (route && route.status) {
+      url.searchParams.set("status", route.status);
+    }
     return NextResponse.rewrite(url);
   }
 

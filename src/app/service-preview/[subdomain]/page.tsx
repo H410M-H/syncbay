@@ -43,6 +43,7 @@ export default async function ServicePreviewPage({
     domainRecord = await (db.domain as any).findFirst({
       where: {
         OR: [
+          { hostname: subdomain },
           { hostname: fullHostname },
           { hostname: { startsWith: subdomain } },
         ],
@@ -113,12 +114,15 @@ export default async function ServicePreviewPage({
     (service?.isPaused ? "SLEEPING" : "") ||
     (subdomain.includes("deploy") ? "DEPLOYING" : "") ||
     (subdomain.includes("waking") || subdomain.includes("build") ? "BUILDING" : "") ||
+    (subdomain.includes("reconnect") ? "RECONNECTING" : "") ||
     (subdomain.includes("sleep") ? "SLEEPING" : "") ||
     "ACTIVE"
   ).toUpperCase();
 
-  const status = ["BUILDING", "DEPLOYING", "SLEEPING", "ACTIVE", "FAILED"].includes(rawStatus)
+  const status = ["BUILDING", "DEPLOYING", "SLEEPING", "ACTIVE", "FAILED", "RECONNECTING"].includes(rawStatus)
     ? rawStatus
+    : rawStatus.includes("RECONNECT")
+    ? "RECONNECTING"
     : "ACTIVE";
 
   const deploymentId = latestDeployment?.id || resolvedSearchParams?.deploymentId || "";
@@ -146,6 +150,17 @@ export default async function ServicePreviewPage({
       dotColor: "#06b6d4",
       glowColor: "#06b6d4",
       subtext: "HTTP/2 503 · Deploying Container",
+    },
+    RECONNECTING: {
+      label: "RECONNECTING · Re-establishing Edge Tunnel Ingress",
+      badgeClass: "animate-pulse",
+      dotClass: "animate-pulse",
+      textColor: "#38bdf8",
+      bgColor: "rgba(56, 189, 248, 0.12)",
+      borderColor: "rgba(56, 189, 248, 0.35)",
+      dotColor: "#38bdf8",
+      glowColor: "#38bdf8",
+      subtext: "HTTP/2 503 · Tunnel Ingress Reconnecting",
     },
     SLEEPING: {
       label: "SLEEPING · Scaled to Zero (Idle Timeout)",
@@ -180,7 +195,7 @@ export default async function ServicePreviewPage({
       glowColor: "#ef4444",
       subtext: "HTTP/2 500 · Deployment Failed",
     },
-  }[status as "BUILDING" | "DEPLOYING" | "SLEEPING" | "ACTIVE" | "FAILED"] || {
+  }[status as "BUILDING" | "DEPLOYING" | "SLEEPING" | "ACTIVE" | "FAILED" | "RECONNECTING"] || {
     label: "HTTP/2 200 OK · Container Active",
     badgeClass: "",
     dotClass: "",
@@ -391,6 +406,7 @@ export default async function ServicePreviewPage({
           <p style={{ color: "#a1a1aa", fontSize: "15px", margin: "0 0 24px 0", lineHeight: 1.5 }}>
             {status === "BUILDING" && "This service is compiling container artifacts and preparing runtime assets for deployment."}
             {status === "DEPLOYING" && "This service is starting container processes and mapping edge tunnel routes."}
+            {status === "RECONNECTING" && "The managed edge tunnel is currently reconnecting with exponential backoff. Live ingress will auto-resume once the pulse check succeeds."}
             {status === "SLEEPING" && "This service has scaled to zero due to inactivity and can be woken instantly on request."}
             {status === "ACTIVE" && "This service is deployed and serving live traffic over the Syncbay Global Edge Network."}
             {status === "FAILED" && "This service encountered a deployment error during compilation or container launch."}
@@ -722,6 +738,16 @@ export default async function ServicePreviewPage({
                   statusDot.style.boxShadow = "0 0 10px #06b6d4";
                   statusLabel.innerText = "DEPLOYING · Initializing Edge Ingress & Container Fabric";
                   if (traceStatus) traceStatus.innerText = "Status: HTTP/2 503 · Deploying Container";
+                } else if (newStatus === "RECONNECTING") {
+                  statusBadge.className = "animate-pulse";
+                  statusBadge.style.background = "rgba(56, 189, 248, 0.12)";
+                  statusBadge.style.color = "#38bdf8";
+                  statusBadge.style.borderColor = "rgba(56, 189, 248, 0.35)";
+                  statusDot.className = "animate-pulse";
+                  statusDot.style.background = "#38bdf8";
+                  statusDot.style.boxShadow = "0 0 10px #38bdf8";
+                  statusLabel.innerText = "RECONNECTING · Re-establishing Edge Tunnel Ingress";
+                  if (traceStatus) traceStatus.innerText = "Status: HTTP/2 503 · Tunnel Ingress Reconnecting";
                 } else if (newStatus === "SLEEPING") {
                   statusBadge.className = "";
                   statusBadge.style.background = "rgba(99, 102, 241, 0.12)";
@@ -871,8 +897,20 @@ export default async function ServicePreviewPage({
                       triggerLiveRedirect();
                     }
                   } else {
-                    if (probeBadge) {
-                      probeBadge.innerHTML = "<span style='color: #fbbf24;'>Probe #" + probeCount + ": " + res.status + " (Booting)</span>";
+                    try {
+                      var data = await res.json();
+                      if (data && (data.serviceStatus === "RECONNECTING" || data.status === "reconnecting")) {
+                        updateBadgeState("RECONNECTING");
+                        if (probeBadge) {
+                          probeBadge.innerHTML = "<span style='color: #38bdf8;'>Probe #" + probeCount + ": 503 (Reconnecting Ingress Pulse)</span>";
+                        }
+                      } else if (probeBadge) {
+                        probeBadge.innerHTML = "<span style='color: #fbbf24;'>Probe #" + probeCount + ": " + res.status + " (Booting)</span>";
+                      }
+                    } catch (e) {
+                      if (probeBadge) {
+                        probeBadge.innerHTML = "<span style='color: #fbbf24;'>Probe #" + probeCount + ": " + res.status + " (Booting)</span>";
+                      }
                     }
                   }
                 } catch (err) {

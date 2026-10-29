@@ -15,6 +15,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { BuildPipeline, type PipelineResult } from "./pipeline";
 import { PortManager, defaultPortManager } from "./port-manager";
+import { createTunnelDriver, type TunnelDriver, type TunnelDriverConfig } from "./tunnel-driver";
 
 export interface DaemonConfig {
   port?: number;
@@ -24,6 +25,8 @@ export interface DaemonConfig {
   pollIntervalMs?: number;
   portManager?: PortManager;
   pipeline?: BuildPipeline;
+  tunnelConfig?: TunnelDriverConfig;
+  tunnelDriver?: TunnelDriver;
 }
 
 export interface JobState {
@@ -45,6 +48,7 @@ export class RunnerDaemon {
   public readonly webhookSecret: string;
   public readonly queueMode: boolean;
   public readonly pollIntervalMs: number;
+  public readonly tunnelDriver: TunnelDriver;
   private readonly portManager: PortManager;
   private readonly pipeline: BuildPipeline;
 
@@ -61,6 +65,9 @@ export class RunnerDaemon {
     this.pollIntervalMs = config.pollIntervalMs ?? 5000;
     this.portManager = config.portManager || defaultPortManager;
     this.pipeline = config.pipeline || new BuildPipeline({ portManager: this.portManager });
+    this.tunnelDriver = config.tunnelDriver || createTunnelDriver(config.tunnelConfig || {
+      ingressUrl: `http://${this.host === "0.0.0.0" ? "127.0.0.1" : this.host}:${this.port}`,
+    });
   }
 
   /**
@@ -113,6 +120,13 @@ export class RunnerDaemon {
         const actualPort = typeof addr === "object" && addr ? addr.port : this.port;
         console.log(`[runner-daemon] Listening on http://${this.host}:${actualPort}`);
 
+        // Launch edge tunnel driver
+        this.tunnelDriver.start().then(() => {
+          console.log(`[runner-daemon] Tunnel driver active (${this.tunnelDriver.driverType}: ${this.tunnelDriver.getStatus()})`);
+        }).catch((err: any) => {
+          console.warn(`[runner-daemon] Tunnel driver warning: ${err.message}`);
+        });
+
         if (this.queueMode) {
           console.log(`[runner-daemon] Starting queue poller loop (interval: ${this.pollIntervalMs}ms)`);
           this.startQueuePoller();
@@ -131,6 +145,10 @@ export class RunnerDaemon {
     if (this.pollTimer) {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
+    }
+
+    if (this.tunnelDriver) {
+      await this.tunnelDriver.stop().catch(() => {});
     }
 
     // Close all open SSE connections
@@ -180,6 +198,23 @@ export class RunnerDaemon {
           uptime: process.uptime(),
           activeJobs: Array.from(this.jobs.values()).filter((j) => j.status === "BUILDING").length,
           allocatedPorts: this.portManager.getAllocatedPorts(),
+          tunnel: {
+            driver: this.tunnelDriver.driverType,
+            status: this.tunnelDriver.getStatus(),
+          },
+        })
+      );
+      return;
+    }
+
+    // Tunnel Status Endpoint
+    if (pathname === "/api/tunnel/status" && method === "GET") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          driver: this.tunnelDriver.driverType,
+          status: this.tunnelDriver.getStatus(),
+          stats: this.tunnelDriver.getStats(),
         })
       );
       return;
@@ -476,6 +511,9 @@ export class RunnerDaemon {
         job.assignedPort = result.assignedPort;
         job.strategy = result.strategy;
         log(`[runner] Job ${jobId} succeeded. Container: ${result.containerId}, Port: ${result.assignedPort}`);
+        if (result.assignedPort) {
+          await this.registerEdgeRoute(params, result.assignedPort, log);
+        }
       } else {
         job.status = "FAILED";
         job.error = result.error;
@@ -612,6 +650,61 @@ export class RunnerDaemon {
         }
       }
     }, this.pollIntervalMs);
+  }
+
+  private async registerEdgeRoute(params: any, assignedPort: number, log: (msg: string) => void): Promise<void> {
+    const hostnames: string[] = [];
+    if (params.hostname) hostnames.push(params.hostname);
+    if (params.subdomain) hostnames.push(`${params.subdomain}.syncbay.app`);
+    if (params.serviceName) {
+      hostnames.push(`${params.serviceName}.syncbay.app`);
+      hostnames.push(`${params.serviceName}.localhost`);
+    }
+    if (Array.isArray(params.domains)) {
+      for (const d of params.domains) {
+        if (typeof d === "string") hostnames.push(d);
+        else if (d?.hostname) hostnames.push(d.hostname);
+      }
+    }
+
+    const uniqueHosts = Array.from(new Set(hostnames.filter(Boolean)));
+    if (uniqueHosts.length === 0 && params.jobId) {
+      uniqueHosts.push(`${params.jobId}.syncbay.app`);
+    }
+
+    log(`[runner-edge] Registering ${uniqueHosts.length} edge route(s) for port ${assignedPort}...`);
+
+    // 1. In-process global Edge Service Registry if available
+    const globalReg = (globalThis as any).__syncbay_edge_registry;
+    if (globalReg && typeof globalReg.registerServiceRoute === "function") {
+      for (const h of uniqueHosts) {
+        globalReg.registerServiceRoute(h, assignedPort, "ACTIVE", `http://127.0.0.1:${assignedPort}`);
+      }
+    }
+
+    // 2. Control Plane HTTP API endpoint
+    const apiUrl = process.env.SYNCBAY_API_URL || "http://127.0.0.1:3000";
+    const secret = this.webhookSecret || process.env.RUNNER_SECRET;
+    const reqHeaders: Record<string, string> = { "Content-Type": "application/json" };
+    if (secret) {
+      reqHeaders["Authorization"] = `Bearer ${secret}`;
+    }
+
+    for (const h of uniqueHosts) {
+      try {
+        await fetch(`${apiUrl.replace(/\/$/, "")}/api/v1/services/edge-register`, {
+          method: "POST",
+          headers: reqHeaders,
+          body: JSON.stringify({
+            hostname: h,
+            targetPort: assignedPort,
+            status: "ACTIVE",
+            upstreamUrl: `http://127.0.0.1:${assignedPort}`,
+          }),
+          signal: AbortSignal.timeout(1500),
+        }).catch(() => null);
+      } catch {}
+    }
   }
 
   public getJob(jobId: string): JobState | undefined {
