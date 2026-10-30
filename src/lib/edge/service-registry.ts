@@ -22,6 +22,7 @@ export interface ServiceRouteEntry {
   targetPort?: number;
   status: ServiceRouteStatus;
   upstreamUrl?: string;
+  isLocal?: boolean;
   updatedAt: number;
 }
 
@@ -60,7 +61,8 @@ export class EdgeServiceRegistry {
     hostname: string,
     targetPort?: number,
     status: ServiceRouteStatus = "ACTIVE",
-    upstreamUrl?: string
+    upstreamUrl?: string,
+    isLocal?: boolean
   ): void {
     const normalized = normalizeHostname(hostname);
     if (!normalized) return;
@@ -73,6 +75,7 @@ export class EdgeServiceRegistry {
       targetPort,
       status,
       upstreamUrl: resolvedUpstream,
+      isLocal,
       updatedAt: Date.now(),
     });
   }
@@ -141,9 +144,10 @@ export function registerServiceRoute(
   hostname: string,
   targetPort?: number,
   status: ServiceRouteStatus = "ACTIVE",
-  upstreamUrl?: string
+  upstreamUrl?: string,
+  isLocal?: boolean
 ): void {
-  defaultRegistry.registerServiceRoute(hostname, targetPort, status, upstreamUrl);
+  defaultRegistry.registerServiceRoute(hostname, targetPort, status, upstreamUrl, isLocal);
 }
 
 /**

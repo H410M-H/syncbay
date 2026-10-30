@@ -56,7 +56,7 @@ export const domainRouter = createTRPCRouter({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      let rawHost = input.hostname.toLowerCase().trim().replace(/^https?:\/\//, "").replace(/\/$/, "");
+      const rawHost = input.hostname.toLowerCase().trim().replace(/^https?:\/\//, "").replace(/\/$/, "");
       let cleanHostname: string;
       try {
         cleanHostname = domainToASCII(rawHost) || rawHost;

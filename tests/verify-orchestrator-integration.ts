@@ -64,6 +64,12 @@ async function runVerification() {
   (globalThis as any).prisma = {
     service: {
       findUnique: async ({ where }: any) => mockStore.services.get(where.id) || null,
+      update: async ({ where, data }: any) => {
+        const item = mockStore.services.get(where.id) || {};
+        Object.assign(item, data);
+        mockStore.services.set(where.id, item);
+        return item;
+      },
     },
     build: {
       update: async ({ where, data }: any) => {
@@ -271,6 +277,7 @@ async function runVerification() {
   await driver.stopContainer(customResult.containerId!);
 
   console.log("🎉 ALL INTEGRATION CHECKS (SUCCESS, REAL APP ON ROOT, AND FAILURE ENFORCEMENT) PASSED PERFECTLY!");
+  process.exit(0);
 }
 
 runVerification().catch((err) => {

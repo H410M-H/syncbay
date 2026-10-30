@@ -49,12 +49,18 @@ export async function GET(req: NextRequest) {
   const latest = service.deployments[0];
   const status = latest?.status || "NOT_FOUND";
   const targetPort = service.port || 3000;
+  const isLocal = Boolean(
+    latest?.cfContainerId?.startsWith("c_local_") ||
+    latest?.cfContainerId?.startsWith("proc_") ||
+    process.env.RUNNER_FORCE_LOCAL === "true"
+  );
   
   return NextResponse.json({
     hostname: subdomain,
     targetPort,
     status: status === "ACTIVE" ? "ACTIVE" : status,
     upstreamUrl: `http://127.0.0.1:${targetPort}`,
+    isLocal,
     updatedAt: Date.now(),
   });
 }

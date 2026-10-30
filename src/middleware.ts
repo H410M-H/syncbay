@@ -60,7 +60,7 @@ export async function middleware(req: NextRequest) {
         if (res.ok) {
           route = await res.json();
           if (route && (route.status === "ACTIVE" || route.targetPort)) {
-            registerServiceRoute(host, route.targetPort, route.status, route.upstreamUrl);
+            registerServiceRoute(host, route.targetPort, route.status, route.upstreamUrl, route.isLocal);
           }
         }
       } catch (err) {
@@ -132,7 +132,7 @@ export async function middleware(req: NextRequest) {
       let targetPort = route.targetPort;
       const runnerUrl = process.env.RUNNER_URL;
 
-      if (upstreamBase && upstreamBase.includes("127.0.0.1") && runnerUrl) {
+      if (upstreamBase && upstreamBase.includes("127.0.0.1") && runnerUrl && !route.isLocal && process.env.RUNNER_FORCE_LOCAL !== "true") {
          if (!targetPort) {
             const portMatch = upstreamBase.match(/:(\d+)/);
             if (portMatch) targetPort = parseInt(portMatch[1], 10);

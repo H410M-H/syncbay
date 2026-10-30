@@ -65,6 +65,7 @@ export interface PipelineResult {
   logs: string[];
   durationMs: number;
   error?: string;
+  simulated?: boolean;
 }
 
 // ─── DEFAULT SYSTEM EXECUTOR ─────────────────────────────────────────────────
@@ -272,13 +273,17 @@ export class MockPipelineExecutor implements PipelineExecutor {
 }
 
 function createDefaultExecutor(): PipelineExecutor {
+  if (process.env.VERCEL === "1" || process.env.VERCEL_ENV) {
+    console.log("[pipeline] Serverless environment detected — using MockPipelineExecutor");
+    return new MockPipelineExecutor();
+  }
   try {
     execSync("git --version", { stdio: "ignore" });
     console.log("[pipeline] Using DefaultPipelineExecutor");
     return new DefaultPipelineExecutor();
   } catch (err) {
-    console.error("[pipeline] Failed to init DefaultPipelineExecutor:", err);
-    return new DefaultPipelineExecutor(); // force it anyway
+    console.warn("[pipeline] Native git not found, activating serverless MockPipelineExecutor fallback:", err);
+    return new MockPipelineExecutor();
   }
 }
 
@@ -931,6 +936,8 @@ server.listen(port, "0.0.0.0");
       const durationMs = Date.now() - startTime;
       log(`Pipeline execution finished successfully in ${(durationMs / 1000).toFixed(2)}s`);
 
+      const isSimulated = !(this.executor instanceof DefaultPipelineExecutor) || process.env.VERCEL === "1" || Boolean(process.env.VERCEL_ENV);
+
       return {
         success: true,
         jobId,
@@ -940,6 +947,7 @@ server.listen(port, "0.0.0.0");
         imageTag,
         logs,
         durationMs,
+        simulated: isSimulated,
       };
     } catch (err: any) {
       const durationMs = Date.now() - startTime;
