@@ -332,6 +332,13 @@ export class RunnerServices {
     if (jobDir && fs.existsSync(jobDir)) cwd = jobDir;
     else if (fs.existsSync(this.workspaceRoot)) cwd = this.workspaceRoot;
 
+    // Only native deployments with an existing workspace may open a host shell.
+    // Missing containers must not turn a container terminal into runner-host access.
+    const isNativeDeployment = /^proc_/.test(containerId) && Boolean(jobDir && fs.existsSync(jobDir));
+    if (!inContainer && this.mode !== "mock" && !isNativeDeployment) {
+      return sendJson(res, 409, { error: "No deployed container or native workspace available for this terminal" });
+    }
+
     const inner = inContainer
       ? `docker exec ${usePty ? "-it" : "-i"} ${containerId} sh`
       : usePty
