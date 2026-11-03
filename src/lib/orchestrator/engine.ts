@@ -5,7 +5,7 @@ import { generateNixpacksPlan } from "@/lib/buildpack/nixpacks";
 import { resolveEnvironmentVariables, type DatabaseRef } from "@/lib/buildpack/resolver";
 import { generateDefaultSubdomain } from "@/lib/domain-service";
 import { runKnipAnalysis } from "@/lib/buildpack/knip-analyzer";
-import { registerServiceRoute } from "@/lib/edge/service-registry";
+import { registerServiceRouteAsync } from "@/lib/edge/service-registry";
 import {
   getRunnerDriver,
   RunnerDriverFactory,
@@ -110,7 +110,7 @@ export async function executeDeployment(
 
     // Register initial state in Edge Service Registry (routes traffic to preview splash while building)
     for (const host of targetHostnames) {
-      registerServiceRoute(host, undefined, "BUILDING");
+      await registerServiceRouteAsync(host, undefined, "BUILDING");
     }
 
     // Check if repository needs authenticated git clone credentials
@@ -194,7 +194,7 @@ export async function executeDeployment(
     }).catch(() => null);
 
     for (const host of targetHostnames) {
-      registerServiceRoute(host, undefined, "DEPLOYING");
+      await registerServiceRouteAsync(host, undefined, "DEPLOYING");
     }
 
     // Phase 2.5: Dispatch to Runner Driver Subsystem
@@ -378,7 +378,7 @@ export async function executeDeployment(
     // Shift traffic & promote to ACTIVE in Edge Service Registry
     const isLocalDriver = driver.type === "local";
     for (const host of targetHostnames) {
-      registerServiceRoute(host, targetPort, "ACTIVE", `http://127.0.0.1:${targetPort}`, isLocalDriver);
+      await registerServiceRouteAsync(host, targetPort, "ACTIVE", `http://127.0.0.1:${targetPort}`, isLocalDriver);
     }
     log(`[proxy] Edge reverse proxy targets shifted to container instance ${containerId || "active"} on port ${targetPort}`, "system");
     log(`[proxy] Service routing live at: https://${defaultUrl}`, "system");
@@ -412,7 +412,7 @@ export async function executeDeployment(
     logEventBus.recordError(deploymentId, error.message);
 
     for (const host of targetHostnames) {
-      registerServiceRoute(host, undefined, "FAILED");
+      await registerServiceRouteAsync(host, undefined, "FAILED");
     }
 
     await db.build.update({
