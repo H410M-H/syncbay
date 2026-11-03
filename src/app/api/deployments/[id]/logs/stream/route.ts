@@ -186,12 +186,43 @@ export async function GET(
         }
       });
 
-      // 3. Keepalive ping every 15 seconds
+      // 3. Emit an SSE `status` event whenever the deployment status changes in the DB
+      //    (works across instances, unlike the in-memory log bus)
+      let lastStatus: string | null = null;
+      let statusPollBusy = false;
+      const pollStatus = async () => {
+        if (statusPollBusy) return;
+        statusPollBusy = true;
+        try {
+          const { db } = await import("@/lib/db");
+          const row = await db.deployment.findUnique({
+            where: { id: deploymentId },
+            select: { status: true },
+          });
+          if (row?.status && row.status !== lastStatus) {
+            lastStatus = row.status;
+            controller.enqueue(
+              encoder.encode(
+                `event: status\ndata: ${JSON.stringify({ deploymentId, status: row.status, timestamp: new Date().toISOString() })}\n\n`
+              )
+            );
+          }
+        } catch {
+          // DB unavailable or stream closed; retry on next tick
+        } finally {
+          statusPollBusy = false;
+        }
+      };
+      void pollStatus();
+      const statusInterval = setInterval(pollStatus, 2000);
+
+      // 4. Keepalive ping every 15 seconds
       const pingInterval = setInterval(() => {
         try {
           controller.enqueue(encoder.encode(`: ping\n\n`));
         } catch {
           clearInterval(pingInterval);
+          clearInterval(statusInterval);
           unsubscribe();
         }
       }, 15000);
@@ -199,6 +230,7 @@ export async function GET(
       // Clean up on client disconnect
       req.signal.addEventListener("abort", () => {
         clearInterval(pingInterval);
+        clearInterval(statusInterval);
         unsubscribe();
         try {
           controller.close();
