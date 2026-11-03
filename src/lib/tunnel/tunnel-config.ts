@@ -26,7 +26,7 @@ export interface IngressRule {
   originRequest?: IngressOriginRequest;
 }
 
-export interface CloudflareTunnelConfig {
+interface CloudflareTunnelConfig {
   tunnel: string;
   credentialsFile?: string;
   ingress: IngressRule[];

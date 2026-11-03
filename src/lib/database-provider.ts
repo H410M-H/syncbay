@@ -112,7 +112,7 @@ export async function provisionManagedDatabase(params: {
   const region = params.region || "us-east-1";
 
   if (!PARTNER_API_KEY) {
-    const mockId = `pw-db-${provider.toLowerCase()}-${Math.random().toString(36).substring(2, 9)}`;
+    const mockId = `sb-db-${provider.toLowerCase()}-${Math.random().toString(36).substring(2, 9)}`;
     const mockPass = Math.random().toString(36).substring(2, 14);
     const mockHost = `${mockId}.${region}.syncbay-db.internal`;
 

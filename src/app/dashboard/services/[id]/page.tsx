@@ -102,7 +102,7 @@ export default function ServiceDetailsPage(props: { params: Promise<{ id: string
         <div className="empty-icon" style={{ fontSize: "42px", marginBottom: "12px" }}>⚠️</div>
         <h3 style={{ fontSize: "1.25rem", marginBottom: "8px" }}>Service Not Found</h3>
         <p style={{ color: "var(--text-secondary)" }}>
-          The requested service could not be found or you don't have access.
+          The requested service could not be found or you don&apos;t have access.
         </p>
         <Link href="/dashboard/services" className="btn btn-primary" style={{ marginTop: "20px" }}>
           Back to Services

@@ -172,13 +172,6 @@ export function clearServiceRoutes(): void {
 }
 
 /**
- * Lists all service routes in the default Edge registry.
- */
-export function listRoutes(): ServiceRouteEntry[] {
-  return defaultRegistry.listRoutes();
-}
-
-/**
  * Factory function to create an isolated Edge Service Registry.
  */
 export function createEdgeRegistry(): EdgeServiceRegistry {

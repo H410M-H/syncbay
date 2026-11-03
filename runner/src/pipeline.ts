@@ -13,7 +13,7 @@ import { exec, execSync, spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { promisify } from "node:util";
-import { PortManager, defaultPortManager } from "./port-manager";
+import { PortManager, defaultPortManager } from "./port-manager.ts";
 
 const execAsync = promisify(exec);
 
@@ -527,8 +527,8 @@ server.listen(port, "0.0.0.0", () => {
         }
 
         containerId = runRes.stdout.trim().split("\n").pop() || containerName;
-        this.activeProcessPorts.set(containerId, assignedPort);
-        this.activeProcessPorts.set(jobId, assignedPort);
+        this.activeProcessPorts.set(containerId, assignedPort!);
+        this.activeProcessPorts.set(jobId, assignedPort!);
         log(`Container launched successfully with ID: ${containerId}`);
       } else if (hasNixpacks && hasDocker) {
         strategy = "nixpacks";
@@ -577,8 +577,8 @@ server.listen(port, "0.0.0.0", () => {
         }
 
         containerId = runRes.stdout.trim().split("\n").pop() || containerName;
-        this.activeProcessPorts.set(containerId, assignedPort);
-        this.activeProcessPorts.set(jobId, assignedPort);
+        this.activeProcessPorts.set(containerId, assignedPort!);
+        this.activeProcessPorts.set(jobId, assignedPort!);
         log(`Container launched successfully with ID: ${containerId}`);
       } else {
         // Containerless native process execution mode (Termux / Linux host without Docker daemon)
@@ -840,8 +840,8 @@ server.listen(port, "0.0.0.0");
         containerId = activeContainerId;
         this.activeProcesses.set(activeContainerId, child);
         this.activeProcesses.set(jobId, child);
-        this.activeProcessPorts.set(activeContainerId, assignedPort);
-        this.activeProcessPorts.set(jobId, assignedPort);
+        this.activeProcessPorts.set(activeContainerId, assignedPort!);
+        this.activeProcessPorts.set(jobId, assignedPort!);
 
         childExitCode = null;
         childErrorMsg = null;
@@ -979,8 +979,4 @@ server.listen(port, "0.0.0.0");
   }
 }
 
-export const defaultPipeline = new BuildPipeline();
 
-export async function executeBuildPipeline(options: PipelineOptions): Promise<PipelineResult> {
-  return defaultPipeline.execute(options);
-}

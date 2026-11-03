@@ -82,4 +82,3 @@ export const UsageWarningEmail = ({
   );
 };
 
-export default UsageWarningEmail;

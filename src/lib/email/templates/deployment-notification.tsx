@@ -81,4 +81,3 @@ export const DeploymentNotificationEmail = ({
   );
 };
 
-export default DeploymentNotificationEmail;

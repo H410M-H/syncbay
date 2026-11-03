@@ -13,9 +13,9 @@ import * as http from "node:http";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { BuildPipeline, type PipelineResult } from "./pipeline";
-import { PortManager, defaultPortManager } from "./port-manager";
-import { createTunnelDriver, type TunnelDriver, type TunnelDriverConfig } from "./tunnel-driver";
+import { BuildPipeline, type PipelineResult } from "./pipeline.ts";
+import { PortManager, defaultPortManager } from "./port-manager.ts";
+import { createTunnelDriver, type TunnelDriver, type TunnelDriverConfig } from "./tunnel-driver.ts";
 
 export interface DaemonConfig {
   port?: number;
