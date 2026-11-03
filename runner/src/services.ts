@@ -267,8 +267,14 @@ export class RunnerServices {
     const containerName = record?.containerName || `syncbay-db-${id}`;
 
     if (record ? !record.mock : await this.useDocker()) {
-      await run("docker", ["rm", "-f", containerName], undefined, 60000);
-      await run("docker", ["volume", "rm", "-f", `${containerName}-data`], undefined, 60000);
+      const removed = await run("docker", ["rm", "-f", containerName], undefined, 60000);
+      if (removed.code !== 0 && !/no such container/i.test(removed.stderr)) {
+        return sendJson(res, 500, { error: `Container teardown failed: ${removed.stderr.trim().slice(0, 500)}` });
+      }
+      const volume = await run("docker", ["volume", "rm", "-f", `${containerName}-data`], undefined, 60000);
+      if (volume.code !== 0 && !/no such volume/i.test(volume.stderr)) {
+        return sendJson(res, 500, { error: `Volume teardown failed: ${volume.stderr.trim().slice(0, 500)}` });
+      }
     }
     this.portManager.releaseServicePort(`db:${id}`);
     this.databases.delete(id);
