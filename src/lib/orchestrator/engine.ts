@@ -6,6 +6,7 @@ import { resolveEnvironmentVariables, type DatabaseRef } from "@/lib/buildpack/r
 import { generateDefaultSubdomain } from "@/lib/domain-service";
 import { runKnipAnalysis } from "@/lib/buildpack/knip-analyzer";
 import { registerServiceRouteAsync } from "@/lib/edge/service-registry";
+import { applyDatabaseEnv } from "@/lib/database-provider";
 import {
   getRunnerDriver,
   RunnerDriverFactory,
@@ -187,6 +188,9 @@ export async function executeDeployment(
     for (const v of resolved) {
       envMap[v.key] = v.value;
     }
+    // Managed databases: DATABASE_URL / REDIS_URL / <NAME>_URL, never overriding user-set keys
+    const dbInjected = applyDatabaseEnv(envMap, service?.environment?.databases || []);
+    if (dbInjected.length) log(`[env] Linked managed database variables: ${dbInjected.join(", ")}`, "stdout");
 
     // Phase 2: Update to DEPLOYING
     await db.deployment.update({

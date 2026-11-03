@@ -2,6 +2,7 @@
 
 import React, { useState } from "react";
 import Link from "next/link";
+import { signIn } from "next-auth/react";
 import { getWeeklyVersionDrops, getStrategicInsights, WeeklyVersionDrop } from "@/lib/rd/trending-engine";
 import { AsciiBackground } from "@/components/ui/ascii-background";
 import { trpc } from "@/lib/trpc-client";
@@ -22,8 +23,11 @@ export default function RoadmapPage() {
       await voteMutation.mutateAsync({ feature });
       setVotedSet((prev) => ({ ...prev, [feature]: true }));
       await refetchVotes();
-    } catch {
-      // Allow optimistic vote
+    } catch (err: any) {
+      if (err?.data?.code === "UNAUTHORIZED") {
+        await signIn(undefined, { callbackUrl: "/roadmap" });
+        return;
+      }
       setVotedSet((prev) => ({ ...prev, [feature]: true }));
     }
   };

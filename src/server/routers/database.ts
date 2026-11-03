@@ -4,6 +4,9 @@ import { TRPCError } from "@trpc/server";
 import {
   provisionManagedDatabase,
   destroyManagedDatabase,
+  checkDatabaseHealth,
+  attachDatabaseVariables,
+  detachDatabaseVariables,
   parseDatabaseUrl,
 } from "@/lib/database-provider";
 import { DatabaseProvider } from "@prisma/client";
@@ -98,6 +101,46 @@ export const databaseRouter = createTRPCRouter({
     }),
 
   /**
+   * Probe database health (pg_isready / redis-cli ping on the runner) and persist status
+   */
+  health: protectedProcedure
+    .input(z.object({ databaseId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const instance = await ctx.db.databaseInstance.findFirst({
+        where: {
+          id: input.databaseId,
+          environment: {
+            project: {
+              deletedAt: null,
+              workspace: { members: { some: { userId: ctx.session.user.id } } },
+            },
+          },
+        },
+      });
+      if (!instance) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Database instance not found" });
+      }
+      if (instance.status === "PROVISIONING" || instance.status === "DELETING" || instance.status === "FAILED") {
+        return { databaseId: instance.id, status: instance.status, healthy: false, lastHealthAt: instance.lastHealthAt };
+      }
+
+      const result = await checkDatabaseHealth(instance);
+      const updated = await ctx.db.databaseInstance.update({
+        where: { id: instance.id },
+        data: { status: result.status, lastHealthAt: new Date() },
+      });
+      return {
+        databaseId: instance.id,
+        status: updated.status,
+        healthy: result.healthy,
+        latencyMs: result.latencyMs,
+        mode: result.mode,
+        message: result.message,
+        lastHealthAt: updated.lastHealthAt,
+      };
+    }),
+
+  /**
    * Provision a new database
    */
   create: protectedProcedure
@@ -110,106 +153,77 @@ export const databaseRouter = createTRPCRouter({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      // 1. Verify access to the environment
+      // 1. Access check is part of the lookup: environments outside the caller's workspaces are invisible
       const env = await ctx.db.environment.findFirst({
-        where: { id: input.environmentId },
-        include: { project: true },
-      });
-
-      if (!env) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Environment not found" });
-      }
-
-      const project = await ctx.db.project.findFirst({
         where: {
-          id: env.projectId,
-          deletedAt: null,
-          workspace: {
-            members: {
-              some: {
-                userId: ctx.session.user.id,
-                role: { in: ["OWNER", "ADMIN", "MEMBER"] },
+          id: input.environmentId,
+          project: {
+            deletedAt: null,
+            workspace: {
+              members: {
+                some: {
+                  userId: ctx.session.user.id,
+                  role: { in: ["OWNER", "ADMIN", "MEMBER"] },
+                },
               },
             },
           },
         },
+        include: { project: true },
       });
 
-      if (!project) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "Insufficient permissions to provision database" });
+      if (!env) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Environment not found or insufficient permissions to provision database" });
       }
 
-      // 2. Call partner API or local provider to provision
-      const provisionResult = await provisionManagedDatabase({
-        projectId: project.id,
-        environmentId: env.id,
-        name: input.name,
-        provider: input.provider,
-        region: input.region,
-      });
-
-      // 3. Save database instance to database
-      const dbInstance = await ctx.db.databaseInstance.create({
+      // 2. Record the instance as PROVISIONING, then provision on the runner / provider
+      const pending = await ctx.db.databaseInstance.create({
         data: {
           environmentId: env.id,
           name: input.name,
           provider: input.provider,
           region: input.region,
+          connectionUrl: "",
+          status: "PROVISIONING",
+        },
+      });
+
+      let provisionResult;
+      try {
+        provisionResult = await provisionManagedDatabase({
+          id: pending.id,
+          projectId: env.projectId,
+          environmentId: env.id,
+          name: input.name,
+          provider: input.provider,
+          region: input.region,
+        });
+      } catch (err: any) {
+        await ctx.db.databaseInstance.update({ where: { id: pending.id }, data: { status: "FAILED" } }).catch(() => null);
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Database provisioning failed: ${err.message}` });
+      }
+
+      const dbInstance = await ctx.db.databaseInstance.update({
+        where: { id: pending.id },
+        data: {
           partnerDbId: provisionResult.partnerDbId,
           connectionUrl: provisionResult.connectionUrl,
+          host: provisionResult.host,
+          port: provisionResult.port,
+          containerId: provisionResult.containerId,
+          status: "ACTIVE",
+          lastHealthAt: new Date(),
         },
       });
 
-      // 4. Create an EnvironmentVariable linked properly
-      const envVarKey = input.name.toUpperCase().replace(/[^A-Z0-9]/g, "_") + "_URL";
-
-      // Attach workspace-level variable if none exists
-      const existingWsVar = await ctx.db.environmentVariable.findFirst({
-        where: {
-          workspaceId: project.workspaceId,
-          serviceId: null,
-          key: envVarKey,
-        },
+      // 3. Inject <NAME>_URL + DATABASE_URL / REDIS_URL into existing services (never overriding user keys)
+      await attachDatabaseVariables(ctx.db, {
+        workspaceId: env.project.workspaceId,
+        environmentId: env.id,
+        name: input.name,
+        provider: input.provider,
+        connectionUrl: provisionResult.connectionUrl,
       });
-      if (!existingWsVar) {
-        await ctx.db.environmentVariable.create({
-          data: {
-            workspaceId: project.workspaceId,
-            key: envVarKey,
-            value: provisionResult.connectionUrl,
-            isSecret: true,
-            isReference: false,
-          },
-        });
-      }
-
-      // Attach to all existing services in this environment
-      const services = await ctx.db.service.findMany({
-        where: { environmentId: env.id, deletedAt: null },
-      });
-
-      for (const svc of services) {
-        const existingSvcVar = await ctx.db.environmentVariable.findFirst({
-          where: { serviceId: svc.id, key: envVarKey },
-        });
-
-        if (existingSvcVar) {
-          await ctx.db.environmentVariable.update({
-            where: { id: existingSvcVar.id },
-            data: { value: provisionResult.connectionUrl },
-          });
-        } else {
-          await ctx.db.environmentVariable.create({
-            data: {
-              serviceId: svc.id,
-              key: envVarKey,
-              value: provisionResult.connectionUrl,
-              isSecret: true,
-              isReference: false,
-            },
-          });
-        }
-      }
 
       return {
         ...dbInstance,
@@ -229,11 +243,8 @@ export const databaseRouter = createTRPCRouter({
       });
 
       if (!dbInstance) throw new TRPCError({ code: "NOT_FOUND" });
-      if (dbInstance.name !== input.confirmName) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "Name confirmation mismatch" });
-      }
 
-      // Verify access — OWNER or MEMBER only
+      // Verify access — OWNER, ADMIN or MEMBER only
       const member = await ctx.db.workspaceMember.findUnique({
         where: {
           workspaceId_userId: {
@@ -243,16 +254,35 @@ export const databaseRouter = createTRPCRouter({
         },
       });
 
-      if (!member || member.role === "VIEWER") {
+      if (!member) throw new TRPCError({ code: "NOT_FOUND" });
+      if (member.role === "VIEWER") {
         throw new TRPCError({ code: "FORBIDDEN", message: "Viewers cannot delete databases" });
       }
-
-      // Call partner API / provider destruction
-      if (dbInstance.partnerDbId) {
-        await destroyManagedDatabase(dbInstance.partnerDbId);
+      if (dbInstance.name !== input.confirmName) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Name confirmation mismatch" });
       }
 
-      // Delete from our DB
+      await ctx.db.databaseInstance.update({ where: { id: dbInstance.id }, data: { status: "DELETING" } });
+
+      // Tear down the runner container / partner instance
+      try {
+        await destroyManagedDatabase(dbInstance);
+      } catch (err: any) {
+        await ctx.db.databaseInstance.update({ where: { id: dbInstance.id }, data: { status: "UNHEALTHY" } }).catch(() => null);
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Database teardown failed: ${err.message}` });
+      }
+
+      // Remove injected variables that still point at this database
+      if (dbInstance.connectionUrl) {
+        await detachDatabaseVariables(ctx.db, {
+          workspaceId: dbInstance.environment.project.workspaceId,
+          environmentId: dbInstance.environmentId,
+          name: dbInstance.name,
+          provider: dbInstance.provider,
+          connectionUrl: dbInstance.connectionUrl,
+        });
+      }
+
       await ctx.db.databaseInstance.delete({ where: { id: input.databaseId } });
 
       return { success: true };
