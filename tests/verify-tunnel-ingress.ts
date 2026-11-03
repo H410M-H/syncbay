@@ -31,7 +31,7 @@ import { RunnerDaemon } from "../runner/src/index";
 import { PortManager } from "../runner/src/port-manager";
 import { cloudflareApiClient } from "../src/lib/tunnel/cloudflare-api";
 import { domainRouter } from "../src/server/routers/domain";
-import { middleware } from "../src/middleware";
+import { proxy as middleware } from "../src/proxy";
 import { NextRequest } from "next/server";
 import { POST as edgeRegisterPost, DELETE as edgeRegisterDelete } from "../src/app/api/v1/services/edge-register/route";
 

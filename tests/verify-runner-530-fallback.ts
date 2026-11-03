@@ -27,7 +27,7 @@ import {
   getServiceRoute,
   clearServiceRoutes,
 } from "../src/lib/edge/service-registry";
-import { middleware } from "../src/middleware";
+import { proxy as middleware } from "../src/proxy";
 
 async function runTests() {
   console.log("================================================================================");
