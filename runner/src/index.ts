@@ -31,6 +31,7 @@ function resolveDaemonSecret(explicit?: string): string {
   }
   return DEV_RUNNER_SECRET;
 }
+import { RunnerServices } from "./services.ts";
 
 export interface DaemonConfig {
   port?: number;
@@ -42,6 +43,7 @@ export interface DaemonConfig {
   pipeline?: BuildPipeline;
   tunnelConfig?: TunnelDriverConfig;
   tunnelDriver?: TunnelDriver;
+  services?: RunnerServices;
 }
 
 export interface JobState {
@@ -69,6 +71,7 @@ export class RunnerDaemon {
   public readonly tunnelDriver: TunnelDriver;
   private readonly portManager: PortManager;
   private readonly pipeline: BuildPipeline;
+  private readonly services: RunnerServices;
 
   private server: http.Server | null = null;
   private jobs: Map<string, JobState> = new Map();
@@ -87,6 +90,7 @@ export class RunnerDaemon {
     this.pollIntervalMs = config.pollIntervalMs ?? 5000;
     this.portManager = config.portManager || defaultPortManager;
     this.pipeline = config.pipeline || new BuildPipeline({ portManager: this.portManager });
+    this.services = config.services || new RunnerServices({ portManager: this.portManager });
     this.tunnelDriver = config.tunnelDriver || createTunnelDriver(config.tunnelConfig || {
       ingressUrl: `http://${this.host === "0.0.0.0" ? "127.0.0.1" : this.host}:${this.port}`,
     });
@@ -192,6 +196,8 @@ export class RunnerDaemon {
       this.pollTimer = null;
     }
 
+    this.services.shutdown();
+
     if (this.tunnelDriver) {
       await this.tunnelDriver.stop().catch(() => {});
     }
@@ -267,6 +273,11 @@ export class RunnerDaemon {
 
     // Read full request body
     const body = await this.readBody(req);
+
+    // Managed databases & web terminals (runner/src/services.ts)
+    if (await this.services.handle(req, res, pathname, body, (p, s, t) => this.verifySignature((req.method || "GET").toUpperCase(), pathname, p, s, t))) {
+      return;
+    }
 
     // POST /api/builds: Dispatch new build
     if (pathname === "/api/builds" && method === "POST") {

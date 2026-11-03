@@ -230,6 +230,79 @@ test("RunnerDaemon: canonical signatures, replay rejection, and exitCode surfaci
   }
 });
 
+test("RunnerServices: /api/databases mock mode provision, health, delete with HMAC", async () => {
+  const { createHmac } = await import("node:crypto");
+  const { RunnerServices } = await import("../src/services");
+  const secret = "services-test-key";
+  const pm = new PortManager({ rangeStart: 35000, rangeEnd: 35050 });
+  const daemon = new RunnerDaemon({
+    port: 0,
+    webhookSecret: secret,
+    portManager: pm,
+    pipeline: new BuildPipeline({ executor: new MockPipelineExecutor(), portManager: pm }),
+    services: new RunnerServices({ portManager: pm, mode: "mock", dbHost: "10.0.0.5" }),
+  });
+  const port = await daemon.start();
+  const baseUrl = `http://127.0.0.1:${port}`;
+  // Canonical `${ts}.${METHOD}.${path}.${payload}`; GET/DELETE sign the pathname as payload.
+  const signFor = (method: string, path: string, payload: string) => {
+    const ts = Date.now().toString();
+    const sig = createHmac("sha256", secret).update(`${ts}.${method}.${path}.${payload}`).digest("hex");
+    return { "X-Syncbay-Signature": `sha256=${sig}`, "X-Syncbay-Timestamp": ts };
+  };
+
+  try {
+    // Unsigned request rejected
+    const unauth = await fetch(`${baseUrl}/api/databases`, { method: "POST", body: "{}" });
+    assert.strictEqual(unauth.status, 401);
+
+    // Provision (mock)
+    const body = JSON.stringify({ id: "dbtest1", name: "main", provider: "POSTGRES" });
+    const created = await fetch(`${baseUrl}/api/databases`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...signFor("POST", "/api/databases", body) },
+      body,
+    });
+    assert.strictEqual(created.status, 201);
+    const db = await created.json();
+    assert.strictEqual(db.mode, "mock");
+    assert.ok(db.containerId.startsWith("mock-"));
+    assert.ok(db.port >= 35000 && db.port <= 35050);
+    assert.ok(pm.isPortAllocated(db.port));
+    assert.match(db.connectionUrl, /^postgresql:\/\/postgres:[^@]+@10\.0\.0\.5:\d+\/main$/);
+
+    // Redis provisioning yields redis:// URL
+    const redisBody = JSON.stringify({ id: "cache1", provider: "REDIS" });
+    const redis = await (await fetch(`${baseUrl}/api/databases`, { method: "POST", headers: signFor("POST", "/api/databases", redisBody), body: redisBody })).json();
+    assert.match(redis.connectionUrl, /^redis:\/\/default:/);
+
+    // Unsupported provider
+    const badBody = JSON.stringify({ provider: "MONGO" });
+    const bad = await fetch(`${baseUrl}/api/databases`, { method: "POST", headers: signFor("POST", "/api/databases", badBody), body: badBody });
+    assert.strictEqual(bad.status, 400);
+
+    // Health (GET signs the pathname)
+    const healthPath = "/api/databases/dbtest1/health";
+    const health = await fetch(`${baseUrl}${healthPath}`, { headers: signFor("GET", healthPath, healthPath) });
+    assert.strictEqual(health.status, 200);
+    const healthData = await health.json();
+    assert.strictEqual(healthData.healthy, true);
+
+    // Health with wrong signature payload rejected
+    const forged = await fetch(`${baseUrl}${healthPath}`, { headers: signFor("GET", healthPath, "/api/other") });
+    assert.strictEqual(forged.status, 401);
+
+    // Delete releases the port
+    const delPath = "/api/databases/dbtest1";
+    const del = await fetch(`${baseUrl}${delPath}`, { method: "DELETE", headers: signFor("DELETE", delPath, delPath) });
+    assert.strictEqual(del.status, 200);
+    assert.strictEqual((await del.json()).deleted, true);
+    assert.strictEqual(pm.isPortAllocated(db.port), false);
+  } finally {
+    await daemon.stop();
+  }
+});
+
 test("BuildPipeline: startup crash keeps the last 25 stderr lines and the exit code", async () => {
   const pm = new PortManager({ rangeStart: 36000, rangeEnd: 36050 });
   const pipeline = new BuildPipeline({ portManager: pm });
@@ -292,5 +365,68 @@ test("BuildPipeline: RUNNER_DRIVER=mock selects MockPipelineExecutor", () => {
   } finally {
     if (prev === undefined) delete process.env.RUNNER_DRIVER;
     else process.env.RUNNER_DRIVER = prev;
+  }
+});
+
+test("RunnerServices: /api/terminals process session streams command output over SSE", async () => {
+  const { createHmac } = await import("node:crypto");
+  const { RunnerServices } = await import("../src/services");
+  const secret = "terminal-test-key";
+  const pm = new PortManager({ rangeStart: 36000, rangeEnd: 36050 });
+  const daemon = new RunnerDaemon({
+    port: 0,
+    webhookSecret: secret,
+    portManager: pm,
+    pipeline: new BuildPipeline({ executor: new MockPipelineExecutor(), portManager: pm }),
+    services: new RunnerServices({ portManager: pm, mode: "mock" }),
+  });
+  const port = await daemon.start();
+  const baseUrl = `http://127.0.0.1:${port}`;
+  // Canonical `${ts}.${METHOD}.${path}.${payload}`; GET/DELETE sign the pathname as payload.
+  const signFor = (method: string, path: string, payload: string) => {
+    const ts = Date.now().toString();
+    const sig = createHmac("sha256", secret).update(`${ts}.${method}.${path}.${payload}`).digest("hex");
+    return { "X-Syncbay-Signature": `sha256=${sig}`, "X-Syncbay-Timestamp": ts };
+  };
+
+  try {
+    const createBody = JSON.stringify({ env: { GREETING: "hi" } });
+    const created = await fetch(`${baseUrl}/api/terminals`, { method: "POST", headers: signFor("POST", "/api/terminals", createBody), body: createBody });
+    assert.strictEqual(created.status, 201);
+    const { sessionId, mode } = await created.json();
+    assert.strictEqual(mode, "process");
+
+    const streamPath = `/api/terminals/${sessionId}/stream`;
+    const controller = new AbortController();
+    const stream = await fetch(`${baseUrl}${streamPath}`, { headers: signFor("GET", streamPath, streamPath), signal: controller.signal });
+    assert.strictEqual(stream.status, 200);
+    assert.match(stream.headers.get("content-type") || "", /text\/event-stream/);
+
+    const inputBody = JSON.stringify({ input: "echo term-$((40+2))\n" });
+    const input = await fetch(`${baseUrl}/api/terminals/${sessionId}/input`, { method: "POST", headers: signFor("POST", `/api/terminals/${sessionId}/input`, inputBody), body: inputBody });
+    assert.strictEqual(input.status, 200);
+
+    const reader = stream.body!.getReader();
+    const decoder = new TextDecoder();
+    let transcript = "";
+    const deadline = Date.now() + 8000;
+    while (!transcript.includes("term-42") && Date.now() < deadline) {
+      const chunk = await Promise.race([
+        reader.read(),
+        new Promise<{ done: true; value: undefined }>((r) => setTimeout(() => r({ done: true, value: undefined }), 8000)),
+      ]);
+      if (chunk.done) break;
+      for (const line of decoder.decode(chunk.value).split("\n")) {
+        if (line.startsWith("data: ")) transcript += JSON.parse(line.slice(6)).data || "";
+      }
+    }
+    controller.abort();
+    assert.ok(transcript.includes("term-42"), `expected command output in transcript, got: ${JSON.stringify(transcript)}`);
+
+    const delPath = `/api/terminals/${sessionId}`;
+    const del = await fetch(`${baseUrl}${delPath}`, { method: "DELETE", headers: signFor("DELETE", delPath, delPath) });
+    assert.strictEqual(del.status, 200);
+  } finally {
+    await daemon.stop();
   }
 });
