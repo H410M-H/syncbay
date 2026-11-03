@@ -337,15 +337,28 @@ class ChainedStore implements L2Store {
   }
   async get(hostname: string): Promise<ServiceRouteEntry | null> {
     let lastError: unknown = null;
+    let staleHit: ServiceRouteEntry | null = null;
     for (const store of this.stores) {
       try {
         const hit = await store.get(hostname);
-        if (hit) return hit;
+        if (hit) {
+          // Lifecycle mutations also update the DB without writing a route.
+          // Revalidate aging Redis entries against that source of truth.
+          if (store.kind === "upstash" && this.stores.some((s) => s.kind === "db") &&
+              Date.now() - hit.updatedAt >= l1TtlFor(hit.status)) {
+            staleHit = hit;
+            continue;
+          }
+          return hit;
+        }
       } catch (err) {
         lastError = err;
       }
     }
-    if (lastError) throw lastError;
+    if (lastError) {
+      if (staleHit) return staleHit;
+      throw lastError;
+    }
     return null;
   }
   async set(hostname: string, entry: ServiceRouteEntry): Promise<void> {
