@@ -26,6 +26,14 @@ const eslintConfig = defineConfig([
       "@typescript-eslint/no-non-null-asserted-optional-chain": "warn",
     },
   },
+  {
+    // React Compiler advisories (eslint-config-next 16). Tracked as tech debt in ROADMAP.md.
+    files: ["**/*.{js,jsx,mjs,ts,tsx,mts,cts}"],
+    rules: {
+      "react-hooks/set-state-in-effect": "warn",
+      "react-hooks/preserve-manual-memoization": "warn",
+    },
+  },
 ]);
 
 export default eslintConfig;

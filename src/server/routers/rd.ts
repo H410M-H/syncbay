@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { createTRPCRouter, publicProcedure, protectedProcedure } from "@/server/trpc";
+import { TRPCError } from "@trpc/server";
 import {
   getWeeklyVersionDrops,
   getTrendingStacks,
@@ -40,11 +41,15 @@ export const rdRouter = createTRPCRouter({
   }),
 
   /**
-   * Vote for an upcoming feature in the weekly R&D pipeline (publicly accessible on /roadmap)
+   * Vote for an upcoming feature in the weekly R&D pipeline (signed-in users, one vote per feature)
    */
-  voteFeature: publicProcedure
-    .input(z.object({ feature: z.string().min(1) }))
-    .mutation(async ({ input }) => {
-      return voteForFeature(input.feature);
+  voteFeature: protectedProcedure
+    .input(z.object({ feature: z.string().min(1).max(128) }))
+    .mutation(async ({ ctx, input }) => {
+      const known = getFeatureVotes().some((v) => v.feature === input.feature);
+      if (!known) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Unknown roadmap feature" });
+      }
+      return voteForFeature(input.feature, ctx.session.user.id);
     }),
 });

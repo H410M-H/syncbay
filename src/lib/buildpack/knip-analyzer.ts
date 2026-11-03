@@ -1036,4 +1036,3 @@ export class KnipAnalyzer {
   }
 }
 
-export const knipAnalyzer = new KnipAnalyzer();

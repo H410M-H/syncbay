@@ -2,6 +2,8 @@ import { z } from "zod";
 import { createTRPCRouter, protectedProcedure, publicProcedure } from "@/server/trpc";
 import { TRPCError } from "@trpc/server";
 import { WorkspaceRole } from "@prisma/client";
+import { EmailService } from "@/lib/email";
+import { getAppUrl } from "@/lib/env";
 
 export const workspaceRouter = createTRPCRouter({
   /** List all workspaces the current user belongs to */
@@ -121,6 +123,21 @@ export const workspaceRouter = createTRPCRouter({
           metadata: { email: input.email, role: input.role },
         },
       });
+
+      if (input.email) {
+        const workspace = await ctx.db.workspace.findUnique({
+          where: { id: input.workspaceId },
+          select: { name: true },
+        });
+        // Email delivery is best-effort: the invite link is still returned to the caller.
+        await EmailService.sendInvitation({
+          to: input.email,
+          inviteeEmail: input.email,
+          inviterName: ctx.session.user.name || ctx.session.user.email || "A teammate",
+          teamName: workspace?.name ?? "your team",
+          acceptUrl: `${getAppUrl()}/invite/${invite.token}`,
+        }).catch((err) => console.error("[workspace.invite] invitation email failed:", err));
+      }
 
       return invite;
     }),

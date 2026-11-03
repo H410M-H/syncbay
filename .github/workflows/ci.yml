@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Lint, typecheck, knip, build & tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Dummy values: the build never connects to a database or signs a session.
+      DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+      DIRECT_URL: postgresql://ci:ci@localhost:5432/ci
+      NEXTAUTH_SECRET: ci-secret
+      NEXTAUTH_URL: http://localhost:3000
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            runner/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - name: Dead code (knip)
+        run: npx knip --no-progress
+
+      - name: Build
+        run: npm run build
+
+      - name: Runner build & test
+        working-directory: runner
+        run: |
+          npm install
+          npm run build
+          npm test
+
+      - name: Verify runner 530 fallback
+        run: npm run test:fallback
+
+      - name: Verify tunnel ingress
+        run: npm run test:tunnel
+
+      - name: Verify email templates
+        run: npm run test:email
+
+      - name: Verify edge registry & proxy
+        run: npm run test:edge
+
+      - name: Verify managed databases
+        run: npm run test:db
+
+      - name: Verify web terminal
+        run: npm run test:terminal

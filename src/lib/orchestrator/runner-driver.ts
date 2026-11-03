@@ -12,6 +12,7 @@
 import crypto from "node:crypto";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
+import { logEventBus } from "../telemetry/event-bus";
 
 const execAsync = promisify(exec);
 
@@ -251,6 +252,107 @@ export function verifyHmacSignature(
   }
 }
 
+// ─── CANONICAL REQUEST SIGNING (control plane → runner daemon) ───────────────
+
+/** Dev-only fallback secret. Never used when NODE_ENV=production. */
+const DEV_RUNNER_SECRET = "syncbay-runner-secret";
+
+/**
+ * Resolves the shared runner HMAC secret (RUNNER_WEBHOOK_SECRET → RUNNER_SECRET →
+ * SYNCBAY_WEBHOOK_SECRET). In production a missing secret is a hard AuthenticationError;
+ * outside production a well-known dev default keeps local setups working.
+ */
+export function resolveRunnerSecret(): string {
+  const secret =
+    process.env.RUNNER_WEBHOOK_SECRET ||
+    process.env.RUNNER_SECRET ||
+    process.env.SYNCBAY_WEBHOOK_SECRET;
+  if (secret) return secret;
+  if (process.env.NODE_ENV === "production") {
+    throw new AuthenticationError("RUNNER_SECRET is not configured; refusing to sign runner requests in production");
+  }
+  return DEV_RUNNER_SECRET;
+}
+
+/**
+ * Signs a runner request over the canonical string `${ts}.${METHOD}.${path}.${body}`.
+ * `path` is the URL pathname (no query, no runner base path). For GET requests the
+ * body is the canonical job id. Call it once per attempt so every retry carries a fresh timestamp.
+ */
+export function signRequest(
+  secret: string,
+  method: string,
+  path: string,
+  body: string = "",
+  timestampInput?: string | number
+): HmacSignatureResult & { headers: Record<string, string> } {
+  if (!secret) {
+    throw new RunnerDriverError("HMAC secret must not be empty", "INVALID_CONFIG");
+  }
+  const timestamp = timestampInput !== undefined ? String(timestampInput) : Date.now().toString();
+  const signature = crypto
+    .createHmac("sha256", secret)
+    .update(`${timestamp}.${method.toUpperCase()}.${path}.${body}`)
+    .digest("hex");
+  const headerValue = `sha256=${signature}`;
+  return {
+    signature,
+    timestamp,
+    headerValue,
+    headers: { "X-Syncbay-Signature": headerValue, "X-Syncbay-Timestamp": timestamp },
+  };
+}
+
+// ─── RETRY / BACKOFF ─────────────────────────────────────────────────────────
+
+const RETRY_MAX_ATTEMPTS = 4;
+const RETRY_BASE_DELAY_MS = 500;
+const RETRY_MAX_DELAY_MS = 8000;
+
+/**
+ * Exponential backoff with "equal jitter": base·2^attempt capped at 8 s, then a random
+ * value in [delay/2, delay] so concurrent retries against a reconnecting tunnel spread out.
+ */
+export function computeBackoffDelay(
+  attempt: number,
+  baseMs: number = RETRY_BASE_DELAY_MS,
+  capMs: number = RETRY_MAX_DELAY_MS,
+  random: () => number = Math.random
+): number {
+  const exp = Math.min(capMs, baseMs * 2 ** attempt);
+  return Math.round(exp / 2 + random() * (exp / 2));
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Cloudflare tunnel errors (520-530) and gateway errors (408, 429, 502, 503, 504)
+// are transient while a tunnel connection or worker is being allocated.
+const TRANSIENT_STATUS_CODES = new Set([408, 429, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 530]);
+
+// ─── DRIVER LOG FAN-OUT ──────────────────────────────────────────────────────
+
+function classifyLogLine(line: string): "stdout" | "stderr" | "system" {
+  const t = line.trim();
+  if (/\[(build|app):error\]|\[app:stderr\]|\[error\]|^Error:/i.test(t)) return "stderr";
+  if (t.startsWith("[")) return "system";
+  return "stdout";
+}
+
+/**
+ * Common driver log sink. When the caller supplied `onLog` (the engine does, and it
+ * publishes to logEventBus itself with its own stream classification) the line is passed
+ * through unchanged; otherwise it is published straight to logEventBus for the deployment.
+ */
+function emitLog(params: Pick<BuildDispatchParams, "deploymentId" | "onLog">, line: string): void {
+  if (params.onLog) {
+    params.onLog(line);
+    return;
+  }
+  if (params.deploymentId) {
+    logEventBus.publish(params.deploymentId, { stream: classifyLogLine(line), message: line });
+  }
+}
+
 // ─── STATUS MAPPING HELPERS ──────────────────────────────────────────────────
 
 export function mapWebhookStatus(statusStr: string): RunnerBuildStatus {
@@ -372,6 +474,21 @@ export interface WebhookRunnerDriverConfig {
   timeoutMs?: number;
   fetchFn?: typeof fetch;
   statusPollingIntervalMs?: number;
+  /** Total attempts per request (default 4). */
+  maxAttempts?: number;
+  /** Base delay for exponential backoff (default 500 ms, capped at 8 s). */
+  retryBaseDelayMs?: number;
+}
+
+interface SignedRequestSpec {
+  method: "GET" | "POST";
+  /** Runner API pathname, e.g. `/api/builds`. Signed verbatim. */
+  path: string;
+  /** Request body sent on the wire (POST only). */
+  body?: string;
+  /** Body used in the canonical signature; defaults to `body` (GET: the job id). */
+  signBody?: string;
+  onRetry?: (message: string) => void;
 }
 
 export class WebhookRunnerDriver implements RunnerDriver {
@@ -380,6 +497,8 @@ export class WebhookRunnerDriver implements RunnerDriver {
   public readonly webhookSecret: string;
   private readonly timeoutMs: number;
   private readonly fetchFn: typeof fetch;
+  private readonly maxAttempts: number;
+  private readonly retryBaseDelayMs: number;
 
   constructor(config: WebhookRunnerDriverConfig) {
     if (!config?.runnerUrl) {
@@ -397,6 +516,53 @@ export class WebhookRunnerDriver implements RunnerDriver {
     this.webhookSecret = config.webhookSecret;
     this.timeoutMs = config.timeoutMs ?? 15000;
     this.fetchFn = config.fetchFn ?? globalThis.fetch;
+    this.maxAttempts = Math.max(1, config.maxAttempts ?? RETRY_MAX_ATTEMPTS);
+    this.retryBaseDelayMs = config.retryBaseDelayMs ?? RETRY_BASE_DELAY_MS;
+  }
+
+  /**
+   * Sends a signed request, re-signing with a fresh timestamp on every attempt and backing
+   * off exponentially (with jitter) on transient Cloudflare/gateway statuses and network errors.
+   * Returns the first non-transient response, or the last response once attempts run out.
+   * Network errors on the final attempt are rethrown.
+   */
+  private async signedRequest(spec: SignedRequestSpec): Promise<Response> {
+    const signBody = spec.signBody ?? spec.body ?? "";
+    let lastError = "";
+
+    for (let attempt = 0; attempt < this.maxAttempts; attempt += 1) {
+      const isLastAttempt = attempt === this.maxAttempts - 1;
+      const { headers } = signRequest(this.webhookSecret, spec.method, spec.path, signBody);
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+      try {
+        const response = await this.fetchFn(`${this.runnerUrl}${spec.path}`, {
+          method: spec.method,
+          headers: spec.method === "POST" ? { "Content-Type": "application/json", ...headers } : headers,
+          body: spec.method === "POST" ? spec.body : undefined,
+          signal: controller.signal,
+        });
+        if (!TRANSIENT_STATUS_CODES.has(response.status) || isLastAttempt) {
+          return response;
+        }
+        const rawErr = await response.text().catch(() => "");
+        lastError = sanitizeErrorText(rawErr, response.status);
+      } catch (err: any) {
+        if (isLastAttempt) throw err;
+        lastError = err?.name === "AbortError" ? `timed out after ${this.timeoutMs}ms` : err?.message || "runner request failed";
+      } finally {
+        clearTimeout(timeout);
+      }
+
+      const delay = computeBackoffDelay(attempt, this.retryBaseDelayMs);
+      spec.onRetry?.(
+        `[runner:warn] ${spec.method} ${spec.path} attempt ${attempt + 1}/${this.maxAttempts} failed (${lastError}); retrying in ${delay}ms`
+      );
+      await sleep(delay);
+    }
+
+    // Unreachable: the final attempt always returns or throws.
+    throw new RunnerDriverError(`Runner request failed: ${lastError || "no response"}`, "DISPATCH_FAILED", "webhook");
   }
 
   public serializePayload(params: BuildDispatchParams): Record<string, any> {
@@ -426,60 +592,21 @@ export class WebhookRunnerDriver implements RunnerDriver {
   public async dispatchBuild(params: BuildDispatchParams): Promise<BuildDispatchResult> {
     const payload = this.serializePayload(params);
     const bodyStr = JSON.stringify(payload);
-    const now = Date.now().toString();
-    const { headerValue } = generateHmacSignature(bodyStr, this.webhookSecret, now);
 
     try {
-      let response: Response | undefined;
-      let lastError = "";
+      emitLog(params, `[runner] Dispatching build ${payload.jobId} to remote runner ${this.runnerUrl}`);
+      const response = await this.signedRequest({
+        method: "POST",
+        path: "/api/builds",
+        body: bodyStr,
+        onRetry: (msg) => emitLog(params, msg),
+      });
 
-      // Cloudflare tunnel errors (520-530) and gateway errors (408, 429, 502, 503, 504)
-      // are transient while a tunnel connection or worker is being allocated.
-      const isTransientStatusCode = (status: number) =>
-        [408, 429, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 530].includes(status);
-
-      for (let attempt = 0; attempt < 3; attempt += 1) {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
-        try {
-          response = await this.fetchFn(`${this.runnerUrl}/api/builds`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "X-Syncbay-Signature": headerValue,
-              "X-Syncbay-Timestamp": now,
-            },
-            body: bodyStr,
-            signal: controller.signal,
-          });
-
-          if (response.ok || response.status === 401 || response.status === 403 || !isTransientStatusCode(response.status)) {
-            break;
-          }
-          const rawErr = await response.text().catch(() => "");
-          lastError = sanitizeErrorText(rawErr, response.status);
-        } catch (err: any) {
-          lastError = err?.message || "runner request failed";
-          if (attempt === 2) {
-            if (err.name === "AbortError") {
-              throw new TimeoutError(`Webhook dispatch timed out after ${this.timeoutMs}ms`);
-            }
-            throw err;
-          }
-        } finally {
-          clearTimeout(timeout);
-        }
-        await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
-      }
-
-      if (!response) {
-        throw new RunnerDriverError(`Runner dispatch failed: ${lastError || "no response"}`, "DISPATCH_FAILED", "webhook");
-      }
       if (!response.ok) {
         if (response.status === 401 || response.status === 403) {
           throw new AuthenticationError(`Runner rejected HMAC authentication (HTTP ${response.status})`);
         }
-        const rawErr = lastError || await response.text().catch(() => "");
+        const rawErr = await response.text().catch(() => "");
         const errText = sanitizeErrorText(rawErr, response.status);
         throw new RunnerDriverError(
           `Runner dispatch failed (HTTP ${response.status}): ${errText}`,
@@ -513,114 +640,70 @@ export class WebhookRunnerDriver implements RunnerDriver {
   }
 
   public async checkStatus(jobId: string): Promise<BuildStatusResult> {
-    const now = Date.now().toString();
-    const { headerValue } = generateHmacSignature({ jobId }, this.webhookSecret, now);
-
-    let lastStatusError = "";
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
-
-      try {
-        const response = await this.fetchFn(`${this.runnerUrl}/api/builds/${encodeURIComponent(jobId)}`, {
-          method: "GET",
-          headers: {
-            "X-Syncbay-Signature": headerValue,
-            "X-Syncbay-Timestamp": now,
-          },
-          signal: controller.signal,
-        });
-
-        if (!response.ok) {
-          if (response.status === 401 || response.status === 403) {
-            throw new AuthenticationError(`Runner rejected HMAC authentication (HTTP ${response.status})`);
-          }
-          const rawErr = await response.text().catch(() => "");
-          lastStatusError = sanitizeErrorText(rawErr, response.status);
-          const isTransient = [408, 429, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 530].includes(response.status);
-          if (isTransient && attempt < 2) {
-            await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
-            continue;
-          }
-          throw new RunnerDriverError(
-            `Failed to check build status (HTTP ${response.status}): ${lastStatusError}`,
-            "STATUS_CHECK_FAILED",
-            "webhook"
-          );
-        }
-
-        const data = await response.json();
-        return {
-          jobId,
-          status: mapWebhookStatus(data.status),
-          exitCode: data.exitCode,
-          containerId: data.containerId,
-          port: data.assignedPort || data.port,
-          url: data.url,
-          startedAt: data.startedAt,
-          completedAt: data.completedAt,
-          errorMessage: data.errorMessage || data.error,
-          logs: data.logs,
-        };
-      } catch (err: any) {
-        if (err instanceof RunnerDriverError) {
-          if (attempt === 2) throw err;
-        } else if (attempt === 2) {
-          if (err.name === "AbortError") {
-            throw new TimeoutError(`Status check timed out after ${this.timeoutMs}ms`);
-          }
-          throw new RunnerDriverError(`Status check error: ${err.message}`, "STATUS_CHECK_FAILED", "webhook");
-        }
-      } finally {
-        clearTimeout(timeout);
+    let response: Response;
+    try {
+      response = await this.signedRequest({
+        method: "GET",
+        path: `/api/builds/${encodeURIComponent(jobId)}`,
+        signBody: jobId,
+      });
+    } catch (err: any) {
+      if (err?.name === "AbortError") {
+        throw new TimeoutError(`Status check timed out after ${this.timeoutMs}ms`);
       }
-      await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+      throw new RunnerDriverError(`Status check error: ${err?.message}`, "STATUS_CHECK_FAILED", "webhook");
     }
 
-    throw new RunnerDriverError(
-      `Failed to check build status: ${lastStatusError || "runner unreachable"}`,
-      "STATUS_CHECK_FAILED",
-      "webhook"
-    );
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        throw new AuthenticationError(`Runner rejected HMAC authentication (HTTP ${response.status})`);
+      }
+      const rawErr = await response.text().catch(() => "");
+      throw new RunnerDriverError(
+        `Failed to check build status (HTTP ${response.status}): ${sanitizeErrorText(rawErr, response.status)}`,
+        "STATUS_CHECK_FAILED",
+        "webhook"
+      );
+    }
+
+    const data = await response.json();
+    return {
+      jobId,
+      status: mapWebhookStatus(data.status),
+      exitCode: typeof data.exitCode === "number" ? data.exitCode : undefined,
+      containerId: data.containerId,
+      port: data.assignedPort || data.port,
+      url: data.url,
+      startedAt: data.startedAt,
+      completedAt: data.completedAt,
+      errorMessage: data.errorMessage || data.error,
+      logs: data.logs,
+    };
   }
 
   public async stopContainer(
     containerId: string,
     options: Partial<StopContainerParams> = {}
   ): Promise<StopContainerResult> {
-    const bodyObj = {
+    const bodyStr = JSON.stringify({
       containerId,
       signal: options.signal || "SIGTERM",
       timeoutSeconds: options.timeoutSeconds || 10,
-    };
-    const bodyStr = JSON.stringify(bodyObj);
-    const now = Date.now().toString();
-    const { headerValue } = generateHmacSignature(bodyStr, this.webhookSecret, now);
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    });
 
     try {
-      const response = await this.fetchFn(
-        `${this.runnerUrl}/api/containers/${encodeURIComponent(containerId)}/stop`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Syncbay-Signature": headerValue,
-            "X-Syncbay-Timestamp": now,
-          },
-          body: bodyStr,
-          signal: controller.signal,
-        }
-      );
+      const response = await this.signedRequest({
+        method: "POST",
+        path: `/api/containers/${encodeURIComponent(containerId)}/stop`,
+        body: bodyStr,
+      });
 
       if (!response.ok) {
         const errText = await response.text().catch(() => "");
         return {
           containerId,
           stopped: false,
-          message: `Stop container failed (HTTP ${response.status}): ${errText}`,
+          message: `Stop container failed (HTTP ${response.status}): ${sanitizeErrorText(errText, response.status)}`,
         };
       }
 
@@ -636,8 +719,6 @@ export class WebhookRunnerDriver implements RunnerDriver {
         stopped: false,
         message: err.message,
       };
-    } finally {
-      clearTimeout(timeout);
     }
   }
 }
@@ -989,7 +1070,15 @@ export interface SshRunnerDriverConfig {
   privateKeyPath?: string;
   sshClient?: SshClient;
   workDir?: string;
+  /** Shared HMAC secret exported as RUNNER_SECRET to the remote command environment. */
+  runnerSecret?: string;
+  /** Total attempts for an SSH command that fails to connect (exit 255). Default 4. */
+  maxAttempts?: number;
+  retryBaseDelayMs?: number;
 }
+
+/** ssh(1) exits with 255 when the connection itself failed (as opposed to the remote command). */
+const SSH_CONNECTION_FAILURE_EXIT = 255;
 
 export class SshRunnerDriver implements RunnerDriver {
   public readonly type: RunnerDriverType = "ssh";
@@ -998,6 +1087,9 @@ export class SshRunnerDriver implements RunnerDriver {
   public readonly username: string;
   public readonly sshClient: SshClient;
   public readonly workDir: string;
+  private readonly runnerSecret?: string;
+  private readonly maxAttempts: number;
+  private readonly retryBaseDelayMs: number;
 
   constructor(config: SshRunnerDriverConfig) {
     if (!config?.host) {
@@ -1011,6 +1103,9 @@ export class SshRunnerDriver implements RunnerDriver {
     this.port = config.port || 22;
     this.username = config.username;
     this.workDir = config.workDir || "/var/syncbay";
+    this.runnerSecret = config.runnerSecret;
+    this.maxAttempts = Math.max(1, config.maxAttempts ?? RETRY_MAX_ATTEMPTS);
+    this.retryBaseDelayMs = config.retryBaseDelayMs ?? RETRY_BASE_DELAY_MS;
     this.sshClient =
       config.sshClient ||
       new CliSshClient({
@@ -1019,6 +1114,32 @@ export class SshRunnerDriver implements RunnerDriver {
         username: this.username,
         privateKeyPath: config.privateKeyPath,
       });
+  }
+
+  /**
+   * Runs a remote command, retrying with exponential backoff + jitter while the SSH
+   * connection itself fails (exit 255). Remote command failures are returned as-is.
+   */
+  private async executeWithRetry(command: string, onRetry?: (msg: string) => void): Promise<SshExecResult> {
+    let result: SshExecResult = { stdout: "", stderr: "", exitCode: SSH_CONNECTION_FAILURE_EXIT };
+    for (let attempt = 0; attempt < this.maxAttempts; attempt += 1) {
+      result = await this.sshClient.execute(command);
+      if (result.exitCode !== SSH_CONNECTION_FAILURE_EXIT || attempt === this.maxAttempts - 1) {
+        return result;
+      }
+      const delay = computeBackoffDelay(attempt, this.retryBaseDelayMs);
+      onRetry?.(
+        `[runner:warn] SSH connection to ${this.host} failed (attempt ${attempt + 1}/${this.maxAttempts}): ${result.stderr || "exit 255"}; retrying in ${delay}ms`
+      );
+      await sleep(delay);
+    }
+    return result;
+  }
+
+  /** Prefixes the remote command with the runner HMAC env so remote tooling can sign callbacks. */
+  private withRunnerEnv(command: string): string {
+    if (!this.runnerSecret) return command;
+    return `RUNNER_SECRET='${this.runnerSecret.replace(/'/g, "'\\''")}' ${command}`;
   }
 
   /**
@@ -1107,7 +1228,8 @@ export class SshRunnerDriver implements RunnerDriver {
     const jobId = params.buildId || params.deploymentId;
     const runCmd = this.serializeCommand(params);
 
-    const execResult = await this.sshClient.execute(runCmd);
+    emitLog(params, `[runner] Dispatching container ${jobId} to ${this.username}@${this.host} over SSH`);
+    const execResult = await this.executeWithRetry(this.withRunnerEnv(runCmd), (msg) => emitLog(params, msg));
     if (execResult.exitCode !== 0) {
       throw new RunnerDriverError(
         `SSH remote container dispatch failed: ${execResult.stderr || execResult.stdout}`,
@@ -1141,7 +1263,7 @@ export class SshRunnerDriver implements RunnerDriver {
         errorMessage: "Invalid job identifier provided",
       };
     }
-    const inspectResult = await this.sshClient.execute(`docker inspect ${sanitizedJobId}`);
+    const inspectResult = await this.executeWithRetry(`docker inspect ${sanitizedJobId}`);
 
     if (inspectResult.exitCode !== 0) {
       return {
@@ -1199,8 +1321,8 @@ export class SshRunnerDriver implements RunnerDriver {
     const stopCmd = `docker stop -t ${timeout} ${sanitizedContainerId}`;
     const rmCmd = `docker rm -f ${sanitizedContainerId}`;
 
-    const stopRes = await this.sshClient.execute(stopCmd);
-    await this.sshClient.execute(rmCmd).catch(() => null);
+    const stopRes = await this.executeWithRetry(stopCmd);
+    await this.executeWithRetry(rmCmd).catch(() => null);
 
     const stopped = stopRes.exitCode === 0;
     return {
@@ -1250,7 +1372,7 @@ export class LocalRunnerDriver implements RunnerDriver {
 
     const pipeline = await this.getPipeline();
     if (pipeline) {
-      params.onLog?.(`[local-runner] Dispatching build ${jobId} to local execution pipeline...`);
+      emitLog(params, `[local-runner] Dispatching build ${jobId} to local execution pipeline...`);
       const result = await pipeline.execute({
         jobId,
         deploymentId: params.deploymentId,
@@ -1266,7 +1388,7 @@ export class LocalRunnerDriver implements RunnerDriver {
         targetPort: params.targetPort || params.port || 3000,
         cleanBuild: params.cleanBuild,
         environmentVariables: params.environmentVariables,
-        onLog: params.onLog,
+        onLog: (line: string) => emitLog(params, line),
       });
 
       if (!result.success) {
@@ -1298,9 +1420,9 @@ export class LocalRunnerDriver implements RunnerDriver {
     // If a real repo or build/start commands were specified, we must not falsely pretend the build succeeded
     if (params.repoUrl || params.buildCommand || params.startCommand) {
       if (process.env.VERCEL === "1" || process.env.VERCEL_ENV) {
-        params.onLog?.(`[local-runner] Serverless environment detected. Simulating deployment for ${jobId}...`);
-        params.onLog?.(`[pipeline] Scanning repository files for runtime signatures...`);
-        params.onLog?.(`[pipeline] Build completed successfully`);
+        emitLog(params, `[local-runner] Serverless environment detected. Simulating deployment for ${jobId}...`);
+        emitLog(params, `[pipeline] Scanning repository files for runtime signatures...`);
+        emitLog(params, `[pipeline] Build completed successfully`);
         this.containers.set(jobId, { status: "ACTIVE", port: defaultAssignedPort, containerId: defaultContainerId });
         this.containers.set(defaultContainerId, { status: "ACTIVE", port: defaultAssignedPort, containerId: defaultContainerId });
         return {
@@ -1414,23 +1536,24 @@ export class RunnerDriverFactory {
 
 /**
  * Resolves appropriate runner driver instance based on deployment options and environment.
+ *
+ * Precedence: explicit `driverType` → `RUNNER_DRIVER` env (webhook | ssh | queue | local | mock)
+ * → `RUNNER_URL` (webhook) → `RUNNER_QUEUE_MODE` → local. `mock` is the local driver whose
+ * pipeline uses MockPipelineExecutor (the runner reads `RUNNER_DRIVER=mock` itself).
+ * Webhook/SSH drivers require a runner secret; in production a missing one throws AuthenticationError.
  */
 export function getRunnerDriver(
-  driverType?: "LOCAL" | "CLOUD" | "webhook" | "queue" | "ssh" | "local",
+  driverType?: "LOCAL" | "CLOUD" | "webhook" | "queue" | "ssh" | "local" | "mock",
   options?: any
 ): RunnerDriver {
-  const normalized = (driverType || "").toLowerCase();
-  if (normalized === "local" || process.env.RUNNER_FORCE_LOCAL === "true") {
+  const normalized = (driverType || process.env.RUNNER_DRIVER || "").toLowerCase();
+  if (normalized === "local" || normalized === "mock" || process.env.RUNNER_FORCE_LOCAL === "true") {
     return RunnerDriverFactory.createDriver("local", options);
   }
-  if (normalized === "webhook" || (process.env.RUNNER_URL && normalized !== "local" && normalized !== "queue" && normalized !== "ssh")) {
+  if (normalized === "webhook" || (process.env.RUNNER_URL && normalized !== "queue" && normalized !== "ssh")) {
     return RunnerDriverFactory.createDriver("webhook", {
       runnerUrl: process.env.RUNNER_URL || "http://localhost:8080",
-      webhookSecret:
-        process.env.RUNNER_WEBHOOK_SECRET ||
-        process.env.RUNNER_SECRET ||
-        process.env.SYNCBAY_WEBHOOK_SECRET ||
-        "syncbay-runner-secret",
+      webhookSecret: options?.webhookSecret || resolveRunnerSecret(),
       ...options,
     });
   }
@@ -1444,6 +1567,7 @@ export function getRunnerDriver(
       port: process.env.RUNNER_SSH_PORT ? parseInt(process.env.RUNNER_SSH_PORT, 10) : 22,
       username: process.env.RUNNER_SSH_USER || "root",
       privateKeyPath: process.env.RUNNER_SSH_KEY_PATH,
+      runnerSecret: options?.runnerSecret || resolveRunnerSecret(),
       ...options,
     });
   }

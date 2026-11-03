@@ -9,9 +9,12 @@
     "tsx": "^4.23.1"
   },
   "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node src/index.ts",
     "dev": "node src/index.ts",
-    "test": "node ../node_modules/tsx/dist/cli.mjs test/runner.test.ts"
+    "test": "node ../node_modules/tsx/dist/cli.mjs test/runner.test.ts",
+    "start:dist": "node dist/index.js"
   },
   "engines": {
     "node": ">=20.0.0"

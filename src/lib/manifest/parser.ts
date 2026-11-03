@@ -73,7 +73,7 @@ export const SyncbayManifestSchema = z.object({
 });
 
 export type SyncbayManifest = z.infer<typeof SyncbayManifestSchema>;
-export type ServiceManifest = z.infer<typeof ServiceManifestSchema>;
+type ServiceManifest = z.infer<typeof ServiceManifestSchema>;
 
 /**
  * Parses and validates a JSON or YAML-like manifest object

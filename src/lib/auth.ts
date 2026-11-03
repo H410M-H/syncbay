@@ -1,4 +1,4 @@
-import NextAuth, { NextAuthOptions, getServerSession } from "next-auth";
+import { NextAuthOptions, getServerSession } from "next-auth";
 import GitHubProvider from "next-auth/providers/github";
 import GoogleProvider from "next-auth/providers/google";
 import CredentialsProvider from "next-auth/providers/credentials";
@@ -6,6 +6,29 @@ import { PrismaAdapter } from "@next-auth/prisma-adapter";
 import { db } from "@/lib/db";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
+import { serverEnv } from "@/lib/env";
+
+/** Origins of the current Vercel deployment (preview, branch and production aliases). */
+const deploymentOrigins = new Set(
+  [serverEnv.VERCEL_URL, serverEnv.VERCEL_BRANCH_URL, serverEnv.VERCEL_PROJECT_PRODUCTION_URL]
+    .filter((host): host is string => Boolean(host))
+    .flatMap((host) => {
+      try {
+        return [new URL(`https://${host.replace(/^https?:\/\//, "")}`).origin];
+      } catch {
+        return [];
+      }
+    }),
+);
+
+/** https://syncbay.app, any https://*.syncbay.app, or the current deployment origin. */
+function isTrustedRedirect(url: URL): boolean {
+  if (url.protocol !== "https:") return false;
+  if (deploymentOrigins.has(url.origin)) return true;
+  if (url.port) return false;
+  const host = url.hostname.toLowerCase();
+  return host === "syncbay.app" || host.endsWith(".syncbay.app");
+}
 
 export const authOptions: NextAuthOptions = {
   adapter: PrismaAdapter(db),
@@ -14,13 +37,13 @@ export const authOptions: NextAuthOptions = {
   },
   providers: [
     GoogleProvider({
-      clientId: process.env.GOOGLE_CLIENT_ID ?? "",
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",
+      clientId: serverEnv.GOOGLE_CLIENT_ID ?? "",
+      clientSecret: serverEnv.GOOGLE_CLIENT_SECRET ?? "",
       allowDangerousEmailAccountLinking: true,
     }),
     GitHubProvider({
-      clientId: process.env.GITHUB_CLIENT_ID ?? "",
-      clientSecret: process.env.GITHUB_CLIENT_SECRET ?? "",
+      clientId: serverEnv.GITHUB_CLIENT_ID ?? "",
+      clientSecret: serverEnv.GITHUB_CLIENT_SECRET ?? "",
       issuer: "https://github.com/login/oauth",
       allowDangerousEmailAccountLinking: true,
       authorization: {
@@ -104,10 +127,11 @@ export const authOptions: NextAuthOptions = {
         }
         return baseUrl;
       }
-      // Allows callback URLs on the exact same origin
+      // Allows callback URLs on the same origin, syncbay.app (+ subdomains) and this deployment
       try {
         const parsedUrl = new URL(url);
-        if (parsedUrl.origin === baseUrl) {
+        const hasCredentials = Boolean(parsedUrl.username || parsedUrl.password);
+        if (!hasCredentials && (parsedUrl.origin === new URL(baseUrl).origin || isTrustedRedirect(parsedUrl))) {
           return url;
         }
       } catch {
@@ -264,10 +288,8 @@ export const authOptions: NextAuthOptions = {
     signIn: "/auth/signin",
     error: "/auth/signin",
   },
-  secret: process.env.NEXTAUTH_SECRET,
+  secret: serverEnv.NEXTAUTH_SECRET,
 };
 
-const handler = NextAuth(authOptions);
-export { handler as GET, handler as POST };
 export const auth = () => getServerSession(authOptions);
 

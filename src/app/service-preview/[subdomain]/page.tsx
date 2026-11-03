@@ -107,7 +107,7 @@ export default async function ServicePreviewPage({
   const port = service?.port || 3000;
 
   // Determine initial status:
-  // Hierarchy: URL searchParams > latestDeployment.status > service.isPaused > subdomain heuristics > fallback ACTIVE
+  // Hierarchy: URL searchParams > latestDeployment.status > service.isPaused > subdomain heuristics > fallback BUILDING
   const rawStatus = (
     resolvedSearchParams?.status ||
     latestDeployment?.status ||
@@ -116,14 +116,16 @@ export default async function ServicePreviewPage({
     (subdomain.includes("waking") || subdomain.includes("build") ? "BUILDING" : "") ||
     (subdomain.includes("reconnect") ? "RECONNECTING" : "") ||
     (subdomain.includes("sleep") ? "SLEEPING" : "") ||
-    "ACTIVE"
+    "BUILDING"
   ).toUpperCase();
 
   const status = ["BUILDING", "DEPLOYING", "SLEEPING", "ACTIVE", "FAILED", "RECONNECTING"].includes(rawStatus)
     ? rawStatus
     : rawStatus.includes("RECONNECT")
     ? "RECONNECTING"
-    : "ACTIVE";
+    : rawStatus === "CRASHED" || rawStatus === "CANCELLED"
+    ? "FAILED"
+    : "BUILDING";
 
   const deploymentId = latestDeployment?.id || resolvedSearchParams?.deploymentId || "";
 
@@ -700,6 +702,7 @@ export default async function ServicePreviewPage({
             (function() {
               var serviceSubdomain = ${JSON.stringify(subdomain)};
               var deploymentId = ${JSON.stringify(deploymentId)};
+              var serviceId = ${JSON.stringify(service?.id || "")};
               var currentStatus = ${JSON.stringify(status)};
               var probeCount = 0;
               var isRedirecting = false;
@@ -768,7 +771,24 @@ export default async function ServicePreviewPage({
                   statusDot.style.boxShadow = "0 0 8px #22c55e";
                   statusLabel.innerText = "HTTP/2 200 OK · Container Active";
                   if (traceStatus) traceStatus.innerText = "Status: Healthy · Zero-Downtime Blue/Green Active";
+                } else if (newStatus === "FAILED") {
+                  statusBadge.className = "";
+                  statusBadge.style.background = "rgba(239, 68, 68, 0.1)";
+                  statusBadge.style.color = "#ef4444";
+                  statusBadge.style.borderColor = "rgba(239, 68, 68, 0.3)";
+                  statusDot.className = "";
+                  statusDot.style.background = "#ef4444";
+                  statusDot.style.boxShadow = "0 0 8px #ef4444";
+                  statusLabel.innerText = "FAILED · Deployment Error";
+                  if (traceStatus) traceStatus.innerText = "Status: Failed · Check build logs";
                 }
+              }
+
+              function normalizeStatus(raw) {
+                var s = String(raw || "").toUpperCase();
+                if (s === "ACTIVE" || s === "BUILDING" || s === "DEPLOYING" || s === "SLEEPING" || s === "FAILED" || s === "RECONNECTING") return s;
+                if (s === "CRASHED" || s === "CANCELLED") return "FAILED";
+                return "BUILDING";
               }
 
               function appendLog(rawMessage, streamType, timestamp) {
@@ -815,7 +835,8 @@ export default async function ServicePreviewPage({
               }
 
               // 1. Connect to SSE Stream if deployment ID exists
-              if (deploymentId && typeof window.EventSource !== "undefined") {
+              function connectLogStream() {
+                if (!deploymentId || typeof window.EventSource === "undefined" || eventSource) return;
                 try {
                   eventSource = new EventSource("/api/deployments/" + encodeURIComponent(deploymentId) + "/logs/stream");
 
@@ -823,13 +844,25 @@ export default async function ServicePreviewPage({
                     try {
                       var data = JSON.parse(e.data);
                       appendLog(data.message || "", data.stream || "stdout", data.timestamp);
-                      if (data.message && data.message.indexOf("Container healthy") !== -1) {
-                        updateBadgeState("ACTIVE");
-                      }
                     } catch (err) {
                       appendLog(e.data, "stdout");
                     }
                   };
+
+                  // Deployment status changes pushed by the stream route (DB-polled)
+                  eventSource.addEventListener("status", function(e) {
+                    try {
+                      var payload = JSON.parse(e.data);
+                      var next = normalizeStatus(payload.status);
+                      if (next !== currentStatus) {
+                        appendLog("[syncbay] Deployment status: " + currentStatus + " → " + next, "system");
+                        updateBadgeState(next);
+                      }
+                      if (next === "ACTIVE") probeHealthEndpoint();
+                    } catch (err) {
+                      // ignore malformed status payloads
+                    }
+                  });
 
                   eventSource.onerror = function() {
                     if (currentStatus === "ACTIVE") {
@@ -841,11 +874,13 @@ export default async function ServicePreviewPage({
                   appendLog("[syncbay-client] Fallback to simulated log polling.", "system");
                 }
               }
+              connectLogStream();
 
               // 2. Client-side Health Probe & Automatic Live Redirect
               function triggerLiveRedirect() {
                 if (isRedirecting) return;
                 isRedirecting = true;
+                clearInterval(probeTimer);
 
                 if (eventSource) {
                   eventSource.close();
@@ -936,12 +971,43 @@ export default async function ServicePreviewPage({
                   wakeBtn.innerText = "⚡ Waking Container...";
                   wakeBtn.style.opacity = "0.7";
 
-                  updateBadgeState("DEPLOYING");
                   appendLog("[syncbay-wake] Wake trigger received. Provisioning container from scale-to-zero sleep...", "system");
 
-                  // Trigger wake signal and accelerate probe
-                  fetch("/health", { method: "GET", cache: "no-store" }).catch(function() {});
-                  probeHealthEndpoint();
+                  function resetWakeButton() {
+                    wakeBtn.disabled = false;
+                    wakeBtn.innerText = "⚡ Wake Container Instance";
+                    wakeBtn.style.opacity = "1";
+                  }
+
+                  fetch("/api/v1/services/wake", {
+                    method: "POST",
+                    cache: "no-store",
+                    credentials: "include",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ serviceId: serviceId || undefined, deploymentId: deploymentId || undefined })
+                  }).then(function(res) {
+                    if (res.status === 202) {
+                      appendLog("[syncbay-wake] Wake accepted (HTTP 202). Redeploying latest deployment...", "system");
+                      updateBadgeState("BUILDING");
+                      connectLogStream();
+                      probeHealthEndpoint();
+                    } else if (res.status === 409) {
+                      return res.json().then(function(data) {
+                        appendLog("[syncbay-wake] Service is not sleeping (" + (data && data.status ? data.status : "unknown") + ").", "system");
+                        if (data && data.status) updateBadgeState(normalizeStatus(data.status));
+                        connectLogStream();
+                      });
+                    } else if (res.status === 401 || res.status === 403 || res.status === 404) {
+                      appendLog("[syncbay-wake] Wake rejected (HTTP " + res.status + "). Sign in to the Syncbay dashboard as a workspace member to wake this service.", "stderr");
+                      resetWakeButton();
+                    } else {
+                      appendLog("[syncbay-wake] Wake failed (HTTP " + res.status + ").", "stderr");
+                      resetWakeButton();
+                    }
+                  }).catch(function() {
+                    appendLog("[syncbay-wake] Wake request failed: network error.", "stderr");
+                    resetWakeButton();
+                  });
                 });
               }
             })();

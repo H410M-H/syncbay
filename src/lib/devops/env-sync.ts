@@ -32,38 +32,12 @@ export function parseDotEnv(rawContent: string): Record<string, string> {
   return result;
 }
 
-export function copyVariablesBetweenEnvironments(
-  sourceVars: Record<string, string>,
-  targetVars: Record<string, string>,
-  mode: "merge" | "overwrite"
-): Record<string, string> {
-  if (mode === "overwrite") {
-    return { ...sourceVars };
-  }
-  return { ...targetVars, ...sourceVars };
-}
-
 export function inheritWorkspaceVariables(
   workspaceVars: Record<string, string>,
   serviceVars: Record<string, string>
 ): Record<string, string> {
   // Service variables override workspace variables
   return { ...workspaceVars, ...serviceVars };
-}
-
-export function maskSecrets(
-  vars: Record<string, { value: string; isSecret: boolean }> | Record<string, string>
-): Record<string, string> {
-  const masked: Record<string, string> = {};
-  for (const [k, v] of Object.entries(vars)) {
-    if (typeof v === "object" && v !== null && "value" in v) {
-      masked[k] = v.isSecret ? "••••••••" : v.value;
-    } else {
-      const isSecretKey = !["PORT", "NODE_ENV", "APP_ENV"].includes(k) && !k.startsWith("NEXT_PUBLIC_");
-      masked[k] = isSecretKey ? "••••••••" : String(v);
-    }
-  }
-  return masked;
 }
 
 export interface SyncVariablesInput {

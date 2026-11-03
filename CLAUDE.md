@@ -1,1 +1,114 @@
 @AGENTS.md
+
+# Syncbay — Agent Guide
+
+Syncbay (`syncbay.app`) is a hybrid-compute PaaS. The **control plane** is a Next.js 16 App Router app (tRPC 11, Prisma 5 / PostgreSQL, NextAuth v4). It runs on Vercel. The **data plane** is a standalone runner daemon (`runner/`) that clones, builds and runs customer services on any Linux host, exposed through Cloudflare Tunnels.
+
+## Commands
+
+| Task | Command |
+| --- | --- |
+| Dev server | `npm run dev` |
+| Prisma client | `npx prisma generate` |
+| Type-check | `npm run typecheck` (`tsc --noEmit`) |
+| Dead code | `npm run knip` (config: `knip.json`) |
+| Lint | `npm run lint` |
+| Production build | `npm run build` (prisma generate + `next build --webpack`) |
+| Runner build / test | `cd runner && npm install && npm run build && npm test` |
+| Focused verifications | `npm run test:fallback`, `test:tunnel`, `test:edge`, `test:email`, `test:db`, `test:terminal` (tsx scripts under `tests/`, mocked DB) |
+
+All five gates (prisma generate, typecheck, knip, lint, build) must pass before a change is merged. CI enforces them in `.github/workflows/ci.yml`.
+
+## Architecture map
+
+### Orchestration — `src/lib/orchestrator/`
+- **`engine.ts` → `executeDeployment()`.**
+  - Loads service, variables and environment databases, resolves `${{ ref }}` variables (`src/lib/buildpack/resolver.ts`), registers the route as `BUILDING` → `DEPLOYING` → `ACTIVE`/`FAILED`, and dispatches the job to a runner driver.
+  - Runtime detection (`src/lib/buildpack/detector.ts`, nixpacks plans) happens on the runner. The engine relays every log line to `logEventBus` (`src/lib/telemetry/event-bus.ts`) and classifies it as `stderr` (`[build:error]`, `[app:error]`, `Error:` …), `system` (`[pipeline]`, `[runner]`, `[health]` … prefixes) or `stdout`.
+  - After an `ACTIVE` result it probes `/health`, then `/`, on the allocated port.
+  - Failed remote dispatches (for example Cloudflare HTTP 530) fall back to the local driver. `RUNNER_FALLBACK_LOCAL=false` (default `true`) or `RUNNER_FORCE_REMOTE=true` disables this. An `AuthenticationError` never falls back.
+  - When status polling reports `exitCode`, the engine appends it to the recorded error (`… (exit code N)`).
+  - `src/lib/buildpack/knip-analyzer.ts` is Syncbay's built-in static analysis of customer repos. It is separate from the repo's own `knip` gate.
+- **`runner-driver.ts` (`getRunnerDriver()`).** Picks a driver from the explicit type, then `RUNNER_DRIVER` (`webhook` | `ssh` | `queue` | `local` | `mock`), then `RUNNER_URL`:
+  - `signRequest()` signs `${ts}.${METHOD}.${path}.${body}` with HMAC-SHA256 into `X-Syncbay-Signature: sha256=<hex>` and `X-Syncbay-Timestamp`. `path` is the API pathname, and GET requests sign the job id as the body. Every retry is re-signed with a fresh timestamp.
+  - `resolveRunnerSecret()` reads `RUNNER_WEBHOOK_SECRET` → `RUNNER_SECRET` → `SYNCBAY_WEBHOOK_SECRET`. With `NODE_ENV=production` and no secret it throws `AuthenticationError`; only dev falls back to a default secret.
+  - Webhook and SSH requests retry with exponential backoff and jitter (500 ms·2^n, capped at 8 s, 4 attempts). Webhook retries on transient Cloudflare/gateway statuses and network errors; SSH retries on exit 255 (connection failure).
+  - Drivers log through `emitLog()`. It passes lines to `params.onLog` when one is given (the engine's handler publishes to `logEventBus`); otherwise it publishes to `logEventBus` directly.
+  - `WebhookRunnerDriver`: HTTP to the runner daemon.
+  - `SshRunnerDriver`: runs containers on a remote host over SSH (`RUNNER_SSH_*`), with `RUNNER_SECRET` exported in the remote command environment.
+  - `QueueRunnerDriver`: a DB-backed job queue for long builds.
+  - `LocalRunnerDriver`: imports `runner/src/pipeline.ts` in-process (local dev / single host). `RUNNER_DRIVER=mock` uses it with `MockPipelineExecutor`.
+- **`src/lib/tunnel/tunnel-config.ts`.**
+  - `generateTunnelConfig()` produces YAML and `generateTunnelConfigJson()` produces the Cloudflare `PUT /accounts/{acct}/cfd_tunnel/{id}/configurations` body (`{ config: { ingress } }`). `writeTunnelConfig()` writes atomically (temp file + rename).
+  - `reloadTunnel()` PUTs the config through `CloudflareApiClient.updateTunnelConfiguration()` when `CLOUDFLARE_TUNNEL_ID`, `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` are all set. Otherwise it writes `TUNNEL_CONFIG_FILE` and runs `TUNNEL_RESTART_COMMAND` (default `systemctl restart cloudflared`), because cloudflared has no SIGHUP reload.
+- **`pr-manager.ts`.** Handles GitHub `pull_request` webhooks:
+  - Creates an ephemeral `pr-<n>` environment, service and `<svc>-pr-<n>.syncbay.app` domain, with scale-to-zero (`idleTimeoutSecs: 1800`).
+  - Posts `syncbay/preview` commit statuses and a preview comment.
+  - Sleeps or destroys the environment when the PR is closed.
+
+### API — `src/server/`
+- `trpc.ts` defines `publicProcedure` and `protectedProcedure` (a session is required). Routers are composed in `root.ts`. Every mutation must use `protectedProcedure` and check workspace membership.
+- `routers/deployment.ts` → `redeploy`:
+  - `rebuild: false` is the fast redeploy. It reuses the previous successful build record and keeps caches.
+  - `rebuild: true` is the clean rebuild. It creates a new Build and sends `cleanBuild: true`. The runner then purges `node_modules`, `dist`, `.next`, `build`, `out`, `.turbo` and `.cache`, and passes `--no-cache` to Docker/Nixpacks.
+- The REST API lives at `src/app/api/v1/*` (token auth via `src/lib/api/auth-token.ts`, OpenAPI at `/api/v1/openapi.json`).
+
+### Runner daemon — `runner/`
+- `src/index.ts` (`RunnerDaemon`):
+  - Unauthenticated: `/health` and `/api/tunnel/status`.
+  - HMAC-protected: `POST /api/builds`, `GET /api/builds/:id[/logs]` (JSON or SSE) and `POST /api/containers/:id/stop`.
+  - Signatures must match `signRequest()`'s canonical string. Header-signed POSTs are single-use, so a replay gets 401.
+  - Query-string `sig`/`ts` is accepted only on the SSE route `GET /api/builds/:id/logs` with `Accept: text/event-stream`, and it is bound to that path.
+  - `GET /api/builds/:id` returns `exitCode`.
+  - The secret comes from `RUNNER_SECRET`. In production the daemon refuses to start without one.
+  - Any other request is reverse-proxied to the service port in `x-target-port`.
+  - After a deploy it registers routes back to the control plane (`/api/v1/services/edge-register`) and adds `<host> → http://127.0.0.1:<port>` tunnel ingress. A stop removes it.
+- `src/pipeline.ts`:
+  - `BuildPipeline` clones, detects the strategy (Docker → Nixpacks → native), builds, then starts the app on a port from `PortManager` (`src/port-manager.ts`, range 10000–60000). `PipelineResult.exitCode` is 0 on success, otherwise the exit code of the failing step or of the crashed app.
+  - A fast redeploy (`cleanBuild: false`) reuses an existing clone with `git fetch` + `git checkout -f FETCH_HEAD`.
+  - A clean rebuild re-clones, purges `node_modules dist .next build out .turbo .cache` (logging each path) and passes `--no-cache`.
+  - A 25-line `stderr` ring buffer (split into lines) captures startup crashes. If the process exits before `/health` answers, the job fails with that trace and the exit code.
+  - `MockPipelineExecutor` is used only when `RUNNER_DRIVER=mock`, or when serverless (`VERCEL` / `AWS_LAMBDA_FUNCTION_NAME`) without `RUNNER_URL`. It is also a fallback, with a warning, when git is missing.
+- `src/tunnel-driver.ts` runs `cloudflared` (token, quick-tunnel or config-file mode), a local proxy, or an SSH reverse tunnel.
+  - Config-file mode (`TUNNEL_CONFIG_FILE` + `CLOUDFLARE_TUNNEL_ID`, optional `TUNNEL_CREDENTIALS_FILE`) runs `cloudflared tunnel --config <file> run`.
+  - In that mode `updateIngress()` rewrites the YAML atomically (`src/tunnel-config.ts`, a mirror of the control plane generator) and restarts cloudflared. Unknown hosts fall through to the daemon.
+- Imports inside `runner/` use explicit `.ts` extensions. They run under Node type-stripping or `tsx`, and `tsc` rewrites them to `.js` in `dist/`.
+
+### Edge routing
+- `src/lib/edge/service-registry.ts` is a two-tier registry mapping a hostname to `{ targetPort, status, upstreamUrl, isLocal }`. Hosts are normalised case-insensitively.
+  - **L1** is a per-process Map. `ACTIVE` routes live 15 s, every other status 2 s (so `BUILDING` → `ACTIVE` shows up quickly), and misses are negatively cached for 5 s.
+  - **L2** is an `L2Store` chosen by `getL2Store()`:
+    - `UpstashRestStore`: plain `fetch` to `UPSTASH_REDIS_REST_URL` with Bearer `UPSTASH_REDIS_REST_TOKEN`. It stores JSON at `syncbay:edge:route:<host>` (`SET … EX` 7 d) and keeps an index set `syncbay:edge:routes`.
+    - `DbResolveStore`: read-only, backed by `resolveServiceRouteFromDb()` in `src/lib/edge/resolve.ts`, the same lookup `/api/v1/services/edge-resolve` uses. Platform hosts use the subdomain heuristics. Custom domains need an exact, `ACTIVE` `Domain` row.
+    - `MemoryStore`: used when neither is configured. When Upstash and `DATABASE_URL` are both set, an Upstash miss falls through to the DB.
+  - Writers (`engine.ts`, the `domain` router, `edge-register`) call `registerServiceRouteAsync` / `removeServiceRouteAsync`, which write through to L2 and never throw.
+  - Readers call `resolveServiceRoute`: a fresh L1 hit, otherwise L2 hydration, with lookups single-flighted per host. If L2 errors, the stale L1 entry is served.
+  - The sync `registerServiceRoute` / `getServiceRoute` / `removeServiceRoute` are L1-only and kept for tests and in-process callers.
+- `src/proxy.ts` is the Next 16 Proxy. It runs on the Node runtime and exports `proxy`; `middleware.ts` is deprecated.
+  - **Bypass list:** `/api/trpc`, `/api/auth`, `/api/webhooks`, `/api/deployments`, the `edge-resolve`/`edge-register`/`wake` APIs and `/service-preview` are never rewritten.
+  - **Control-plane hosts pass through:** `syncbay.app`, `www.`, `cname.`, `localhost`, any IP, `*.vercel.app`, and the `NEXTAUTH_URL` / `VERCEL_*` hosts.
+  - **Service hosts:** `*.syncbay.app`, `*.localhost`, and any other host only if it resolves as a registered route (a custom domain).
+  - It rewrites `ACTIVE` services to their upstream, or to `RUNNER_URL` with `x-target-port` unless `isLocal`. It answers `/health` with 200/503/502 and sends non-active services to the splash page.
+- `/api/v1/services/edge-register` (POST/DELETE) accepts `{ hostname, targetPort, status, upstreamUrl, isLocal }`.
+  - Auth is Bearer `RUNNER_SECRET` / `SYNCBAY_WEBHOOK_SECRET`.
+  - In production it returns 401 when neither secret is set.
+- `src/app/service-preview/[subdomain]/page.tsx` is the cold-start splash.
+  - An unknown status renders as `BUILDING`.
+  - It streams build logs over SSE from `/api/deployments/:id/logs/stream`. That route also polls the DB every 2 s and emits an `event: status` when the deployment status changes.
+  - It polls `/health` every 1.5 s, stops probing on success, and reloads into the live app.
+  - The wake button POSTs to `/api/v1/services/wake`. The caller must be a workspace member session or send Bearer `RUNNER_SECRET`. The endpoint re-runs the sleeping service's latest deployment through `executeDeployment` (via `after()`) and returns 202.
+
+### Other modules
+- Auth: `src/lib/auth.ts` (Google, GitHub with `repo` scope, credentials/bcrypt; JWT sessions with the Prisma adapter).
+- Email: `src/lib/email/` (Resend + React Email templates; it logs instead of sending when `RESEND_API_KEY` is unset).
+- Domains and Cloudflare: `src/lib/domain-service.ts`, `src/lib/tunnel/cloudflare-api.ts`.
+- Managed DBs and buckets: `src/lib/database-provider.ts`, `src/lib/storage-provider.ts`.
+  - With `RUNNER_URL` set, Postgres and Redis are provisioned as `postgres:16-alpine`/`redis:7-alpine` containers on the runner (`runner/src/services.ts`: `/api/databases`, health via `pg_isready`/`redis-cli ping`). Without it, and for MySQL, a mock `sb-db-*` instance is created. `DatabaseInstance.status` tracks PROVISIONING → ACTIVE/UNHEALTHY/FAILED/DELETING.
+  - `<NAME>_URL` and `DATABASE_URL` (Postgres) or `REDIS_URL` (Redis) are persisted on existing services when the DB is created. `engine.ts` also merges them in at deploy time (`applyDatabaseEnv`) without overriding user keys. Delete removes rows still pointing at the DB. Signed runner calls go through `src/lib/runner-client.ts`.
+- Web shell: `src/components/dashboard/web-shell.tsx` → `POST /api/services/:id/terminal` (create, or `{sessionId,input}`) + SSE `/api/services/:id/terminal/stream`, with session auth and workspace membership. Sessions (`src/lib/shell/terminal-sessions.ts`, in-memory, 10 min idle) proxy to runner `/api/terminals` (`docker exec -i <container> sh` or `sh` in the job workspace, under `script -qfc`). Without a runner they fall back to the simulated `src/lib/shell/web-shell.ts` with a per-session cwd, env and history. Output masks `isSecret` values and URL credentials.
+
+## Conventions
+- Next.js 16 differs from older versions. Read `node_modules/next/dist/docs/` before using framework APIs.
+- Keep `tests/**` out of the app's tsconfig. Tests run via `tsx` with a mocked `globalThis.prisma`.
+- Branding is **Syncbay** / `syncbay.app` only.
+- Every new env var goes into `.env.example`.

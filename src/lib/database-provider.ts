@@ -1,9 +1,12 @@
 /**
  * Syncbay PaaS — Managed Database Provider (R6 Core)
  * Provisions, parses, and manages PostgreSQL, Redis/Valkey, and MySQL database instances.
+ * POSTGRES/REDIS are provisioned as containers on the Syncbay runner when RUNNER_URL is set;
+ * otherwise (and for MYSQL) a simulated `sb-db-*` instance is returned.
  */
 
-import { DatabaseProvider } from "@prisma/client";
+import type { PrismaClient } from "@prisma/client";
+import { getRunnerBaseUrl, runnerJson } from "@/lib/runner-client";
 
 const PARTNER_API_KEY = process.env.DATABASE_PARTNER_API_KEY;
 
@@ -97,51 +100,234 @@ export function parseDatabaseUrl(
   }
 }
 
-/**
- * Provisions a managed database via partner API or local simulated runner.
- * Satisfies both legacy params and PROJECT.md contract.
- */
-export async function provisionManagedDatabase(params: {
-  projectId?: string;
-  environmentId?: string;
-  name: string;
-  provider: "POSTGRES" | "REDIS" | "MYSQL";
-  region?: string;
-}): Promise<DatabaseCredentials> {
-  const provider = params.provider;
-  const region = params.region || "us-east-1";
+type ManagedProvider = "POSTGRES" | "REDIS" | "MYSQL";
 
-  if (!PARTNER_API_KEY) {
-    const mockId = `pw-db-${provider.toLowerCase()}-${Math.random().toString(36).substring(2, 9)}`;
-    const mockPass = Math.random().toString(36).substring(2, 14);
-    const mockHost = `${mockId}.${region}.syncbay-db.internal`;
+export interface ProvisionResult extends DatabaseCredentials {
+  containerId: string | null;
+  mode: "runner" | "mock";
+}
 
-    let mockUrl = "";
-    if (provider === "POSTGRES") {
-      mockUrl = `postgresql://postgres:${mockPass}@${mockHost}:5432/main?sslmode=require`;
-    } else if (provider === "MYSQL") {
-      mockUrl = `mysql://root:${mockPass}@${mockHost}:3306/main`;
-    } else {
-      mockUrl = `redis://default:${mockPass}@${mockHost}:6379`;
-    }
-
-    return parseDatabaseUrl(mockUrl, provider);
-  }
-
-  // Cloud partner integration (Neon, Upstash, PlanetScale)
-  throw new Error("External partner database provisioning requires cloud credentials");
+interface RunnerDatabaseResponse {
+  id: string;
+  connectionUrl: string;
+  host: string;
+  port: number;
+  containerId: string;
+  mode: "docker" | "mock";
 }
 
 /**
- * Deletes a managed database via partner API or local simulation.
+ * Provisions a managed database on the runner (RUNNER_URL) or as a local simulation.
+ * `id` (the DatabaseInstance id) becomes the runner-side database id.
  */
-export async function destroyManagedDatabase(partnerDbId: string): Promise<{ success: boolean }> {
-  if (!PARTNER_API_KEY) {
-    return { success: true };
+export async function provisionManagedDatabase(params: {
+  id?: string;
+  projectId?: string;
+  environmentId?: string;
+  name: string;
+  provider: ManagedProvider;
+  region?: string;
+}): Promise<ProvisionResult> {
+  const provider = params.provider;
+  const region = params.region || "us-east-1";
+
+  if (getRunnerBaseUrl() && provider !== "MYSQL") {
+    const runnerDb = await runnerJson<RunnerDatabaseResponse>("/api/databases", {
+      method: "POST",
+      body: { id: params.id, name: params.name, provider },
+      timeoutMs: 200000,
+    });
+    const creds = parseDatabaseUrl(runnerDb.connectionUrl, provider);
+    return {
+      ...creds,
+      partnerDbId: runnerDb.id,
+      host: runnerDb.host,
+      port: runnerDb.port,
+      sslMode: "disable",
+      containerId: runnerDb.containerId,
+      mode: "runner",
+    };
   }
 
-  // Cloud partner teardown
+  if (PARTNER_API_KEY) {
+    // Cloud partner integration (Neon, Upstash, PlanetScale)
+    throw new Error("External partner database provisioning requires cloud credentials");
+  }
+
+  const mockId = `sb-db-${provider.toLowerCase()}-${Math.random().toString(36).substring(2, 9)}`;
+  const mockPass = Math.random().toString(36).substring(2, 14);
+  const mockHost = `${mockId}.${region}.syncbay-db.internal`;
+
+  let mockUrl = "";
+  if (provider === "POSTGRES") {
+    mockUrl = `postgresql://postgres:${mockPass}@${mockHost}:5432/main?sslmode=require`;
+  } else if (provider === "MYSQL") {
+    mockUrl = `mysql://root:${mockPass}@${mockHost}:3306/main`;
+  } else {
+    mockUrl = `redis://default:${mockPass}@${mockHost}:6379`;
+  }
+
+  return { ...parseDatabaseUrl(mockUrl, provider), containerId: null, mode: "mock" };
+}
+
+interface ManagedDatabaseRef {
+  id: string;
+  partnerDbId?: string | null;
+  containerId?: string | null;
+}
+
+function isRunnerManaged(ref: ManagedDatabaseRef): boolean {
+  return Boolean(ref.containerId && getRunnerBaseUrl());
+}
+
+export interface DatabaseHealthResult {
+  healthy: boolean;
+  status: "ACTIVE" | "UNHEALTHY";
+  mode: "runner" | "mock";
+  latencyMs?: number;
+  message?: string;
+}
+
+/**
+ * Probes a managed database. Runner-managed instances are checked with
+ * pg_isready / redis-cli ping on the runner; simulated instances are always healthy.
+ */
+export async function checkDatabaseHealth(ref: ManagedDatabaseRef): Promise<DatabaseHealthResult> {
+  if (!isRunnerManaged(ref)) {
+    return { healthy: true, status: "ACTIVE", mode: "mock", latencyMs: 0 };
+  }
+  const runnerId = encodeURIComponent(ref.partnerDbId || ref.id);
+  try {
+    const res = await runnerJson<{ healthy: boolean; latencyMs?: number; output?: string }>(
+      `/api/databases/${runnerId}/health`,
+      { method: "GET", timeoutMs: 15000 }
+    );
+    return {
+      healthy: Boolean(res.healthy),
+      status: res.healthy ? "ACTIVE" : "UNHEALTHY",
+      mode: "runner",
+      latencyMs: res.latencyMs,
+      message: res.output,
+    };
+  } catch (err: any) {
+    return { healthy: false, status: "UNHEALTHY", mode: "runner", message: err.message };
+  }
+}
+
+/**
+ * Tears down a managed database (runner container + volume) or a simulated instance.
+ */
+export async function destroyManagedDatabase(ref: ManagedDatabaseRef): Promise<{ success: boolean }> {
+  if (isRunnerManaged(ref)) {
+    const runnerId = encodeURIComponent(ref.partnerDbId || ref.id);
+    await runnerJson(`/api/databases/${runnerId}`, { method: "DELETE", timeoutMs: 90000 });
+  }
   return { success: true };
+}
+
+// ─── Environment variable injection ───────────────────────────────────────────
+
+interface InjectableDatabase {
+  name: string;
+  provider: ManagedProvider;
+  connectionUrl: string;
+  status?: string | null;
+  createdAt?: Date | string;
+}
+
+/** Keys injected for a database: `<NAME>_URL`, plus DATABASE_URL (Postgres) / REDIS_URL (Redis). */
+export function getDatabaseEnvKeys(name: string, provider: ManagedProvider): string[] {
+  const keys = [name.toUpperCase().replace(/[^A-Z0-9]/g, "_") + "_URL"];
+  if (provider === "POSTGRES") keys.push("DATABASE_URL");
+  if (provider === "REDIS") keys.push("REDIS_URL");
+  return Array.from(new Set(keys));
+}
+
+/**
+ * Deploy-time merge: adds connection URLs of the environment's databases to `envMap`
+ * without overriding keys the user already set. Oldest database wins a shared key.
+ * Returns the keys that were injected.
+ */
+export function applyDatabaseEnv(envMap: Record<string, string>, databases: InjectableDatabase[]): string[] {
+  const injected: string[] = [];
+  const usable = databases
+    .filter((d) => d.connectionUrl && d.status !== "FAILED" && d.status !== "DELETING")
+    .sort((a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime());
+  for (const d of usable) {
+    for (const key of getDatabaseEnvKeys(d.name, d.provider)) {
+      if (!(key in envMap)) {
+        envMap[key] = d.connectionUrl;
+        injected.push(key);
+      }
+    }
+  }
+  return injected;
+}
+
+type VariableClient = Pick<PrismaClient, "environmentVariable" | "service">;
+
+interface DatabaseVariableTarget {
+  workspaceId: string;
+  environmentId: string;
+  name: string;
+  provider: ManagedProvider;
+  connectionUrl: string;
+}
+
+/**
+ * Persists injected variables for existing services (and `<NAME>_URL` at workspace level).
+ * Existing keys are left untouched; services created later receive the URLs at deploy time.
+ */
+export async function attachDatabaseVariables(client: VariableClient, target: DatabaseVariableTarget): Promise<number> {
+  const keys = getDatabaseEnvKeys(target.name, target.provider);
+  let created = 0;
+
+  const wsKey = keys[0];
+  const existingWsVar = await client.environmentVariable.findFirst({
+    where: { workspaceId: target.workspaceId, serviceId: null, key: wsKey },
+  });
+  if (!existingWsVar) {
+    await client.environmentVariable.create({
+      data: { workspaceId: target.workspaceId, key: wsKey, value: target.connectionUrl, isSecret: true, isReference: true },
+    });
+    created++;
+  }
+
+  const services = await client.service.findMany({
+    where: { environmentId: target.environmentId, deletedAt: null },
+    select: { id: true },
+  });
+  for (const svc of services) {
+    for (const key of keys) {
+      const existing = await client.environmentVariable.findFirst({ where: { serviceId: svc.id, key } });
+      if (existing) continue;
+      await client.environmentVariable.create({
+        data: { serviceId: svc.id, key, value: target.connectionUrl, isSecret: true, isReference: true },
+      });
+      created++;
+    }
+  }
+  return created;
+}
+
+/** Removes variables injected for a database (only rows still pointing at its URL). */
+export async function detachDatabaseVariables(client: VariableClient, target: DatabaseVariableTarget): Promise<number> {
+  const keys = getDatabaseEnvKeys(target.name, target.provider);
+  const services = await client.service.findMany({
+    where: { environmentId: target.environmentId },
+    select: { id: true },
+  });
+  const serviceIds = services.map((s) => s.id);
+
+  const svcResult = serviceIds.length
+    ? await client.environmentVariable.deleteMany({
+        where: { serviceId: { in: serviceIds }, key: { in: keys }, value: target.connectionUrl },
+      })
+    : { count: 0 };
+  const wsResult = await client.environmentVariable.deleteMany({
+    where: { workspaceId: target.workspaceId, serviceId: null, key: { in: keys }, value: target.connectionUrl },
+  });
+  return svcResult.count + wsResult.count;
 }
 
 /**
@@ -150,5 +336,6 @@ export async function destroyManagedDatabase(partnerDbId: string): Promise<{ suc
 export const databaseProvider = {
   provision: provisionManagedDatabase,
   destroy: destroyManagedDatabase,
+  health: checkDatabaseHealth,
   parseDatabaseUrl,
 };

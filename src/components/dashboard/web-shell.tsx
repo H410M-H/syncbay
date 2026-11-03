@@ -1,17 +1,45 @@
 "use client";
 
-import React, { useState, useRef, useEffect } from "react";
-import { trpc } from "@/lib/trpc-client";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 
 interface WebShellProps {
   serviceId: string;
   serviceName: string;
 }
 
-interface ShellLine {
-  id: string;
-  type: "input" | "stdout" | "stderr" | "system";
-  text: string;
+type TerminalEvent =
+  | { type: "output"; data: string }
+  | { type: "meta"; cwd: string; mode: "runner" | "fallback" }
+  | { type: "exit"; code: number | null };
+
+type ConnectionStatus = "starting" | "connected" | "reconnecting" | "closed" | "error";
+
+const MAX_OUTPUT = 200_000;
+
+/**
+ * Applies a chunk of terminal output to the transcript: honours clear-screen,
+ * drops carriage returns and non-colour control sequences (cursor moves, OSC titles),
+ * and keeps SGR colour codes for renderAnsi.
+ */
+function applyTerminalData(prev: string, data: string): string {
+  let next = prev;
+  let chunk = data;
+  const clearIdx = Math.max(chunk.lastIndexOf("\x1b[2J"), chunk.lastIndexOf("\x1b[3J"), chunk.lastIndexOf("\x1bc"));
+  if (clearIdx !== -1) {
+    next = "";
+    chunk = chunk.slice(clearIdx).replace(/^\x1b(\[[23]J|c)/, "");
+  }
+  chunk = chunk
+    .replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-9;?]*[A-Za-ln-z]/g, "")
+    .replace(/\x1b[()][A-Z0-9]/g, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "");
+  next += chunk;
+  while (next.includes("\b")) {
+    next = next.replace(/[^\n]?\x08/, "");
+  }
+  return next.length > MAX_OUTPUT ? next.slice(-MAX_OUTPUT) : next;
 }
 
 /**
@@ -59,80 +87,140 @@ function renderAnsi(text: string): React.ReactNode[] {
 
 export function WebShell({ serviceId, serviceName }: WebShellProps) {
   const [cwd, setCwd] = useState("/app");
+  const [mode, setMode] = useState<"runner" | "fallback" | null>(null);
+  const [status, setStatus] = useState<ConnectionStatus>("starting");
   const [inputVal, setInputVal] = useState("");
-  const [lines, setLines] = useState<ShellLine[]>([
-    {
-      id: "init-1",
-      type: "system",
-      text: `\x1b[38;5;51m== SYNCBAY CLOUD CONTAINER WEB SHELL ==\x1b[0m\nConnected to edge runtime: \x1b[38;5;46m${serviceName}\x1b[0m (Region: iad1 | Engine: Cloudflare Containers)\nType '\x1b[38;5;220mhelp\x1b[0m' or click diagnostic pills below.\n`,
-    },
-  ]);
+  const [output, setOutput] = useState(
+    `\x1b[38;5;51m== SYNCBAY WEB SHELL ==\x1b[0m\nConnecting to \x1b[38;5;46m${serviceName}\x1b[0m...\n`
+  );
   const [history, setHistory] = useState<string[]>([]);
   const [historyIdx, setHistoryIdx] = useState<number>(-1);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isSending, setIsSending] = useState(false);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const sessionRef = useRef<string | null>(null);
 
-  const execMutation = trpc.shell.exec.useMutation();
+  const terminalUrl = `/api/services/${encodeURIComponent(serviceId)}/terminal`;
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [lines]);
+  }, [output]);
+
+  // Open a session, then attach to its SSE stream. EventSource reconnects on its own;
+  // every (re)connect replays the session buffer, so the transcript is reset on open.
+  useEffect(() => {
+    let cancelled = false;
+    let source: EventSource | null = null;
+
+    (async () => {
+      try {
+        const res = await fetch(terminalUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        if (cancelled) {
+          fetch(`${terminalUrl}?sessionId=${encodeURIComponent(data.sessionId)}`, { method: "DELETE" }).catch(() => {});
+          return;
+        }
+        sessionRef.current = data.sessionId;
+        setMode(data.mode);
+
+        source = new EventSource(`${terminalUrl}/stream?sessionId=${encodeURIComponent(data.sessionId)}`);
+        source.onopen = () => {
+          setStatus("connected");
+          setOutput("");
+        };
+        source.onmessage = (e) => {
+          let event: TerminalEvent;
+          try {
+            event = JSON.parse(e.data);
+          } catch {
+            return;
+          }
+          if (event.type === "output") {
+            setOutput((prev) => applyTerminalData(prev, event.data));
+          } else if (event.type === "meta") {
+            setCwd(event.cwd);
+            setMode(event.mode);
+          } else if (event.type === "exit") {
+            setStatus("closed");
+            setOutput((prev) => prev + `\n\x1b[38;5;208m[session ended${event.code != null ? ` (exit ${event.code})` : ""}]\x1b[0m\n`);
+            source?.close();
+          }
+        };
+        source.onerror = () => {
+          setStatus((prev) => (prev === "closed" ? prev : "reconnecting"));
+        };
+      } catch (err: any) {
+        if (cancelled) return;
+        setStatus("error");
+        setOutput((prev) => prev + `\x1b[31mError: ${err.message}\x1b[0m\n`);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      source?.close();
+      const sessionId = sessionRef.current;
+      sessionRef.current = null;
+      if (sessionId) {
+        fetch(`${terminalUrl}?sessionId=${encodeURIComponent(sessionId)}`, { method: "DELETE", keepalive: true }).catch(() => {});
+      }
+    };
+  }, [terminalUrl]);
+
+  const sendInput = useCallback(
+    async (input: string) => {
+      const sessionId = sessionRef.current;
+      if (!sessionId) return;
+      setIsSending(true);
+      try {
+        const res = await fetch(terminalUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId, input }),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || `HTTP ${res.status}`);
+        }
+      } catch (err: any) {
+        setOutput((prev) => prev + `\x1b[31mError: ${err.message}\x1b[0m\n`);
+      } finally {
+        setIsSending(false);
+        inputRef.current?.focus();
+      }
+    },
+    [terminalUrl]
+  );
 
   const handleCommand = async (cmdToRun?: string) => {
     const command = (cmdToRun ?? inputVal).trim();
     if (!command) return;
-
-    // Echo input line
-    const promptPrefix = `syncbay@${serviceName}:${cwd === "/app" ? "~" : cwd}$ `;
-    setLines((prev) => [
-      ...prev,
-      { id: Math.random().toString(), type: "input", text: `${promptPrefix}${command}` },
-    ]);
 
     setHistory((prev) => [...prev, command]);
     setHistoryIdx(-1);
     setInputVal("");
 
     if (command === "clear") {
-      setLines([]);
-      return;
+      setOutput("");
     }
-
-    try {
-      const result = await execMutation.mutateAsync({
-        serviceId,
-        command,
-        cwd,
-      });
-
-      setCwd(result.cwd);
-
-      if (result.stdout) {
-        setLines((prev) => [
-          ...prev,
-          { id: Math.random().toString(), type: "stdout", text: result.stdout },
-        ]);
-      }
-      if (result.stderr) {
-        setLines((prev) => [
-          ...prev,
-          { id: Math.random().toString(), type: "stderr", text: result.stderr },
-        ]);
-      }
-    } catch (err: any) {
-      setLines((prev) => [
-        ...prev,
-        { id: Math.random().toString(), type: "stderr", text: `Error: ${err.message}\n` },
-      ]);
-    }
+    await sendInput(`${command}\n`);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
       e.preventDefault();
       handleCommand();
+    } else if (e.key === "c" && e.ctrlKey) {
+      e.preventDefault();
+      setInputVal("");
+      sendInput("\x03");
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       if (history.length === 0) return;
@@ -155,14 +243,22 @@ export function WebShell({ serviceId, serviceName }: WebShellProps) {
 
   const quickActions = [
     { label: "Check Processes", cmd: "ps aux" },
-    { label: "System Load", cmd: "top" },
+    { label: "System Load", cmd: "top -b -n 1" },
     { label: "Disk Space", cmd: "df -h" },
     { label: "Memory", cmd: "free -m" },
     { label: "Env Vars", cmd: "env" },
-    { label: "Health Probe", cmd: "curl http://localhost:3000/health" },
+    { label: "Health Probe", cmd: "curl -s http://localhost:3000/health" },
     { label: "Kernel Info", cmd: "uname -a" },
     { label: "Clear Buffer", cmd: "clear" },
   ];
+
+  const statusDot =
+    status === "connected"
+      ? "bg-emerald-400 animate-pulse"
+      : status === "closed" || status === "error"
+      ? "bg-red-500"
+      : "bg-yellow-400 animate-pulse";
+  const isReady = status === "connected" && !isSending;
 
   return (
     <div
@@ -177,13 +273,16 @@ export function WebShell({ serviceId, serviceName }: WebShellProps) {
           <div className="w-3 h-3 rounded-full bg-yellow-500/80" />
           <div className="w-3 h-3 rounded-full bg-green-500/80" />
           <span className="ml-2 text-zinc-400 font-semibold text-xs flex items-center gap-1.5">
-            <span className="inline-block w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            syncbay-shell: {serviceName} ({cwd})
+            <span className={`inline-block w-2 h-2 rounded-full ${statusDot}`} />
+            syncbay-shell: {serviceName}
+            {mode === "fallback" ? ` (${cwd})` : ""}
           </span>
         </div>
 
         <div className="flex items-center space-x-3 text-zinc-400">
-          <span className="text-[11px] text-zinc-500 hidden sm:inline">VT100 / xterm-256color</span>
+          <span className="text-[11px] text-zinc-500 hidden sm:inline">
+            {mode === "runner" ? "runner pty" : mode === "fallback" ? "simulated" : status} · xterm-256color
+          </span>
           <button
             type="button"
             onClick={() => setIsFullscreen(!isFullscreen)}
@@ -202,7 +301,7 @@ export function WebShell({ serviceId, serviceName }: WebShellProps) {
             key={action.label}
             type="button"
             onClick={() => handleCommand(action.cmd)}
-            disabled={execMutation.isPending}
+            disabled={!isReady}
             className="px-2 py-0.5 rounded bg-zinc-900 hover:bg-cyan-950/60 hover:text-cyan-400 hover:border-cyan-800/50 border border-zinc-800 text-[10px] text-zinc-300 transition-colors whitespace-nowrap"
           >
             {action.label}
@@ -210,34 +309,24 @@ export function WebShell({ serviceId, serviceName }: WebShellProps) {
         ))}
       </div>
 
-      {/* Terminal Output Area */}
+      {/* Terminal Output Area (prompts are part of the stream) */}
       <div
-        className="flex-1 p-4 overflow-y-auto space-y-1 select-text scrollbar-thin scrollbar-thumb-zinc-800"
+        className="flex-1 p-4 overflow-y-auto select-text scrollbar-thin scrollbar-thumb-zinc-800"
         onClick={() => inputRef.current?.focus()}
       >
-        {lines.map((line) => (
-          <div key={line.id} className="whitespace-pre-wrap leading-relaxed">
-            {renderAnsi(line.text)}
-          </div>
-        ))}
-
-        {/* Active Input Line */}
-        <div className="flex items-center whitespace-pre-wrap leading-relaxed pt-1">
-          <span className="text-emerald-400 font-bold">syncbay</span>
-          <span className="text-zinc-400">@</span>
-          <span className="text-cyan-400 font-bold">{serviceName}</span>
-          <span className="text-zinc-400">:</span>
-          <span className="text-yellow-400 font-bold">{cwd === "/app" ? "~" : cwd}</span>
-          <span className="text-zinc-400">$ </span>
+        <div className="whitespace-pre-wrap break-all leading-relaxed">
+          {renderAnsi(output)}
           <input
             ref={inputRef}
             type="text"
             value={inputVal}
             onChange={(e) => setInputVal(e.target.value)}
             onKeyDown={handleKeyDown}
-            disabled={execMutation.isPending}
+            disabled={status === "closed" || status === "error"}
             autoFocus
-            className="flex-1 bg-transparent outline-none border-none text-white font-mono text-xs ml-1 p-0 focus:ring-0"
+            aria-label="Terminal input"
+            style={{ width: `${Math.max(inputVal.length + 2, 24)}ch`, maxWidth: "100%" }}
+            className="inline bg-transparent outline-none border-none text-white font-mono text-xs p-0 focus:ring-0"
             spellCheck={false}
             autoComplete="off"
           />

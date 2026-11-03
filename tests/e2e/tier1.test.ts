@@ -100,7 +100,7 @@ registerTest("F2-T1-03", "F2", 1, "Deployments & Builds tab history tracking", a
 registerTest("F2-T1-04", "F2", 1, "Databases & Buckets tab resource aggregation", async () => {
   const resources = {
     databases: [{ id: "db1", name: "primary-pg", provider: "POSTGRES" }],
-    buckets: [{ id: "bkt1", name: "user-uploads", r2BucketRef: "pw-bkt-uploads" }],
+    buckets: [{ id: "bkt1", name: "user-uploads", r2BucketRef: "sb-bkt-uploads" }],
   };
   assertEqual(resources.databases.length, 1);
   assertEqual(resources.buckets.length, 1);

@@ -11,7 +11,7 @@ import { TRPCError } from "@trpc/server";
 import { domainService, generateVerificationRecords, isValidHostname } from "@/lib/domain-service";
 import { cloudflareApiClient } from "@/lib/tunnel/cloudflare-api";
 import { getCustomDomainTlsStatus } from "@/lib/edge/edge-router";
-import { registerServiceRoute, removeServiceRoute } from "@/lib/edge/service-registry";
+import { registerServiceRouteAsync, removeServiceRouteAsync } from "@/lib/edge/service-registry";
 
 export const domainRouter = createTRPCRouter({
   /**
@@ -187,7 +187,7 @@ export const domainRouter = createTRPCRouter({
         const deployments = (domain.service as any).deployments;
         const latestStatus = Array.isArray(deployments) && deployments.length > 0 ? deployments[0].status : "ACTIVE";
         const routeStatus = isPaused ? "SLEEPING" : latestStatus || "ACTIVE";
-        registerServiceRoute(domain.hostname, port, routeStatus, `http://127.0.0.1:${port}`);
+        await registerServiceRouteAsync(domain.hostname, port, routeStatus, `http://127.0.0.1:${port}`);
       }
 
       return {
@@ -295,7 +295,7 @@ export const domainRouter = createTRPCRouter({
       if (domain.cfRecordId) {
         await cloudflareApiClient.deleteCustomHostname(domain.cfRecordId).catch(() => null);
       }
-      removeServiceRoute(domain.hostname);
+      await removeServiceRouteAsync(domain.hostname);
 
       await ctx.db.domain.delete({
         where: { id: input.domainId },

@@ -56,6 +56,14 @@ enum DatabaseProvider {
   MYSQL
 }
 
+enum DatabaseStatus {
+  PROVISIONING
+  ACTIVE
+  UNHEALTHY
+  FAILED
+  DELETING
+}
+
 enum ApiTokenScope {
   READ_ONLY
   DEPLOY_ONLY
@@ -359,6 +367,11 @@ model DatabaseInstance {
   region           String
   storageGb        Int              @default(1)
   backupRetainDays Int              @default(7)
+  status           DatabaseStatus   @default(PROVISIONING)
+  lastHealthAt     DateTime?
+  host             String?
+  port             Int?
+  containerId      String? // runner-managed container (managed DB on a Syncbay runner)
   createdAt        DateTime         @default(now())
   updatedAt        DateTime         @updatedAt
 

@@ -278,15 +278,31 @@ registerTest("T7-RD-04", "RD_STRATEGIES", 7, "Community feature voting increment
   assertEqual(updatedItem?.votes, initialCount + 1);
 });
 
-registerTest("T7-RD-05", "RD_STRATEGIES", 7, "Public unauthenticated visitor can vote on roadmap feature via tRPC", async () => {
-  const caller = appRouter.createCaller({
+registerTest("T7-RD-05", "RD_STRATEGIES", 7, "Roadmap voting requires sign-in and counts one vote per user", async () => {
+  const anonymous = appRouter.createCaller({
     db: {} as any,
     session: null,
     headers: new Headers(),
   });
-  const res = await caller.rd.voteFeature({ feature: "Native Kubernetes Cluster Importer" });
-  assertTrue(res.totalVotes > 0, "Public vote count must be positive");
-  assertEqual(res.feature, "Native Kubernetes Cluster Importer");
+  let rejected = false;
+  try {
+    await anonymous.rd.voteFeature({ feature: "Native Kubernetes Cluster Importer" });
+  } catch (err: any) {
+    rejected = err?.code === "UNAUTHORIZED";
+  }
+  assertTrue(rejected, "Unauthenticated vote must be rejected with UNAUTHORIZED");
+
+  const member = appRouter.createCaller({
+    db: {} as any,
+    session: { user: { id: "t7_rd_voter" }, expires: new Date(Date.now() + 60_000).toISOString() } as any,
+    headers: new Headers(),
+  });
+  const first = await member.rd.voteFeature({ feature: "Native Kubernetes Cluster Importer" });
+  assertTrue(first.totalVotes > 0, "Vote count must be positive");
+  assertEqual(first.feature, "Native Kubernetes Cluster Importer");
+  const second = await member.rd.voteFeature({ feature: "Native Kubernetes Cluster Importer" });
+  assertEqual(second.totalVotes, first.totalVotes, "Repeat vote by the same user must not increment");
+  assertTrue(second.alreadyVoted === true, "Repeat vote flagged as alreadyVoted");
 });
 
 registerTest("T7-GEO-04", "GEO", 7, "Geo router cleanly handles extreme coordinates, South Pole, and NaN inputs", () => {

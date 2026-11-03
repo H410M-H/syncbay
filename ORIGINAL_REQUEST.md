@@ -70,7 +70,7 @@ Integrity mode: demo
 
 Comprehensive enterprise upgrade for Syncbay PaaS (https://www.syncbay.app): resolve GitHub OAuth RFC 9207 callback error, implement modern automated collapsible sidebar with complete mobile responsiveness across all dashboard views, full RBAC workspace invitation workflows, hyper-competitive multi-tier pricing engine, official US corporate identity, and automated DevOps capabilities exceeding Vercel and Railway.
 
-Working directory: /data/data/com.termux/files/home/portway
+Working directory: /data/data/com.termux/files/home/syncbay
 Integrity mode: development
 
 ## Requirements
@@ -132,7 +132,7 @@ Analyze Vercel CLI features and incorporate superior automation:
 
 Implement all 6 planned milestones (19 features) for Syncbay, a production Railway/Vercel-class PaaS platform built with Next.js 16 (App Router), TypeScript, tRPC v11, NextAuth v4, Prisma (PostgreSQL), and Tailwind CSS. The codebase is functional and builds cleanly (`npm run build` exits 0), but has RBAC gaps, incomplete mobile responsiveness, pricing discrepancies, and DevOps features at stub state. Bring every milestone from PLANNED to DONE.
 
-Working directory: /data/data/com.termux/files/home/portway
+Working directory: /data/data/com.termux/files/home/syncbay
 Integrity mode: development
 
 Reference documents (read these first):

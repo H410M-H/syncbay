@@ -70,4 +70,3 @@ export const BillingAlertEmail = ({
   );
 };
 
-export default BillingAlertEmail;

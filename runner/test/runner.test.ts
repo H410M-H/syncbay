@@ -3,6 +3,10 @@
  */
 
 import assert from "node:assert";
+import * as crypto from "node:crypto";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import test from "node:test";
 import { PortManager } from "../src/port-manager";
 import { BuildPipeline, MockPipelineExecutor } from "../src/pipeline";
@@ -124,4 +128,305 @@ test("BuildPipeline: failure enforcement when process fails to start", async () 
   // MUST report failure, NOT success!
   assert.strictEqual(result.success, false);
   assert.ok(result.error);
+});
+
+// ─── Canonical HMAC signing (mirrors signRequest() in src/lib/orchestrator/runner-driver.ts) ───
+
+function signCanonical(secret: string, method: string, path: string, body: string, ts = Date.now().toString()) {
+  const sig = crypto.createHmac("sha256", secret).update(`${ts}.${method}.${path}.${body}`).digest("hex");
+  return { ts, sig, headers: { "X-Syncbay-Signature": `sha256=${sig}`, "X-Syncbay-Timestamp": ts } };
+}
+
+async function waitForJob(baseUrl: string, secret: string, jobId: string): Promise<any> {
+  const path = `/api/builds/${encodeURIComponent(jobId)}`;
+  for (let i = 0; i < 100; i++) {
+    const res = await fetch(`${baseUrl}${path}`, { headers: signCanonical(secret, "GET", path, jobId).headers });
+    const data = await res.json();
+    if (data.status && data.status !== "BUILDING" && data.status !== "QUEUED") return data;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  throw new Error(`job ${jobId} did not finish`);
+}
+
+test("RunnerDaemon: canonical signatures, replay rejection, and exitCode surfacing", async () => {
+  const secret = "replay-test-key";
+  const pm = new PortManager({ rangeStart: 35000, rangeEnd: 35050 });
+  const mockExecutor = new MockPipelineExecutor();
+  mockExecutor.setHandler(/nixpacks build/, () => ({ stdout: "", stderr: "nixpacks: build step exploded", exitCode: 2 }));
+  const pipeline = new BuildPipeline({ executor: mockExecutor, portManager: pm });
+  const daemon = new RunnerDaemon({ port: 0, host: "127.0.0.1", webhookSecret: secret, portManager: pm, pipeline });
+  const port = await daemon.start();
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  try {
+    const jobId = "job_exit_code";
+    const body = JSON.stringify({ jobId, serviceName: "exit-demo" });
+
+    // Legacy `${ts}.${body}` signatures are no longer accepted
+    const ts = Date.now().toString();
+    const legacySig = crypto.createHmac("sha256", secret).update(`${ts}.${body}`).digest("hex");
+    const legacyRes = await fetch(`${baseUrl}/api/builds`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Syncbay-Signature": `sha256=${legacySig}`, "X-Syncbay-Timestamp": ts },
+      body,
+    });
+    assert.strictEqual(legacyRes.status, 401);
+
+    // Valid canonical POST is accepted once ...
+    const signed = signCanonical(secret, "POST", "/api/builds", body);
+    const okRes = await fetch(`${baseUrl}/api/builds`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...signed.headers },
+      body,
+    });
+    assert.strictEqual(okRes.status, 202);
+
+    // ... and a byte-for-byte replay is rejected
+    const replayRes = await fetch(`${baseUrl}/api/builds`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...signed.headers },
+      body,
+    });
+    assert.strictEqual(replayRes.status, 401);
+
+    // exitCode from the failing build step is surfaced on GET /api/builds/:id
+    const job = await waitForJob(baseUrl, secret, jobId);
+    assert.strictEqual(job.status, "FAILED");
+    assert.strictEqual(job.exitCode, 2);
+    assert.match(job.error, /Nixpacks build failed/);
+
+    const statusPath = `/api/builds/${jobId}`;
+
+    // Signatures over "" or the pathname (old fallbacks) are rejected
+    for (const legacyBody of ["", statusPath]) {
+      const t = Date.now().toString();
+      const s = crypto.createHmac("sha256", secret).update(`${t}.${legacyBody}`).digest("hex");
+      const r = await fetch(`${baseUrl}${statusPath}`, { headers: { "X-Syncbay-Signature": `sha256=${s}`, "X-Syncbay-Timestamp": t } });
+      assert.strictEqual(r.status, 401, `legacy signature over "${legacyBody}" must be rejected`);
+    }
+
+    // A signature is bound to its path: one minted for another job does not authorize this one
+    const other = signCanonical(secret, "GET", "/api/builds/other_job", "other_job");
+    const crossRes = await fetch(`${baseUrl}${statusPath}`, { headers: other.headers });
+    assert.strictEqual(crossRes.status, 401);
+
+    // Query-string sig/ts is not accepted on the JSON status route ...
+    const q = signCanonical(secret, "GET", statusPath, jobId);
+    const queryStatus = await fetch(`${baseUrl}${statusPath}?sig=${q.sig}&ts=${q.ts}`);
+    assert.strictEqual(queryStatus.status, 401);
+
+    // ... only on the SSE log route, bound to that route's path
+    const logsPath = `/api/builds/${jobId}/logs`;
+    const ql = signCanonical(secret, "GET", logsPath, jobId);
+    const sseRes = await fetch(`${baseUrl}${logsPath}?sig=${ql.sig}&ts=${ql.ts}`, { headers: { Accept: "text/event-stream" } });
+    assert.strictEqual(sseRes.status, 200);
+    await sseRes.text();
+    const sseWrongPath = await fetch(`${baseUrl}${logsPath}?sig=${q.sig}&ts=${q.ts}`, { headers: { Accept: "text/event-stream" } });
+    assert.strictEqual(sseWrongPath.status, 401);
+    const nonSseQuery = await fetch(`${baseUrl}${logsPath}?sig=${ql.sig}&ts=${ql.ts}`);
+    assert.strictEqual(nonSseQuery.status, 401);
+  } finally {
+    await daemon.stop();
+  }
+});
+
+test("RunnerServices: /api/databases mock mode provision, health, delete with HMAC", async () => {
+  const { createHmac } = await import("node:crypto");
+  const { RunnerServices } = await import("../src/services");
+  const secret = "services-test-key";
+  const pm = new PortManager({ rangeStart: 35000, rangeEnd: 35050 });
+  const daemon = new RunnerDaemon({
+    port: 0,
+    webhookSecret: secret,
+    portManager: pm,
+    pipeline: new BuildPipeline({ executor: new MockPipelineExecutor(), portManager: pm }),
+    services: new RunnerServices({ portManager: pm, mode: "mock", dbHost: "10.0.0.5" }),
+  });
+  const port = await daemon.start();
+  const baseUrl = `http://127.0.0.1:${port}`;
+  // Canonical `${ts}.${METHOD}.${path}.${payload}`; GET/DELETE sign the pathname as payload.
+  const signFor = (method: string, path: string, payload: string) => {
+    const ts = Date.now().toString();
+    const sig = createHmac("sha256", secret).update(`${ts}.${method}.${path}.${payload}`).digest("hex");
+    return { "X-Syncbay-Signature": `sha256=${sig}`, "X-Syncbay-Timestamp": ts };
+  };
+
+  try {
+    // Unsigned request rejected
+    const unauth = await fetch(`${baseUrl}/api/databases`, { method: "POST", body: "{}" });
+    assert.strictEqual(unauth.status, 401);
+
+    // Provision (mock)
+    const body = JSON.stringify({ id: "dbtest1", name: "main", provider: "POSTGRES" });
+    const created = await fetch(`${baseUrl}/api/databases`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...signFor("POST", "/api/databases", body) },
+      body,
+    });
+    assert.strictEqual(created.status, 201);
+    const db = await created.json();
+    assert.strictEqual(db.mode, "mock");
+    assert.ok(db.containerId.startsWith("mock-"));
+    assert.ok(db.port >= 35000 && db.port <= 35050);
+    assert.ok(pm.isPortAllocated(db.port));
+    assert.match(db.connectionUrl, /^postgresql:\/\/postgres:[^@]+@10\.0\.0\.5:\d+\/main$/);
+
+    // Redis provisioning yields redis:// URL
+    const redisBody = JSON.stringify({ id: "cache1", provider: "REDIS" });
+    const redis = await (await fetch(`${baseUrl}/api/databases`, { method: "POST", headers: signFor("POST", "/api/databases", redisBody), body: redisBody })).json();
+    assert.match(redis.connectionUrl, /^redis:\/\/default:/);
+
+    // Unsupported provider
+    const badBody = JSON.stringify({ provider: "MONGO" });
+    const bad = await fetch(`${baseUrl}/api/databases`, { method: "POST", headers: signFor("POST", "/api/databases", badBody), body: badBody });
+    assert.strictEqual(bad.status, 400);
+
+    // Health (GET signs the pathname)
+    const healthPath = "/api/databases/dbtest1/health";
+    const health = await fetch(`${baseUrl}${healthPath}`, { headers: signFor("GET", healthPath, healthPath) });
+    assert.strictEqual(health.status, 200);
+    const healthData = await health.json();
+    assert.strictEqual(healthData.healthy, true);
+
+    // Health with wrong signature payload rejected
+    const forged = await fetch(`${baseUrl}${healthPath}`, { headers: signFor("GET", healthPath, "/api/other") });
+    assert.strictEqual(forged.status, 401);
+
+    // Delete releases the port
+    const delPath = "/api/databases/dbtest1";
+    const del = await fetch(`${baseUrl}${delPath}`, { method: "DELETE", headers: signFor("DELETE", delPath, delPath) });
+    assert.strictEqual(del.status, 200);
+    assert.strictEqual((await del.json()).deleted, true);
+    assert.strictEqual(pm.isPortAllocated(db.port), false);
+  } finally {
+    await daemon.stop();
+  }
+});
+
+test("BuildPipeline: startup crash keeps the last 25 stderr lines and the exit code", async () => {
+  const pm = new PortManager({ rangeStart: 36000, rangeEnd: 36050 });
+  const pipeline = new BuildPipeline({ portManager: pm });
+
+  const result = await pipeline.execute({
+    jobId: "ring_buffer_job",
+    serviceName: "crashy-app",
+    startCommand: `node -e "for (let i = 0; i < 40; i++) console.error('L' + String(i).padStart(2, '0')); process.exit(3)"`,
+    targetPort: 36000,
+    healthCheckTimeoutMs: 5000,
+  });
+
+  assert.strictEqual(result.success, false);
+  assert.strictEqual(result.exitCode, 3);
+  const error = result.error || "";
+  const kept = Array.from({ length: 40 }, (_, i) => `L${String(i).padStart(2, "0")}`).filter((l) => error.includes(l));
+  assert.strictEqual(kept.length, 25, `expected 25 trailing lines, got ${kept.length}: ${error}`);
+  assert.ok(error.includes("L39") && error.includes("L15") && !error.includes("L14"));
+  assert.match(error, /exit code 3/);
+});
+
+test("BuildPipeline: fast redeploy reuses the clone; clean rebuild re-clones with --no-cache", async () => {
+  const pm = new PortManager({ rangeStart: 37000, rangeEnd: 37050 });
+  const workDir = path.join(os.tmpdir(), `syncbay-fast-redeploy-${process.pid}`);
+
+  const fastExec = new MockPipelineExecutor();
+  fastExec.mockedFiles.add(path.join(workDir, ".git"));
+  const fast = await new BuildPipeline({ executor: fastExec, portManager: pm }).execute({
+    jobId: "fast_job",
+    repoUrl: "https://github.com/syncbay/example.git",
+    branch: "main",
+    workDir,
+    cleanBuild: false,
+  });
+  assert.strictEqual(fast.success, true, fast.error);
+  assert.strictEqual(fast.exitCode, 0);
+  assert.ok(fastExec.commands.some((c) => c.includes("git fetch --prune origin")));
+  assert.ok(!fastExec.commands.some((c) => c.includes("git clone")));
+
+  const cleanExec = new MockPipelineExecutor();
+  cleanExec.mockedFiles.add(path.join(workDir, ".git"));
+  const clean = await new BuildPipeline({ executor: cleanExec, portManager: pm }).execute({
+    jobId: "clean_job",
+    repoUrl: "https://github.com/syncbay/example.git",
+    workDir,
+    cleanBuild: true,
+  });
+  assert.strictEqual(clean.success, true, clean.error);
+  assert.ok(cleanExec.commands.some((c) => c.includes("git clone")));
+  assert.ok(cleanExec.commands.some((c) => c.includes("nixpacks build") && c.includes("--no-cache")));
+  await fs.rm(workDir, { recursive: true, force: true });
+});
+
+test("BuildPipeline: RUNNER_DRIVER=mock selects MockPipelineExecutor", () => {
+  const prev = process.env.RUNNER_DRIVER;
+  process.env.RUNNER_DRIVER = "mock";
+  try {
+    const pipeline = new BuildPipeline();
+    assert.ok((pipeline as any).executor instanceof MockPipelineExecutor);
+  } finally {
+    if (prev === undefined) delete process.env.RUNNER_DRIVER;
+    else process.env.RUNNER_DRIVER = prev;
+  }
+});
+
+test("RunnerServices: /api/terminals process session streams command output over SSE", async () => {
+  const { createHmac } = await import("node:crypto");
+  const { RunnerServices } = await import("../src/services");
+  const secret = "terminal-test-key";
+  const pm = new PortManager({ rangeStart: 36000, rangeEnd: 36050 });
+  const daemon = new RunnerDaemon({
+    port: 0,
+    webhookSecret: secret,
+    portManager: pm,
+    pipeline: new BuildPipeline({ executor: new MockPipelineExecutor(), portManager: pm }),
+    services: new RunnerServices({ portManager: pm, mode: "mock" }),
+  });
+  const port = await daemon.start();
+  const baseUrl = `http://127.0.0.1:${port}`;
+  // Canonical `${ts}.${METHOD}.${path}.${payload}`; GET/DELETE sign the pathname as payload.
+  const signFor = (method: string, path: string, payload: string) => {
+    const ts = Date.now().toString();
+    const sig = createHmac("sha256", secret).update(`${ts}.${method}.${path}.${payload}`).digest("hex");
+    return { "X-Syncbay-Signature": `sha256=${sig}`, "X-Syncbay-Timestamp": ts };
+  };
+
+  try {
+    const createBody = JSON.stringify({ env: { GREETING: "hi" } });
+    const created = await fetch(`${baseUrl}/api/terminals`, { method: "POST", headers: signFor("POST", "/api/terminals", createBody), body: createBody });
+    assert.strictEqual(created.status, 201);
+    const { sessionId, mode } = await created.json();
+    assert.strictEqual(mode, "process");
+
+    const streamPath = `/api/terminals/${sessionId}/stream`;
+    const controller = new AbortController();
+    const stream = await fetch(`${baseUrl}${streamPath}`, { headers: signFor("GET", streamPath, streamPath), signal: controller.signal });
+    assert.strictEqual(stream.status, 200);
+    assert.match(stream.headers.get("content-type") || "", /text\/event-stream/);
+
+    const inputBody = JSON.stringify({ input: "echo term-$((40+2))\n" });
+    const input = await fetch(`${baseUrl}/api/terminals/${sessionId}/input`, { method: "POST", headers: signFor("POST", `/api/terminals/${sessionId}/input`, inputBody), body: inputBody });
+    assert.strictEqual(input.status, 200);
+
+    const reader = stream.body!.getReader();
+    const decoder = new TextDecoder();
+    let transcript = "";
+    const deadline = Date.now() + 8000;
+    while (!transcript.includes("term-42") && Date.now() < deadline) {
+      const chunk = await Promise.race([
+        reader.read(),
+        new Promise<{ done: true; value: undefined }>((r) => setTimeout(() => r({ done: true, value: undefined }), 8000)),
+      ]);
+      if (chunk.done) break;
+      for (const line of decoder.decode(chunk.value).split("\n")) {
+        if (line.startsWith("data: ")) transcript += JSON.parse(line.slice(6)).data || "";
+      }
+    }
+    controller.abort();
+    assert.ok(transcript.includes("term-42"), `expected command output in transcript, got: ${JSON.stringify(transcript)}`);
+
+    const delPath = `/api/terminals/${sessionId}`;
+    const del = await fetch(`${baseUrl}${delPath}`, { method: "DELETE", headers: signFor("DELETE", delPath, delPath) });
+    assert.strictEqual(del.status, 200);
+  } finally {
+    await daemon.stop();
+  }
 });

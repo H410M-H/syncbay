@@ -5,19 +5,22 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { registerServiceRoute, getServiceRoute, removeServiceRoute, normalizeHostname } from "@/lib/edge/service-registry";
+import {
+  registerServiceRouteAsync,
+  removeServiceRouteAsync,
+  normalizeHostname,
+} from "@/lib/edge/service-registry";
+import { hasValidRunnerSecret } from "@/lib/edge/runner-auth";
 
 export const dynamic = "force-dynamic";
 
 function verifyRunnerAuth(req: NextRequest): boolean {
   const configuredSecret = process.env.RUNNER_SECRET || process.env.SYNCBAY_WEBHOOK_SECRET;
-  if (!configuredSecret) return true; // Open in local dev / simulated test environments
-
-  const authHeader = req.headers.get("authorization") || req.headers.get("x-runner-secret");
-  if (!authHeader) return false;
-
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
-  return token === configuredSecret;
+  if (!configuredSecret) {
+    // Open only in local dev / simulated test environments; production must configure a secret
+    return process.env.NODE_ENV !== "production";
+  }
+  return hasValidRunnerSecret(req.headers);
 }
 
 export async function POST(req: NextRequest) {
@@ -27,7 +30,7 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json();
-    const { hostname, targetPort, status = "ACTIVE", upstreamUrl } = body;
+    const { hostname, targetPort, status = "ACTIVE", upstreamUrl, isLocal } = body;
 
     if (!hostname || typeof hostname !== "string") {
       return NextResponse.json({ error: "Hostname is required" }, { status: 400 });
@@ -42,11 +45,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Invalid targetPort (must be integer between 1 and 65535)" }, { status: 400 });
     }
 
-    registerServiceRoute(cleanHost, targetPort, status, upstreamUrl);
+    if (isLocal !== undefined && typeof isLocal !== "boolean") {
+      return NextResponse.json({ error: "Invalid isLocal (must be boolean)" }, { status: 400 });
+    }
+
+    const route = await registerServiceRouteAsync(cleanHost, targetPort, status, upstreamUrl, isLocal);
 
     return NextResponse.json({
       success: true,
-      route: getServiceRoute(cleanHost),
+      route,
     });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
@@ -67,7 +74,7 @@ export async function DELETE(req: NextRequest) {
     }
 
     const cleanHost = normalizeHostname(hostname);
-    const removed = removeServiceRoute(cleanHost);
+    const removed = await removeServiceRouteAsync(cleanHost);
     return NextResponse.json({ success: true, removed });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });

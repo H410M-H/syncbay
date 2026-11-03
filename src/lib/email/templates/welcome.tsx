@@ -54,4 +54,3 @@ export const WelcomeEmail = ({ name = 'User', loginUrl = 'https://syncbay.app/lo
   );
 };
 
-export default WelcomeEmail;

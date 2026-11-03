@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { validateBearerToken, checkScope } from "@/lib/api/auth-token";
-import { databaseProvider } from "@/lib/database-provider";
+import { databaseProvider, attachDatabaseVariables } from "@/lib/database-provider";
 
 export const dynamic = "force-dynamic";
 
@@ -11,7 +11,7 @@ export async function GET(req: NextRequest) {
 
     const databases = await db.databaseInstance.findMany({
       where: {
-        environment: { project: { workspaceId: auth.workspaceId } },
+        environment: { project: { workspaceId: auth.workspaceId, deletedAt: null } },
       },
       include: {
         environment: { select: { name: true, project: { select: { name: true } } } },
@@ -24,6 +24,7 @@ export async function GET(req: NextRequest) {
         id: d.id,
         name: d.name,
         provider: d.provider,
+        status: d.status,
         region: d.region,
         project: d.environment.project.name,
         environment: d.environment.name,
@@ -49,7 +50,7 @@ export async function POST(req: NextRequest) {
     }
 
     const project = await db.project.findFirst({
-      where: { id: body.projectId, workspaceId: auth.workspaceId },
+      where: { id: body.projectId, workspaceId: auth.workspaceId, deletedAt: null },
       include: { environments: true },
     });
 
@@ -60,26 +61,66 @@ export async function POST(req: NextRequest) {
     const targetEnv =
       project.environments.find((e) => e.name === (body.environment || "production")) ||
       project.environments[0];
+    if (!targetEnv) {
+      return NextResponse.json(
+        { error: "Project has no environments; create an environment before provisioning a database" },
+        { status: 409 }
+      );
+    }
 
-    const provider = (body.provider || "POSTGRES").toUpperCase() as "POSTGRES" | "REDIS" | "MYSQL";
-    const creds = await databaseProvider.provision({
-      projectId: project.id,
-      environmentId: targetEnv.id,
-      name: body.name.trim(),
-      provider,
-      region: body.region || "us-east-1",
-    });
+    const provider = String(body.provider || "POSTGRES").toUpperCase();
+    if (provider !== "POSTGRES" && provider !== "REDIS" && provider !== "MYSQL") {
+      return NextResponse.json({ error: "Field 'provider' must be one of POSTGRES, REDIS, MYSQL" }, { status: 400 });
+    }
+    const name = String(body.name).trim();
+    const region = body.region || "us-east-1";
 
-    const instance = await db.databaseInstance.create({
+    const pending = await db.databaseInstance.create({
       data: {
         environmentId: targetEnv.id,
-        name: body.name.trim(),
+        name,
         provider,
-        partnerDbId: creds.partnerDbId,
-        connectionUrl: creds.connectionUrl,
-        region: body.region || "us-east-1",
+        connectionUrl: "",
+        status: "PROVISIONING",
+        region,
         storageGb: body.storageGb ? parseInt(body.storageGb, 10) : 1,
       },
+    });
+
+    let creds;
+    try {
+      creds = await databaseProvider.provision({
+        id: pending.id,
+        projectId: project.id,
+        environmentId: targetEnv.id,
+        name,
+        provider,
+        region,
+      });
+    } catch (provisionErr: any) {
+      await db.databaseInstance.update({ where: { id: pending.id }, data: { status: "FAILED" } }).catch(() => null);
+      return NextResponse.json({ error: `Database provisioning failed: ${provisionErr.message}` }, { status: 502 });
+    }
+
+    const instance = await db.databaseInstance.update({
+      where: { id: pending.id },
+      data: {
+        partnerDbId: creds.partnerDbId,
+        connectionUrl: creds.connectionUrl,
+        host: creds.host,
+        port: creds.port,
+        containerId: creds.containerId,
+        status: "ACTIVE",
+        lastHealthAt: new Date(),
+      },
+    });
+
+    await attachDatabaseVariables(db, {
+      workspaceId: auth.workspaceId,
+      environmentId: targetEnv.id,
+      name,
+      provider,
+      connectionUrl: creds.connectionUrl,
     });
 
     return NextResponse.json(
@@ -87,6 +128,7 @@ export async function POST(req: NextRequest) {
         id: instance.id,
         name: instance.name,
         provider: instance.provider,
+        status: instance.status,
         region: instance.region,
         connectionUrl: creds.connectionUrl,
         cliCommand: creds.cliCommand,

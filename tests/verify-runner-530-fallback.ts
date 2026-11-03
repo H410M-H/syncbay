@@ -10,6 +10,9 @@
  * 6. Edge Middleware preserves local routing when isLocal: true despite RUNNER_URL env var.
  * 7. Serverless Vercel fallback simulation in LocalRunnerDriver and full end-to-end executeDeployment without loopback probe hang.
  * 8. Status check error count cap preventing infinite polling loops.
+ * 9. Canonical re-signed retries, backoff schedule, production secret enforcement.
+ * 10. No local fallback on AuthenticationError or with RUNNER_FALLBACK_LOCAL=false.
+ * 11. Runner exitCode is included in the recorded deployment error.
  */
 
 import assert from "node:assert";
@@ -20,6 +23,10 @@ import {
   RunnerDriverFactory,
   getRunnerDriver,
   RunnerDriverError,
+  AuthenticationError,
+  signRequest,
+  computeBackoffDelay,
+  resolveRunnerSecret,
 } from "../src/lib/orchestrator/runner-driver";
 import { executeDeployment } from "../src/lib/orchestrator/engine";
 import {
@@ -27,7 +34,7 @@ import {
   getServiceRoute,
   clearServiceRoutes,
 } from "../src/lib/edge/service-registry";
-import { middleware } from "../src/middleware";
+import { proxy as middleware } from "../src/proxy";
 
 async function runTests() {
   console.log("================================================================================");
@@ -71,6 +78,7 @@ async function runTests() {
       webhookSecret: "test-secret",
       fetchFn: mockFetch530 as any,
       timeoutMs: 1000,
+      retryBaseDelayMs: 10,
     });
 
     let threw = false;
@@ -94,16 +102,21 @@ async function runTests() {
     }
 
     assert.strictEqual(threw, true, "dispatchBuild must throw when all 530 attempts fail");
-    assert.strictEqual(fetchAttempts, 3, "dispatchBuild must retry 3 times on transient 530");
-    console.log("  ✔ WebhookRunnerDriver retried 3 times on HTTP 530 and sanitized HTML error output");
+    assert.strictEqual(fetchAttempts, 4, "dispatchBuild must make 4 attempts on transient 530");
+    console.log("  ✔ WebhookRunnerDriver made 4 attempts on HTTP 530 and sanitized HTML error output");
   }
 
   // ─── TEST 3: Recovery when HTTP 530 clears on retry ─────────────────────────
   console.log("\n[3] Testing WebhookRunnerDriver recovery from transient HTTP 530...");
   {
     let attempts = 0;
-    const mockFetchRecovering = async (url: string) => {
+    const seenHeaders: Array<Record<string, string>> = [];
+    const seenBodies: string[] = [];
+    const mockFetchRecovering = async (url: string, init: any) => {
       attempts++;
+      seenHeaders.push(init.headers);
+      seenBodies.push(init.body);
+      if (attempts === 1) await new Promise((r) => setTimeout(r, 5)); // force a distinct timestamp
       if (attempts === 1) {
         return {
           ok: false,
@@ -123,6 +136,7 @@ async function runTests() {
       webhookSecret: "test-secret",
       fetchFn: mockFetchRecovering as any,
       timeoutMs: 1000,
+      retryBaseDelayMs: 10,
     });
 
     const res = await driver.dispatchBuild({
@@ -135,7 +149,14 @@ async function runTests() {
     assert.strictEqual(res.jobId, "job_recovered_123");
     assert.strictEqual(res.status, "ACTIVE");
     assert.strictEqual(attempts, 2, "Recovered on attempt #2");
-    console.log("  ✔ WebhookRunnerDriver successfully recovered after transient 530 on attempt #1");
+    const [h1, h2] = seenHeaders;
+    assert.notStrictEqual(h1["X-Syncbay-Timestamp"], h2["X-Syncbay-Timestamp"], "Retry must carry a fresh timestamp");
+    assert.notStrictEqual(h1["X-Syncbay-Signature"], h2["X-Syncbay-Signature"], "Retry must be re-signed");
+    for (let i = 0; i < 2; i++) {
+      const expected = signRequest("test-secret", "POST", "/api/builds", seenBodies[i], seenHeaders[i]["X-Syncbay-Timestamp"]);
+      assert.strictEqual(seenHeaders[i]["X-Syncbay-Signature"], expected.headerValue, "Signature covers ts.METHOD.path.body");
+    }
+    console.log("  ✔ WebhookRunnerDriver recovered after transient 530 and re-signed the retry with a fresh timestamp");
   }
 
   // ─── TEST 4: Orchestrator Engine Remote-to-Local Fallback on HTTP 530 ────────
@@ -267,7 +288,8 @@ async function runTests() {
       console.log("  ✔ Deployment status ACTIVE and health check passed on local port");
       console.log("  ✔ Edge registry entry marked with isLocal: true");
     } finally {
-      process.env.RUNNER_URL = originalRunnerUrl;
+      if (originalRunnerUrl === undefined) delete process.env.RUNNER_URL;
+      else process.env.RUNNER_URL = originalRunnerUrl;
       globalThis.fetch = originalFetch;
     }
   }
@@ -307,7 +329,8 @@ async function runTests() {
       );
       console.log("  ✔ Middleware routed directly to 127.0.0.1:10055 and avoided external runner tunnel");
     } finally {
-      process.env.RUNNER_URL = originalRunnerUrl;
+      if (originalRunnerUrl === undefined) delete process.env.RUNNER_URL;
+      else process.env.RUNNER_URL = originalRunnerUrl;
     }
   }
 
@@ -392,7 +415,8 @@ async function runTests() {
       assert.strictEqual(e2eResult.status, "ACTIVE", "Must be ACTIVE in serverless Vercel execution");
       console.log("  ✔ Orchestrator executeDeployment end-to-end successfully executed in Vercel mode without probe hang");
     } finally {
-      process.env.VERCEL = origVercel;
+      if (origVercel === undefined) delete process.env.VERCEL;
+      else process.env.VERCEL = origVercel;
     }
   }
 
@@ -449,8 +473,130 @@ async function runTests() {
     }
   }
 
+
+  // ─── TEST 8: Backoff schedule & production secret enforcement ───────────────
+  console.log("\n[8] Testing backoff schedule and production secret enforcement...");
+  {
+    assert.strictEqual(computeBackoffDelay(0, 500, 8000, () => 1), 500);
+    assert.strictEqual(computeBackoffDelay(3, 500, 8000, () => 1), 4000);
+    assert.strictEqual(computeBackoffDelay(10, 500, 8000, () => 1), 8000, "Backoff caps at 8s");
+    assert.strictEqual(computeBackoffDelay(2, 500, 8000, () => 0), 1000, "Jitter keeps at least half the delay");
+
+    const saved = {
+      NODE_ENV: process.env.NODE_ENV,
+      RUNNER_SECRET: process.env.RUNNER_SECRET,
+      RUNNER_WEBHOOK_SECRET: process.env.RUNNER_WEBHOOK_SECRET,
+      SYNCBAY_WEBHOOK_SECRET: process.env.SYNCBAY_WEBHOOK_SECRET,
+    };
+    const env = process.env as Record<string, string | undefined>;
+    delete env.RUNNER_SECRET;
+    delete env.RUNNER_WEBHOOK_SECRET;
+    delete env.SYNCBAY_WEBHOOK_SECRET;
+    try {
+      env.NODE_ENV = "production";
+      assert.throws(() => resolveRunnerSecret(), AuthenticationError, "Missing secret must throw in production");
+      assert.throws(() => getRunnerDriver("webhook"), AuthenticationError, "Webhook driver must not use a default secret in production");
+      env.RUNNER_SECRET = "prod-secret";
+      assert.strictEqual(resolveRunnerSecret(), "prod-secret");
+      env.NODE_ENV = "development";
+      delete env.RUNNER_SECRET;
+      assert.ok(resolveRunnerSecret().length > 0, "Dev default secret is available outside production");
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete env[k];
+        else env[k] = v;
+      }
+    }
+    console.log("  ✔ Exponential backoff with jitter capped at 8s; production refuses to run without RUNNER_SECRET");
+  }
+
+  // Shared fixtures for engine-level fallback tests
+  const fbSrv = {
+    id: "srv_fb_ctrl",
+    name: "fb-ctrl-app",
+    sourceType: "empty",
+    port: 3000,
+    environment: { id: "env_fb", name: "production", isPrEnv: false, databases: [], project: { id: "p", name: "P", slug: "p" } },
+    variables: [],
+    domains: [],
+  };
+  const fbBld = { id: "bld_fb_ctrl", serviceId: fbSrv.id, status: "QUEUED" };
+  const fbDep = { id: "dep_fb_ctrl", serviceId: fbSrv.id, buildId: fbBld.id, status: "QUEUED" };
+  (globalThis as any).prisma.service.findUnique = async () => fbSrv;
+  (globalThis as any).prisma.build.findUnique = async () => fbBld;
+  (globalThis as any).prisma.deployment.findUnique = async () => fbDep;
+
+  async function runWithMockDriver(mockDriver: any): Promise<{ error?: Error; requested: string[] }> {
+    const requested: string[] = [];
+    const origCreate = RunnerDriverFactory.createDriver;
+    RunnerDriverFactory.createDriver = ((type: any) => {
+      requested.push(type);
+      return mockDriver;
+    }) as any;
+    try {
+      await executeDeployment(fbDep.id, fbBld.id, fbSrv.id, { serviceId: fbSrv.id, driverType: "webhook" });
+      return { requested };
+    } catch (error: any) {
+      return { error, requested };
+    } finally {
+      RunnerDriverFactory.createDriver = origCreate;
+    }
+  }
+
+  // ─── TEST 9: No local fallback on AuthenticationError / RUNNER_FALLBACK_LOCAL=false ──
+  console.log("\n[9] Testing fallback suppression for auth errors and RUNNER_FALLBACK_LOCAL=false...");
+  {
+    const authFailDriver = {
+      type: "webhook",
+      dispatchBuild: async () => {
+        throw new AuthenticationError("Runner rejected HMAC authentication (HTTP 401)");
+      },
+      checkStatus: async () => ({ jobId: "x", status: "FAILED" }),
+      stopContainer: async () => ({ containerId: "x", stopped: true }),
+    };
+    const authRun = await runWithMockDriver(authFailDriver);
+    assert.ok(authRun.error, "AuthenticationError must fail the deployment");
+    assert.ok(/HMAC authentication/.test(authRun.error!.message));
+    assert.ok(!authRun.requested.includes("local"), "Engine must not fall back to local on AuthenticationError");
+
+    const transientDriver = {
+      ...authFailDriver,
+      dispatchBuild: async () => {
+        throw new RunnerDriverError("Runner dispatch failed (HTTP 530): tunnel down", "DISPATCH_FAILED", "webhook");
+      },
+    };
+    const prevFallback = process.env.RUNNER_FALLBACK_LOCAL;
+    process.env.RUNNER_FALLBACK_LOCAL = "false";
+    try {
+      const noFallbackRun = await runWithMockDriver(transientDriver);
+      assert.ok(noFallbackRun.error && /HTTP 530/.test(noFallbackRun.error.message), "Dispatch error must surface");
+      assert.ok(!noFallbackRun.requested.includes("local"), "RUNNER_FALLBACK_LOCAL=false disables the local fallback");
+    } finally {
+      if (prevFallback === undefined) delete process.env.RUNNER_FALLBACK_LOCAL;
+      else process.env.RUNNER_FALLBACK_LOCAL = prevFallback;
+    }
+    console.log("  ✔ AuthenticationError and RUNNER_FALLBACK_LOCAL=false both skip the local fallback");
+  }
+
+  // ─── TEST 10: Runner exitCode is recorded with the deployment error ─────────
+  console.log("\n[10] Testing exitCode propagation into the recorded deployment error...");
+  {
+    const failingDriver = {
+      type: "webhook",
+      dispatchBuild: async () => ({ jobId: "job_exit_137", status: "BUILDING" }),
+      checkStatus: async () => ({ jobId: "job_exit_137", status: "FAILED", exitCode: 137, errorMessage: "Container killed (OOM)" }),
+      stopContainer: async () => ({ containerId: "x", stopped: true }),
+    };
+    const run = await runWithMockDriver(failingDriver);
+    assert.ok(run.error, "FAILED status must fail the deployment");
+    assert.ok(run.error!.message.includes("exit code 137"), `Error must include exit code, got: ${run.error!.message}`);
+    const { logEventBus } = await import("../src/lib/telemetry/event-bus");
+    assert.ok((logEventBus.getError(fbDep.id) || "").includes("exit code 137"), "recordError must include the exit code");
+    console.log("  ✔ exitCode 137 from runner status is included in the thrown and recorded error");
+  }
+
   console.log("\n================================================================================");
-  console.log("🎉 ALL 7 RUNNER HTTP 530 & RESILIENT FALLBACK CHECKS PASSED PERFECTLY!");
+  console.log("🎉 ALL 10 RUNNER HTTP 530 & RESILIENT FALLBACK CHECKS PASSED PERFECTLY!");
   console.log("================================================================================");
   process.exit(0);
 }

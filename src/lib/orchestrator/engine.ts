@@ -5,10 +5,12 @@ import { generateNixpacksPlan } from "@/lib/buildpack/nixpacks";
 import { resolveEnvironmentVariables, type DatabaseRef } from "@/lib/buildpack/resolver";
 import { generateDefaultSubdomain } from "@/lib/domain-service";
 import { runKnipAnalysis } from "@/lib/buildpack/knip-analyzer";
-import { registerServiceRoute } from "@/lib/edge/service-registry";
+import { registerServiceRouteAsync } from "@/lib/edge/service-registry";
+import { applyDatabaseEnv } from "@/lib/database-provider";
 import {
   getRunnerDriver,
   RunnerDriverFactory,
+  AuthenticationError,
   type BuildDispatchParams,
   type BuildDispatchResult,
   type BuildStatusResult,
@@ -110,7 +112,7 @@ export async function executeDeployment(
 
     // Register initial state in Edge Service Registry (routes traffic to preview splash while building)
     for (const host of targetHostnames) {
-      registerServiceRoute(host, undefined, "BUILDING");
+      await registerServiceRouteAsync(host, undefined, "BUILDING");
     }
 
     // Check if repository needs authenticated git clone credentials
@@ -186,6 +188,9 @@ export async function executeDeployment(
     for (const v of resolved) {
       envMap[v.key] = v.value;
     }
+    // Managed databases: DATABASE_URL / REDIS_URL / <NAME>_URL, never overriding user-set keys
+    const dbInjected = applyDatabaseEnv(envMap, service?.environment?.databases || []);
+    if (dbInjected.length) log(`[env] Linked managed database variables: ${dbInjected.join(", ")}`, "stdout");
 
     // Phase 2: Update to DEPLOYING
     await db.deployment.update({
@@ -194,7 +199,7 @@ export async function executeDeployment(
     }).catch(() => null);
 
     for (const host of targetHostnames) {
-      registerServiceRoute(host, undefined, "DEPLOYING");
+      await registerServiceRouteAsync(host, undefined, "DEPLOYING");
     }
 
     // Phase 2.5: Dispatch to Runner Driver Subsystem
@@ -254,8 +259,17 @@ export async function executeDeployment(
       dispatchRes = await driver.dispatchBuild(dispatchParams);
     } catch (dispatchErr: any) {
       // If remote runner dispatch failed (HTTP 530 Cloudflare tunnel error, 502/503/504, connection refused, or timeout),
-      // seamlessly activate local runner driver fallback so project builds and deploys successfully for live production.
-      if (driver.type !== "local" && process.env.RUNNER_FORCE_REMOTE !== "true") {
+      // fall back to the local runner driver. Authentication failures are never masked by a fallback, and the
+      // fallback can be disabled with RUNNER_FALLBACK_LOCAL=false (or RUNNER_FORCE_REMOTE=true).
+      const isAuthError =
+        dispatchErr instanceof AuthenticationError || dispatchErr?.code === "AUTHENTICATION_ERROR";
+      const fallbackEnabled =
+        (process.env.RUNNER_FALLBACK_LOCAL ?? "true").toLowerCase() !== "false" &&
+        process.env.RUNNER_FORCE_REMOTE !== "true";
+      if (isAuthError) {
+        log(`[runner:error] Remote runner rejected authentication (${dispatchErr.message}). Check RUNNER_SECRET on both sides; not falling back to local.`, "stderr");
+      }
+      if (driver.type !== "local" && fallbackEnabled && !isAuthError) {
         log(`[runner:warn] Remote runner dispatch failed (${dispatchErr.message}). Activating local runner driver fallback...`, "system");
         driver = RunnerDriverFactory.createDriver("local");
         dispatchRes = await driver.dispatchBuild(dispatchParams);
@@ -268,6 +282,9 @@ export async function executeDeployment(
     let assignedPort = dispatchRes.assignedPort || service?.port || 3000;
     let containerId = dispatchRes.containerId;
     let lastErrorMessage: string | undefined;
+    let lastExitCode: number | undefined;
+    const withExitCode = (msg: string) =>
+      lastExitCode === undefined || /exit(?:ed with)? code \d+/i.test(msg) ? msg : `${msg} (exit code ${lastExitCode})`;
 
     if (finalStatus !== "ACTIVE" && finalStatus !== "FAILED" && finalStatus !== "CANCELLED") {
       log(`[runner] Build job ${dispatchRes.jobId} enqueued/running. Awaiting completion...`, "system");
@@ -293,6 +310,7 @@ export async function executeDeployment(
         if (check.port) assignedPort = check.port;
         if (check.containerId) containerId = check.containerId;
         if (check.errorMessage) lastErrorMessage = check.errorMessage;
+        if (typeof check.exitCode === "number") lastExitCode = check.exitCode;
 
         // Relay remote runner daemon logs to event bus
         if (check.logs && Array.isArray(check.logs) && check.logs.length > lastLogCount) {
@@ -304,7 +322,7 @@ export async function executeDeployment(
 
         if (finalStatus === "ACTIVE" || finalStatus === "FAILED" || finalStatus === "CANCELLED") {
           if (check.errorMessage) {
-            logEventBus.recordError(deploymentId, check.errorMessage);
+            logEventBus.recordError(deploymentId, withExitCode(check.errorMessage));
           }
           break;
         }
@@ -313,7 +331,7 @@ export async function executeDeployment(
 
     if (finalStatus !== "ACTIVE") {
       const err = lastErrorMessage || logEventBus.getError(deploymentId) || `Runner build failed with status: ${finalStatus}`;
-      throw new Error(err);
+      throw new Error(withExitCode(err));
     }
 
     const targetPort = assignedPort || service?.port || 3000;
@@ -378,7 +396,7 @@ export async function executeDeployment(
     // Shift traffic & promote to ACTIVE in Edge Service Registry
     const isLocalDriver = driver.type === "local";
     for (const host of targetHostnames) {
-      registerServiceRoute(host, targetPort, "ACTIVE", `http://127.0.0.1:${targetPort}`, isLocalDriver);
+      await registerServiceRouteAsync(host, targetPort, "ACTIVE", `http://127.0.0.1:${targetPort}`, isLocalDriver);
     }
     log(`[proxy] Edge reverse proxy targets shifted to container instance ${containerId || "active"} on port ${targetPort}`, "system");
     log(`[proxy] Service routing live at: https://${defaultUrl}`, "system");
@@ -412,7 +430,7 @@ export async function executeDeployment(
     logEventBus.recordError(deploymentId, error.message);
 
     for (const host of targetHostnames) {
-      registerServiceRoute(host, undefined, "FAILED");
+      await registerServiceRouteAsync(host, undefined, "FAILED");
     }
 
     await db.build.update({

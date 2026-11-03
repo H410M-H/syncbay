@@ -47,7 +47,7 @@ export async function provisionBucket(params: {
 }): Promise<BucketDetails> {
   const cleanName = slugifyBucketName(params.name);
   const projectSuffix = params.projectId.slice(-6).toLowerCase();
-  const r2BucketRef = `pw-bkt-${projectSuffix}-${cleanName}`;
+  const r2BucketRef = `sb-bkt-${projectSuffix}-${cleanName}`;
   const endpoint = `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
   const publicUrl = `https://${r2BucketRef}.r2.dev`;
 

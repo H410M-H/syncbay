@@ -4,7 +4,8 @@
  */
 
 import { z } from "zod";
-import { createTRPCRouter, publicProcedure, protectedProcedure } from "@/server/trpc";
+import { createTRPCRouter, publicProcedure, protectedProcedure, type TRPCContext } from "@/server/trpc";
+import { TRPCError } from "@trpc/server";
 import {
   getEdgeRegions,
   routeClientRequest,
@@ -14,6 +15,17 @@ import {
   getCoordinatesForCountry,
   purgeEdgeCache,
 } from "@/lib/edge/edge-router";
+
+/** Global edge controls affect every tenant: require OWNER/ADMIN of at least one workspace. */
+async function assertEdgeOperator(db: TRPCContext["db"], userId: string): Promise<void> {
+  const membership = await db.workspaceMember.findFirst({
+    where: { userId, role: { in: ["OWNER", "ADMIN"] } },
+    select: { id: true },
+  });
+  if (!membership) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Workspace OWNER or ADMIN role required for edge controls" });
+  }
+}
 
 export const edgeRouter = createTRPCRouter({
   /** Get all 6 global edge regions and live statuses */
@@ -93,7 +105,8 @@ export const edgeRouter = createTRPCRouter({
         status: z.enum(["HEALTHY", "DEGRADED", "OUTAGE", "RESET"]),
       })
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
+      await assertEdgeOperator(ctx.db, ctx.session.user.id);
       setRegionStatusOverride(input.regionId, input.status);
       return {
         success: true,
@@ -121,7 +134,8 @@ export const edgeRouter = createTRPCRouter({
         })
         .optional()
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
+      await assertEdgeOperator(ctx.db, ctx.session.user.id);
       return purgeEdgeCache(input || { all: true });
     }),
 });

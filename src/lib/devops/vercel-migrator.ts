@@ -17,7 +17,7 @@ export interface VercelCronConfig {
   schedule: string;
 }
 
-export interface VercelRouteRule {
+interface VercelRouteRule {
   source: string;
   destination?: string;
   permanent?: boolean;

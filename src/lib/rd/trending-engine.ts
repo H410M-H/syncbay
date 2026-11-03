@@ -260,8 +260,21 @@ export function getFeatureVotes(): { feature: string; votes: number }[] {
   }));
 }
 
-export function voteForFeature(feature: string): { feature: string; totalVotes: number } {
+/** Per-user vote dedupe (in-memory, keyed by `${voterId}\u0000${feature}`). */
+const featureVoters: Set<string> = new Set();
+
+export function voteForFeature(
+  feature: string,
+  voterId?: string
+): { feature: string; totalVotes: number; alreadyVoted?: boolean } {
   const current = featureVotesStore.get(feature) || 0;
+  if (voterId) {
+    const key = `${voterId}\u0000${feature}`;
+    if (featureVoters.has(key)) {
+      return { feature, totalVotes: current, alreadyVoted: true };
+    }
+    featureVoters.add(key);
+  }
   const updated = current + 1;
   featureVotesStore.set(feature, updated);
   return { feature, totalVotes: updated };

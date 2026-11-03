@@ -9,7 +9,13 @@
  * 5. Cloudflare for SaaS Custom Hostnames & auto-managed SSL API.
  * 6. tRPC domain endpoints (create, records, status, verify, delete, provisionTunnel).
  * 7. Edge Ingress reconnecting pulse and 503 health probe handling.
+ * 9. Cloudflare API JSON ingress, atomic config writes, and reloadTunnel() (API + local restart).
+ * 10. Runner cloudflared config-file mode with post-deploy / post-stop ingress hooks.
  */
+
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 
 import { EventEmitter } from "node:events";
 import * as http from "node:http";
@@ -31,9 +37,11 @@ import { RunnerDaemon } from "../runner/src/index";
 import { PortManager } from "../runner/src/port-manager";
 import { cloudflareApiClient } from "../src/lib/tunnel/cloudflare-api";
 import { domainRouter } from "../src/server/routers/domain";
-import { middleware } from "../src/middleware";
+import { proxy as middleware } from "../src/proxy";
 import { NextRequest } from "next/server";
 import { POST as edgeRegisterPost, DELETE as edgeRegisterDelete } from "../src/app/api/v1/services/edge-register/route";
+import { generateTunnelConfigJson, writeTunnelConfig, reloadTunnel } from "../src/lib/tunnel/tunnel-config";
+import { createTunnelDriver as createRunnerTunnelDriver } from "../runner/src/tunnel-driver";
 
 // Mock child process helper for deterministic test simulation
 function createMockChildProcess(options: { autoEmitRunning?: boolean; shouldCrash?: boolean; crashDelayMs?: number } = {}) {
@@ -541,6 +549,115 @@ async function runTunnelIngressVerification() {
   const authLookup = getServiceRoute("secure-api.syncbay.app");
   assert(authLookup !== null && authLookup.targetPort === 10050, "edge-register recorded route in Edge Registry");
   delete process.env.RUNNER_SECRET;
+
+  // ─── TEST 9: Cloudflare API JSON ingress, atomic write, reloadTunnel ─────────
+  console.log("\n[9] Testing Cloudflare API JSON ingress, atomic config writes, and tunnel reload...");
+
+  const ingressRoutes = [
+    { hostname: "*.preview.syncbay.app", targetPort: 10010, targetHost: "127.0.0.1" },
+    { hostname: "web-production.syncbay.app", targetPort: 10001, targetHost: "127.0.0.1", originRequest: { connectTimeout: "30s", noTLSVerify: true } },
+  ];
+  const json = generateTunnelConfigJson({ routes: ingressRoutes, controlPlaneFallback: "http://127.0.0.1:3000" });
+  const ing = json.config.ingress;
+  assert(ing[0].hostname === "web-production.syncbay.app" && ing[0].service === "http://127.0.0.1:10001", "JSON ingress lists specific hosts first, mapped to 127.0.0.1:<port>");
+  assert((ing[0].originRequest as any)?.connectTimeout === 30, "JSON originRequest durations are converted to API seconds");
+  assert(ing[1].hostname === "*.preview.syncbay.app", "JSON ingress lists wildcard hosts after specific ones");
+  assert(ing[ing.length - 1].service === "http_status:404" && ing[ing.length - 1].hostname === undefined, "JSON ingress ends with the catch-all rule");
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "syncbay-tunnel-"));
+  const cfgPath = path.join(tmpDir, "config.yml");
+  await writeTunnelConfig(cfgPath, "tunnel: a\n");
+  await writeTunnelConfig(cfgPath, "tunnel: b\n");
+  assert(fs.readFileSync(cfgPath, "utf8") === "tunnel: b\n", "writeTunnelConfig replaces the config content");
+  assert(fs.readdirSync(tmpDir).length === 1, "writeTunnelConfig leaves no temp files behind (tmp + rename)");
+
+  const savedCfEnv = {
+    CLOUDFLARE_TUNNEL_ID: process.env.CLOUDFLARE_TUNNEL_ID,
+    CLOUDFLARE_ACCOUNT_ID: process.env.CLOUDFLARE_ACCOUNT_ID,
+    CLOUDFLARE_API_TOKEN: process.env.CLOUDFLARE_API_TOKEN,
+  };
+  const originalFetch = globalThis.fetch;
+  const apiCalls: Array<{ url: string; method?: string; body: any; auth?: string }> = [];
+  try {
+    process.env.CLOUDFLARE_TUNNEL_ID = "tun_abc";
+    process.env.CLOUDFLARE_ACCOUNT_ID = "acct_123";
+    process.env.CLOUDFLARE_API_TOKEN = "cf-token";
+    globalThis.fetch = (async (url: any, init: any = {}) => {
+      apiCalls.push({ url: String(url), method: init.method, body: JSON.parse(init.body), auth: init.headers?.Authorization });
+      return new Response(JSON.stringify({ success: true, errors: [], result: { tunnel_id: "tun_abc", version: 7 } }), { status: 200 });
+    }) as any;
+
+    const apiResult = await reloadTunnel({ routes: ingressRoutes });
+    assert(apiResult.mode === "api" && apiResult.version === 7, "reloadTunnel uses the Cloudflare API when tunnel/account/token are set");
+    assert(apiCalls.length === 1 && apiCalls[0].method === "PUT", "reloadTunnel issues a single PUT");
+    assert(apiCalls[0].url === "https://api.cloudflare.com/client/v4/accounts/acct_123/cfd_tunnel/tun_abc/configurations", "PUT targets /accounts/{acct}/cfd_tunnel/{id}/configurations");
+    assert(apiCalls[0].auth === "Bearer cf-token", "PUT is authenticated with CLOUDFLARE_API_TOKEN");
+    assert(JSON.stringify(apiCalls[0].body) === JSON.stringify(generateTunnelConfigJson({ routes: ingressRoutes })), "PUT body is the generateTunnelConfigJson() shape");
+
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ success: false, errors: [{ code: 1003, message: "Invalid tunnel id" }] }), { status: 400 })) as any;
+    let apiFailed = false;
+    try {
+      await reloadTunnel({ routes: ingressRoutes });
+    } catch (err: any) {
+      apiFailed = err.message.includes("Invalid tunnel id");
+    }
+    assert(apiFailed, "reloadTunnel surfaces Cloudflare API errors");
+
+    delete process.env.CLOUDFLARE_API_TOKEN;
+    const restarts: string[] = [];
+    const localResult = await reloadTunnel(
+      { tunnelId: "tun_local", routes: ingressRoutes },
+      { configPath: cfgPath, runCommand: async (cmd) => restarts.push(cmd) }
+    );
+    const yaml = fs.readFileSync(cfgPath, "utf8");
+    assert(localResult.mode === "local" && localResult.configPath === cfgPath, "reloadTunnel falls back to the local config without API credentials");
+    assert(yaml.includes("tunnel: tun_local") && yaml.includes("service: http://127.0.0.1:10001"), "Local reload writes the YAML ingress");
+    assert(restarts.length === 1 && restarts[0] === "systemctl restart cloudflared", "Local reload restarts cloudflared (no SIGHUP reload)");
+    assert(fs.readdirSync(tmpDir).length === 1, "Local reload write is atomic");
+  } finally {
+    globalThis.fetch = originalFetch;
+    for (const [k, v] of Object.entries(savedCfEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+
+  // ─── TEST 10: Runner config-file mode & post-deploy / post-stop hooks ────────
+  console.log("\n[10] Testing runner cloudflared config-file mode and ingress hooks...");
+
+  const runnerCfgPath = path.join(tmpDir, "runner-cloudflared.yml");
+  const spawnCalls: string[][] = [];
+  const runnerTunnel = createRunnerTunnelDriver({
+    driver: "cloudflare",
+    configFile: runnerCfgPath,
+    tunnelId: "tun_runner",
+    ingressUrl: "http://127.0.0.1:8080",
+    heartbeatIntervalMs: 60000,
+    logHandler: () => {},
+    customSpawner: (_cmd: string, args: string[]) => {
+      spawnCalls.push(args);
+      return createMockChildProcess({ autoEmitRunning: true });
+    },
+  });
+  await runnerTunnel.start();
+  assert(spawnCalls[0].join(" ") === `tunnel --no-autoupdate --config ${runnerCfgPath} run`, "cloudflared runs as `tunnel --config <file> run`");
+  assert(fs.readFileSync(runnerCfgPath, "utf8").includes("service: http://127.0.0.1:8080"), "Initial config routes unknown hosts to the runner daemon");
+
+  const hookDaemon = new RunnerDaemon({ port: 0, host: "127.0.0.1", portManager: testPortManager, tunnelDriver: runnerTunnel });
+  const hookJob: any = { jobId: "job_tunnel_hook", containerId: "proc_4242", status: "ACTIVE", logs: [], sseClients: new Set() };
+  await (hookDaemon as any).addTunnelIngress(hookJob, { jobId: "job_tunnel_hook", subdomain: "api-svc", serviceName: "api-svc" }, 32055, () => {});
+  const afterDeploy = fs.readFileSync(runnerCfgPath, "utf8");
+  assert(afterDeploy.includes(`hostname: "api-svc.syncbay.app"\n    service: http://127.0.0.1:32055`), "Post-deploy hook maps <subdomain>.syncbay.app to 127.0.0.1:<port>");
+  assert(!afterDeploy.includes(".localhost"), "Post-deploy hook skips *.localhost hosts");
+  assert(spawnCalls.length === 2, "cloudflared restarted to apply the new ingress");
+  assert(runnerTunnel.getStatus() === "RUNNING", "Tunnel is RUNNING again after restart");
+
+  await (hookDaemon as any).removeTunnelIngress("proc_4242");
+  assert(!fs.readFileSync(runnerCfgPath, "utf8").includes("api-svc.syncbay.app"), "Post-stop hook removes the service's ingress rule");
+  assert(hookDaemon.getIngressRoutes().length === 0, "Daemon ingress table is empty after stop");
+  await runnerTunnel.stop();
+  fs.rmSync(tmpDir, { recursive: true, force: true });
 
   console.log("\n================================================================================");
   console.log(`🎉 ALL ${passedTests} GLOBAL EDGE TUNNEL & CUSTOM DOMAIN INGRESS VERIFICATIONS PASSED!`);
