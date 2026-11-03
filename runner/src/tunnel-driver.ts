@@ -7,6 +7,8 @@
 
 import { EventEmitter } from "node:events";
 import { spawn, type ChildProcess } from "node:child_process";
+import * as fs from "node:fs";
+import { generateRunnerTunnelYaml, writeFileAtomic, type TunnelIngressRoute } from "./tunnel-config.ts";
 
 export type TunnelStatus =
   | "STOPPED"
@@ -24,6 +26,15 @@ export interface TunnelDriverConfig {
   ingressUrl?: string;
   hostname?: string;
   cloudflaredBinPath?: string;
+  /**
+   * Locally-managed config mode: path of the cloudflared YAML (`cloudflared tunnel --config <file> run`).
+   * The runner rewrites it with per-service ingress after every deploy/stop and restarts cloudflared.
+   */
+  configFile?: string;
+  /** Named tunnel UUID written to the config file (`tunnel:`); required in config-file mode. */
+  tunnelId?: string;
+  /** cloudflared credentials JSON for the named tunnel (defaults to /etc/cloudflared/<tunnelId>.json). */
+  credentialsFile?: string;
   sshBastionHost?: string;
   sshPort?: number;
   sshUser?: string;
@@ -53,6 +64,11 @@ export interface TunnelDriver {
   getStatus(): TunnelStatus;
   getStats(): TunnelDriverStats;
   checkHealth(): Promise<boolean>;
+  /**
+   * Applies per-service ingress routes. Returns true when the tunnel config was rewritten
+   * (config-file mode); drivers without local ingress return false.
+   */
+  updateIngress?(routes: TunnelIngressRoute[]): Promise<boolean>;
   on(event: string, listener: (...args: any[]) => void): this;
   off(event: string, listener: (...args: any[]) => void): this;
 }
@@ -118,6 +134,10 @@ abstract class BaseTunnelDriver extends EventEmitter implements TunnelDriver {
   public abstract start(): Promise<void>;
   public abstract stop(): Promise<void>;
   public abstract checkHealth(): Promise<boolean>;
+
+  public async updateIngress(_routes: TunnelIngressRoute[]): Promise<boolean> {
+    return false;
+  }
 }
 
 export class CloudflareTunnelDriver extends BaseTunnelDriver {
@@ -149,9 +169,53 @@ export class CloudflareTunnelDriver extends BaseTunnelDriver {
     return this.startPromise;
   }
 
+  private ingressRoutes: TunnelIngressRoute[] = [];
+  private ingressUpdate: Promise<boolean> = Promise.resolve(false);
+
+  private renderConfig(): string {
+    return generateRunnerTunnelYaml({
+      tunnelId: this.config.tunnelId!,
+      credentialsFile: this.config.credentialsFile,
+      routes: this.ingressRoutes,
+      // Unknown hosts keep flowing to the runner daemon (x-target-port reverse proxy)
+      catchAllService: this.config.ingressUrl || "http_status:404",
+    });
+  }
+
+  /**
+   * Config-file mode: rewrites the ingress YAML atomically and restarts cloudflared, which
+   * has no SIGHUP/hot reload for locally-managed config. Updates are serialized.
+   */
+  public override async updateIngress(routes: TunnelIngressRoute[]): Promise<boolean> {
+    if (!this.config.configFile) return false;
+    if (!this.config.tunnelId) {
+      this.log("warn", "configFile is set but tunnelId (CLOUDFLARE_TUNNEL_ID) is missing; skipping ingress update");
+      return false;
+    }
+    this.ingressRoutes = [...routes];
+    const run = async (): Promise<boolean> => {
+      await writeFileAtomic(this.config.configFile!, this.renderConfig());
+      this.log("info", `Wrote ${routes.length} ingress rule(s) to ${this.config.configFile}`);
+      if (this.childProcess && !this.isStopping) {
+        this.log("info", "Restarting cloudflared to apply the new ingress config");
+        await this.stop();
+        await this.start();
+      }
+      return true;
+    };
+    this.ingressUpdate = this.ingressUpdate.catch(() => false).then(run);
+    return this.ingressUpdate;
+  }
+
   private async performStart(): Promise<void> {
     this.isStopping = false;
     this.setStatus("STARTING", "Launching managed cloudflared tunnel process");
+
+    if (this.config.configFile && this.config.tunnelId && !fs.existsSync(this.config.configFile)) {
+      await writeFileAtomic(this.config.configFile, this.renderConfig()).catch((err: any) => {
+        this.log("warn", `Could not write initial tunnel config ${this.config.configFile}: ${err.message}`);
+      });
+    }
 
     return new Promise<void>((resolve, reject) => {
       let resolved = false;
@@ -161,7 +225,9 @@ export class CloudflareTunnelDriver extends BaseTunnelDriver {
           const bin = this.config.cloudflaredBinPath || "cloudflared";
           const args: string[] = ["tunnel", "--no-autoupdate"];
 
-          if (this.config.token) {
+          if (this.config.configFile) {
+            args.push("--config", this.config.configFile, "run");
+          } else if (this.config.token) {
             args.push("run", "--token", this.config.token);
           } else if (this.config.ingressUrl) {
             args.push("--url", this.config.ingressUrl);
@@ -583,10 +649,11 @@ export class SshReverseTunnelDriver extends BaseTunnelDriver {
 }
 
 export function createTunnelDriver(config: TunnelDriverConfig = {}): TunnelDriver {
+  const configFile = config.configFile || process.env.TUNNEL_CONFIG_FILE;
   const driverType: TunnelDriverType =
     config.driver ||
     (process.env.TUNNEL_DRIVER as TunnelDriverType) ||
-    (config.token || process.env.TUNNEL_TOKEN || process.env.CLOUDFLARE_TUNNEL_TOKEN ? "cloudflare" : "local");
+    (config.token || configFile || process.env.TUNNEL_TOKEN || process.env.CLOUDFLARE_TUNNEL_TOKEN ? "cloudflare" : "local");
 
   const resolvedConfig: TunnelDriverConfig = {
     ...config,
@@ -594,6 +661,9 @@ export function createTunnelDriver(config: TunnelDriverConfig = {}): TunnelDrive
     token: config.token || process.env.TUNNEL_TOKEN || process.env.CLOUDFLARE_TUNNEL_TOKEN,
     ingressUrl: config.ingressUrl || process.env.TUNNEL_INGRESS_URL || "http://127.0.0.1:3000",
     cloudflaredBinPath: config.cloudflaredBinPath || process.env.CLOUDFLARED_BIN || "cloudflared",
+    configFile,
+    tunnelId: config.tunnelId || process.env.CLOUDFLARE_TUNNEL_ID,
+    credentialsFile: config.credentialsFile || process.env.TUNNEL_CREDENTIALS_FILE,
   };
 
   switch (driverType) {

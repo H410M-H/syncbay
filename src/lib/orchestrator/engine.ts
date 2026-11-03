@@ -9,6 +9,7 @@ import { registerServiceRouteAsync } from "@/lib/edge/service-registry";
 import {
   getRunnerDriver,
   RunnerDriverFactory,
+  AuthenticationError,
   type BuildDispatchParams,
   type BuildDispatchResult,
   type BuildStatusResult,
@@ -254,8 +255,17 @@ export async function executeDeployment(
       dispatchRes = await driver.dispatchBuild(dispatchParams);
     } catch (dispatchErr: any) {
       // If remote runner dispatch failed (HTTP 530 Cloudflare tunnel error, 502/503/504, connection refused, or timeout),
-      // seamlessly activate local runner driver fallback so project builds and deploys successfully for live production.
-      if (driver.type !== "local" && process.env.RUNNER_FORCE_REMOTE !== "true") {
+      // fall back to the local runner driver. Authentication failures are never masked by a fallback, and the
+      // fallback can be disabled with RUNNER_FALLBACK_LOCAL=false (or RUNNER_FORCE_REMOTE=true).
+      const isAuthError =
+        dispatchErr instanceof AuthenticationError || dispatchErr?.code === "AUTHENTICATION_ERROR";
+      const fallbackEnabled =
+        (process.env.RUNNER_FALLBACK_LOCAL ?? "true").toLowerCase() !== "false" &&
+        process.env.RUNNER_FORCE_REMOTE !== "true";
+      if (isAuthError) {
+        log(`[runner:error] Remote runner rejected authentication (${dispatchErr.message}). Check RUNNER_SECRET on both sides; not falling back to local.`, "stderr");
+      }
+      if (driver.type !== "local" && fallbackEnabled && !isAuthError) {
         log(`[runner:warn] Remote runner dispatch failed (${dispatchErr.message}). Activating local runner driver fallback...`, "system");
         driver = RunnerDriverFactory.createDriver("local");
         dispatchRes = await driver.dispatchBuild(dispatchParams);
@@ -268,6 +278,9 @@ export async function executeDeployment(
     let assignedPort = dispatchRes.assignedPort || service?.port || 3000;
     let containerId = dispatchRes.containerId;
     let lastErrorMessage: string | undefined;
+    let lastExitCode: number | undefined;
+    const withExitCode = (msg: string) =>
+      lastExitCode === undefined || /exit(?:ed with)? code \d+/i.test(msg) ? msg : `${msg} (exit code ${lastExitCode})`;
 
     if (finalStatus !== "ACTIVE" && finalStatus !== "FAILED" && finalStatus !== "CANCELLED") {
       log(`[runner] Build job ${dispatchRes.jobId} enqueued/running. Awaiting completion...`, "system");
@@ -293,6 +306,7 @@ export async function executeDeployment(
         if (check.port) assignedPort = check.port;
         if (check.containerId) containerId = check.containerId;
         if (check.errorMessage) lastErrorMessage = check.errorMessage;
+        if (typeof check.exitCode === "number") lastExitCode = check.exitCode;
 
         // Relay remote runner daemon logs to event bus
         if (check.logs && Array.isArray(check.logs) && check.logs.length > lastLogCount) {
@@ -304,7 +318,7 @@ export async function executeDeployment(
 
         if (finalStatus === "ACTIVE" || finalStatus === "FAILED" || finalStatus === "CANCELLED") {
           if (check.errorMessage) {
-            logEventBus.recordError(deploymentId, check.errorMessage);
+            logEventBus.recordError(deploymentId, withExitCode(check.errorMessage));
           }
           break;
         }
@@ -313,7 +327,7 @@ export async function executeDeployment(
 
     if (finalStatus !== "ACTIVE") {
       const err = lastErrorMessage || logEventBus.getError(deploymentId) || `Runner build failed with status: ${finalStatus}`;
-      throw new Error(err);
+      throw new Error(withExitCode(err));
     }
 
     const targetPort = assignedPort || service?.port || 3000;

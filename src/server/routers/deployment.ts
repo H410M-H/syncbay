@@ -67,19 +67,21 @@ export const deploymentRouter = createTRPCRouter({
       }
 
       const runnerUrl = process.env.RUNNER_URL || "http://127.0.0.1:8080";
-      const runnerSecret = process.env.RUNNER_SECRET || process.env.SYNCBAY_WEBHOOK_SECRET || "syncbay-runner-secret";
-      const targetJobIds = [input.deploymentId, deployment.buildId].filter(Boolean) as string[];
+      const { resolveRunnerSecret, signRequest } = await import("@/lib/orchestrator/runner-driver");
+      let runnerSecret: string | undefined;
+      try {
+        runnerSecret = resolveRunnerSecret();
+      } catch {
+        runnerSecret = undefined; // production without RUNNER_SECRET: skip the runner lookup
+      }
+      const targetJobIds = (runnerSecret ? [input.deploymentId, deployment.buildId].filter(Boolean) : []) as string[];
 
       for (const targetId of targetJobIds) {
         try {
-          const timestamp = Date.now().toString();
-          const { generateHmacSignature } = await import("@/lib/orchestrator/runner-driver");
-          const { headerValue } = generateHmacSignature({ jobId: targetId }, runnerSecret, timestamp);
-          const res = await fetch(`${runnerUrl.replace(/\/$/, '')}/api/builds/${encodeURIComponent(targetId)}`, {
-            headers: {
-              "X-Syncbay-Signature": headerValue,
-              "X-Syncbay-Timestamp": timestamp,
-            },
+          const apiPath = `/api/builds/${encodeURIComponent(targetId)}`;
+          const { headers } = signRequest(runnerSecret!, "GET", apiPath, targetId);
+          const res = await fetch(`${runnerUrl.replace(/\/$/, '')}${apiPath}`, {
+            headers,
             signal: AbortSignal.timeout(3000),
           });
           if (res.ok) {

@@ -346,6 +346,37 @@ export class CloudflareApiClient {
   }
 
   /**
+   * Replaces a remotely-managed tunnel's ingress configuration
+   * (`PUT /accounts/{account_id}/cfd_tunnel/{tunnel_id}/configurations`).
+   * Requires CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID; throws on API failure.
+   */
+  public async updateTunnelConfiguration(
+    tunnelId: string,
+    body: { config: { ingress: Array<Record<string, any>> } }
+  ): Promise<{ tunnelId: string; version?: number }> {
+    if (!this.apiToken || !this.accountId) {
+      throw new Error("Cloudflare API token and account ID are required to update tunnel configuration");
+    }
+    const url = `${this.baseUrl}/accounts/${this.accountId}/cfd_tunnel/${encodeURIComponent(tunnelId)}/configurations`;
+    const res = await fetch(url, {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${this.apiToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    const json: any = await res.json().catch(() => ({}));
+    if (!res.ok || json?.success === false) {
+      const detail = Array.isArray(json?.errors) && json.errors.length
+        ? json.errors.map((e: any) => e?.message || String(e)).join("; ")
+        : `HTTP ${res.status}`;
+      throw new Error(`Cloudflare tunnel configuration update failed: ${detail}`);
+    }
+    return { tunnelId, version: json?.result?.version };
+  }
+
+  /**
    * Provisions or generates a scoped Cloudflare Tunnel token
    */
   public async provisionTunnelToken(

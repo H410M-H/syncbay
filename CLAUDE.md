@@ -25,13 +25,22 @@ All five gates (prisma generate, typecheck, knip, lint, build) must pass before 
 - **`engine.ts` → `executeDeployment()`.**
   - Loads service, variables and environment databases, resolves `${{ ref }}` variables (`src/lib/buildpack/resolver.ts`), registers the route as `BUILDING` → `DEPLOYING` → `ACTIVE`/`FAILED`, and dispatches the job to a runner driver.
   - Runtime detection (`src/lib/buildpack/detector.ts`, nixpacks plans) happens on the runner. The engine relays every log line to `logEventBus` (`src/lib/telemetry/event-bus.ts`) and classifies it as `stderr` (`[build:error]`, `[app:error]`, `Error:` …), `system` (`[pipeline]`, `[runner]`, `[health]` … prefixes) or `stdout`.
-  - After an `ACTIVE` result it probes `/health`, then `/`, on the allocated port. Failed remote dispatches (for example Cloudflare HTTP 530) fall back to the local driver unless `RUNNER_FORCE_REMOTE=true`.
+  - After an `ACTIVE` result it probes `/health`, then `/`, on the allocated port.
+  - Failed remote dispatches (for example Cloudflare HTTP 530) fall back to the local driver. `RUNNER_FALLBACK_LOCAL=false` (default `true`) or `RUNNER_FORCE_REMOTE=true` disables this. An `AuthenticationError` never falls back.
+  - When status polling reports `exitCode`, the engine appends it to the recorded error (`… (exit code N)`).
   - `src/lib/buildpack/knip-analyzer.ts` is Syncbay's built-in static analysis of customer repos. It is separate from the repo's own `knip` gate.
-- **`runner-driver.ts` (`getRunnerDriver()`).** Picks a driver from `RUNNER_DRIVER` / `RUNNER_URL`:
-  - `WebhookRunnerDriver`: HTTP to the runner daemon. Requests are signed HMAC-SHA256 (`X-Syncbay-Signature`, `X-Syncbay-Timestamp`) with `RUNNER_SECRET`, and transient Cloudflare/5xx errors are retried.
-  - `SshRunnerDriver`: runs the pipeline on a remote host over SSH (`RUNNER_SSH_*`).
+- **`runner-driver.ts` (`getRunnerDriver()`).** Picks a driver from the explicit type, then `RUNNER_DRIVER` (`webhook` | `ssh` | `queue` | `local` | `mock`), then `RUNNER_URL`:
+  - `signRequest()` signs `${ts}.${METHOD}.${path}.${body}` with HMAC-SHA256 into `X-Syncbay-Signature: sha256=<hex>` and `X-Syncbay-Timestamp`. `path` is the API pathname, and GET requests sign the job id as the body. Every retry is re-signed with a fresh timestamp.
+  - `resolveRunnerSecret()` reads `RUNNER_WEBHOOK_SECRET` → `RUNNER_SECRET` → `SYNCBAY_WEBHOOK_SECRET`. With `NODE_ENV=production` and no secret it throws `AuthenticationError`; only dev falls back to a default secret.
+  - Webhook and SSH requests retry with exponential backoff and jitter (500 ms·2^n, capped at 8 s, 4 attempts). Webhook retries on transient Cloudflare/gateway statuses and network errors; SSH retries on exit 255 (connection failure).
+  - Drivers log through `emitLog()`. It passes lines to `params.onLog` when one is given (the engine's handler publishes to `logEventBus`); otherwise it publishes to `logEventBus` directly.
+  - `WebhookRunnerDriver`: HTTP to the runner daemon.
+  - `SshRunnerDriver`: runs containers on a remote host over SSH (`RUNNER_SSH_*`), with `RUNNER_SECRET` exported in the remote command environment.
   - `QueueRunnerDriver`: a DB-backed job queue for long builds.
-  - `LocalRunnerDriver`: imports `runner/src/pipeline.ts` in-process (local dev / single host).
+  - `LocalRunnerDriver`: imports `runner/src/pipeline.ts` in-process (local dev / single host). `RUNNER_DRIVER=mock` uses it with `MockPipelineExecutor`.
+- **`src/lib/tunnel/tunnel-config.ts`.**
+  - `generateTunnelConfig()` produces YAML and `generateTunnelConfigJson()` produces the Cloudflare `PUT /accounts/{acct}/cfd_tunnel/{id}/configurations` body (`{ config: { ingress } }`). `writeTunnelConfig()` writes atomically (temp file + rename).
+  - `reloadTunnel()` PUTs the config through `CloudflareApiClient.updateTunnelConfiguration()` when `CLOUDFLARE_TUNNEL_ID`, `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` are all set. Otherwise it writes `TUNNEL_CONFIG_FILE` and runs `TUNNEL_RESTART_COMMAND` (default `systemctl restart cloudflared`), because cloudflared has no SIGHUP reload.
 - **`pr-manager.ts`.** Handles GitHub `pull_request` webhooks:
   - Creates an ephemeral `pr-<n>` environment, service and `<svc>-pr-<n>.syncbay.app` domain, with scale-to-zero (`idleTimeoutSecs: 1800`).
   - Posts `syncbay/preview` commit statuses and a preview comment.
@@ -48,13 +57,21 @@ All five gates (prisma generate, typecheck, knip, lint, build) must pass before 
 - `src/index.ts` (`RunnerDaemon`):
   - Unauthenticated: `/health` and `/api/tunnel/status`.
   - HMAC-protected: `POST /api/builds`, `GET /api/builds/:id[/logs]` (JSON or SSE) and `POST /api/containers/:id/stop`.
+  - Signatures must match `signRequest()`'s canonical string. Header-signed POSTs are single-use, so a replay gets 401.
+  - Query-string `sig`/`ts` is accepted only on the SSE route `GET /api/builds/:id/logs` with `Accept: text/event-stream`, and it is bound to that path.
+  - `GET /api/builds/:id` returns `exitCode`.
+  - The secret comes from `RUNNER_SECRET`. In production the daemon refuses to start without one.
   - Any other request is reverse-proxied to the service port in `x-target-port`.
-  - After a deploy it registers routes back to the control plane (`/api/v1/services/edge-register`).
+  - After a deploy it registers routes back to the control plane (`/api/v1/services/edge-register`) and adds `<host> → http://127.0.0.1:<port>` tunnel ingress. A stop removes it.
 - `src/pipeline.ts`:
-  - `BuildPipeline` clones, detects the strategy (Docker → Nixpacks → native), builds, then starts the app on a port from `PortManager` (`src/port-manager.ts`, range 10000–60000).
-  - A 25-line `stderr` buffer captures startup crashes. If the process exits before `/health` answers, the job fails with that trace and the exit code.
-  - `MockPipelineExecutor` simulates builds in serverless environments, where git and docker are unavailable.
-- `src/tunnel-driver.ts` runs `cloudflared` (token or quick-tunnel), a local proxy, or an SSH reverse tunnel. Its counterpart, `src/lib/tunnel/tunnel-config.ts`, generates `cloudflared` ingress for `<subdomain>.syncbay.app`.
+  - `BuildPipeline` clones, detects the strategy (Docker → Nixpacks → native), builds, then starts the app on a port from `PortManager` (`src/port-manager.ts`, range 10000–60000). `PipelineResult.exitCode` is 0 on success, otherwise the exit code of the failing step or of the crashed app.
+  - A fast redeploy (`cleanBuild: false`) reuses an existing clone with `git fetch` + `git checkout -f FETCH_HEAD`.
+  - A clean rebuild re-clones, purges `node_modules dist .next build out .turbo .cache` (logging each path) and passes `--no-cache`.
+  - A 25-line `stderr` ring buffer (split into lines) captures startup crashes. If the process exits before `/health` answers, the job fails with that trace and the exit code.
+  - `MockPipelineExecutor` is used only when `RUNNER_DRIVER=mock`, or when serverless (`VERCEL` / `AWS_LAMBDA_FUNCTION_NAME`) without `RUNNER_URL`. It is also a fallback, with a warning, when git is missing.
+- `src/tunnel-driver.ts` runs `cloudflared` (token, quick-tunnel or config-file mode), a local proxy, or an SSH reverse tunnel.
+  - Config-file mode (`TUNNEL_CONFIG_FILE` + `CLOUDFLARE_TUNNEL_ID`, optional `TUNNEL_CREDENTIALS_FILE`) runs `cloudflared tunnel --config <file> run`.
+  - In that mode `updateIngress()` rewrites the YAML atomically (`src/tunnel-config.ts`, a mirror of the control plane generator) and restarts cloudflared. Unknown hosts fall through to the daemon.
 - Imports inside `runner/` use explicit `.ts` extensions. They run under Node type-stripping or `tsx`, and `tsc` rewrites them to `.js` in `dist/`.
 
 ### Edge routing

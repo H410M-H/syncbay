@@ -65,7 +65,34 @@ export interface PipelineResult {
   logs: string[];
   durationMs: number;
   error?: string;
+  /** 0 on success; otherwise the exit code of the failing step or crashed app process (1 if unknown). */
+  exitCode: number;
   simulated?: boolean;
+}
+
+/** Number of trailing stderr lines kept to explain a startup crash. */
+const STARTUP_STDERR_LINES = 25;
+
+/** Build artifacts and caches removed by a clean rebuild (cleanBuild: true). */
+const CLEAN_BUILD_PURGE_PATHS = ["node_modules", "dist", ".next", "build", "out", ".turbo", ".cache"];
+
+/** Error carrying the exit code of the pipeline step that failed. */
+class PipelineStepError extends Error {
+  public readonly exitCode: number;
+  constructor(message: string, exitCode: number) {
+    super(message);
+    this.name = "PipelineStepError";
+    this.exitCode = exitCode;
+  }
+}
+
+/** Splits a stdio chunk into trimmed, non-empty lines. */
+function splitLines(chunk: Buffer | string): string[] {
+  return chunk
+    .toString()
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
 }
 
 // ─── DEFAULT SYSTEM EXECUTOR ─────────────────────────────────────────────────
@@ -273,8 +300,13 @@ export class MockPipelineExecutor implements PipelineExecutor {
 }
 
 function createDefaultExecutor(): PipelineExecutor {
-  if (process.env.VERCEL === "1" || process.env.VERCEL_ENV) {
-    console.log("[pipeline] Serverless environment detected — using MockPipelineExecutor");
+  if ((process.env.RUNNER_DRIVER || "").toLowerCase() === "mock") {
+    console.log("[pipeline] RUNNER_DRIVER=mock — using MockPipelineExecutor");
+    return new MockPipelineExecutor();
+  }
+  const isServerless = Boolean(process.env.VERCEL || process.env.VERCEL_ENV || process.env.AWS_LAMBDA_FUNCTION_NAME);
+  if (isServerless && !process.env.RUNNER_URL) {
+    console.log("[pipeline] Serverless environment without RUNNER_URL — using MockPipelineExecutor");
     return new MockPipelineExecutor();
   }
   try {
@@ -366,6 +398,7 @@ export class BuildPipeline {
     let strategy: "dockerfile" | "nixpacks" = "nixpacks";
     let childExitCode: number | null = null;
     let childErrorMsg: string | null = null;
+    let childStdioClosed = false;
     const startupStderrLines: string[] = [];
 
     try {
@@ -404,24 +437,41 @@ export class BuildPipeline {
           }
         }
 
-        // Clean existing workspace directory before clone to prevent non-empty destination collision
-        await fs.rm(baseWorkDir, { recursive: true, force: true }).catch(() => null);
-        await fs.mkdir(path.dirname(baseWorkDir), { recursive: true }).catch(() => null);
+        const gitEnv: NodeJS.ProcessEnv = {
+          ...process.env,
+          GIT_TERMINAL_PROMPT: "0",
+          ...options.environmentVariables,
+        };
 
-        const cloneCmd = `git clone ${branchFlag ? branchFlag + " " : ""}-- "${trimmedUrl}" "${baseWorkDir}"`;
-        log(`Cloning repository: ${cloneCmd}`);
-        const cloneRes = await this.executor.execute(cloneCmd, {
-          env: {
-            ...process.env,
-            GIT_TERMINAL_PROMPT: "0",
-            ...options.environmentVariables,
-          },
-          onLog: log,
-        });
-        if (cloneRes.exitCode !== 0) {
-          const errMsg = cloneRes.stderr || cloneRes.stdout || `Git clone exited with code ${cloneRes.exitCode}`;
-          log(`[build:error] ${errMsg}`);
-          throw new Error(`Git clone failed: ${errMsg}`);
+        // Fast redeploy (cleanBuild false): reuse the existing clone so dependency and build
+        // caches survive — fetch the latest refs and force-checkout instead of re-cloning.
+        let reusedClone = false;
+        if (!options.cleanBuild && (await this.executor.fileExists(path.join(baseWorkDir, ".git")))) {
+          log(`Fast redeploy — reusing existing clone at ${baseWorkDir}`);
+          const branchRef = branchFlag ? ` "${options.branch!.trim()}"` : "";
+          const fetchCmd = `git remote set-url origin "${trimmedUrl}" && git fetch --prune origin${branchRef} && git checkout -f FETCH_HEAD`;
+          log(`Updating repository: ${fetchCmd}`);
+          const fetchRes = await this.executor.execute(fetchCmd, { cwd: baseWorkDir, env: gitEnv, onLog: log });
+          if (fetchRes.exitCode === 0) {
+            reusedClone = true;
+          } else {
+            log(`[git:warn] git fetch failed (exit code ${fetchRes.exitCode}); falling back to a fresh clone`);
+          }
+        }
+
+        if (!reusedClone) {
+          // Clean existing workspace directory before clone to prevent non-empty destination collision
+          await fs.rm(baseWorkDir, { recursive: true, force: true }).catch(() => null);
+          await fs.mkdir(path.dirname(baseWorkDir), { recursive: true }).catch(() => null);
+
+          const cloneCmd = `git clone ${branchFlag ? branchFlag + " " : ""}-- "${trimmedUrl}" "${baseWorkDir}"`;
+          log(`Cloning repository: ${cloneCmd}`);
+          const cloneRes = await this.executor.execute(cloneCmd, { env: gitEnv, onLog: log });
+          if (cloneRes.exitCode !== 0) {
+            const errMsg = cloneRes.stderr || cloneRes.stdout || `Git clone exited with code ${cloneRes.exitCode}`;
+            log(`[build:error] ${errMsg}`);
+            throw new PipelineStepError(`Git clone failed: ${errMsg}`, cloneRes.exitCode);
+          }
         }
 
         if (options.commitSha) {
@@ -473,6 +523,18 @@ server.listen(port, "0.0.0.0", () => {
         await fs.writeFile(path.join(sourceDir, "server.cjs"), starter, "utf8").catch(() => null);
       }
 
+      // Clean rebuild: purge build artifacts and caches for every strategy (Docker/Nixpacks also get --no-cache)
+      if (options.cleanBuild) {
+        log(`Clean rebuild requested — purging cached build artifacts and dependencies`);
+        for (const rel of CLEAN_BUILD_PURGE_PATHS) {
+          const target = path.join(sourceDir, rel);
+          const exists = await fs.stat(target).then(() => true, () => false);
+          if (!exists) continue;
+          await fs.rm(target, { recursive: true, force: true }).catch(() => null);
+          log(`Purged ${target}`);
+        }
+      }
+
       // Step 3: Determine build strategy (Dockerfile vs Nixpacks vs Native process)
       const dockerfilePath = options.dockerfile
         ? path.join(sourceDir, options.dockerfile)
@@ -500,7 +562,7 @@ server.listen(port, "0.0.0.0", () => {
         if (buildRes.exitCode !== 0) {
           const errMsg = buildRes.stderr || buildRes.stdout || `Docker build exited with code ${buildRes.exitCode}`;
           log(`[build:error] ${errMsg}`);
-          throw new Error(`Docker build failed: ${errMsg}`);
+          throw new PipelineStepError(`Docker build failed: ${errMsg}`, buildRes.exitCode);
         }
         log(`Docker build succeeded for image ${imageTag}`);
 
@@ -523,7 +585,7 @@ server.listen(port, "0.0.0.0", () => {
         log(`Launching application container: ${runCmd}`);
         const runRes = await this.executor.execute(runCmd);
         if (runRes.exitCode !== 0) {
-          throw new Error(`Docker run failed: ${runRes.stderr || runRes.stdout}`);
+          throw new PipelineStepError(`Docker run failed: ${runRes.stderr || runRes.stdout}`, runRes.exitCode);
         }
 
         containerId = runRes.stdout.trim().split("\n").pop() || containerName;
@@ -550,7 +612,7 @@ server.listen(port, "0.0.0.0", () => {
         if (nixRes.exitCode !== 0) {
           const errMsg = nixRes.stderr || nixRes.stdout || `Nixpacks build exited with code ${nixRes.exitCode}`;
           log(`[build:error] ${errMsg}`);
-          throw new Error(`Nixpacks build failed: ${errMsg}`);
+          throw new PipelineStepError(`Nixpacks build failed: ${errMsg}`, nixRes.exitCode);
         }
         log(`Nixpacks compilation succeeded for image ${imageTag}`);
 
@@ -573,7 +635,7 @@ server.listen(port, "0.0.0.0", () => {
         log(`Launching application container: ${runCmd}`);
         const runRes = await this.executor.execute(runCmd);
         if (runRes.exitCode !== 0) {
-          throw new Error(`Docker run failed: ${runRes.stderr || runRes.stdout}`);
+          throw new PipelineStepError(`Docker run failed: ${runRes.stderr || runRes.stdout}`, runRes.exitCode);
         }
 
         containerId = runRes.stdout.trim().split("\n").pop() || containerName;
@@ -599,15 +661,6 @@ server.listen(port, "0.0.0.0", () => {
           PATH: `${nmBin}:${currentPath}`,
         };
 
-        if (options.cleanBuild) {
-          log(`Clean rebuild requested — removing cached build artifacts and dependencies`);
-          await fs.rm(path.join(sourceDir, "node_modules"), { recursive: true, force: true }).catch(() => null);
-          await fs.rm(path.join(sourceDir, "dist"), { recursive: true, force: true }).catch(() => null);
-          await fs.rm(path.join(sourceDir, ".next"), { recursive: true, force: true }).catch(() => null);
-          await fs.rm(path.join(sourceDir, "build"), { recursive: true, force: true }).catch(() => null);
-          await fs.rm(path.join(sourceDir, "out"), { recursive: true, force: true }).catch(() => null);
-        }
-
         if (packageJsonExists) {
           // Install dependencies first if not already present
           const hasNodeModules = await this.executor.fileExists(path.join(sourceDir, "node_modules"));
@@ -627,7 +680,7 @@ server.listen(port, "0.0.0.0", () => {
                 try {
                   const pkgContent = JSON.parse(await fs.readFile(pkgPath, "utf8"));
                   if (pkgContent.scripts?.build) {
-                    throw new Error(`Dependency installation failed: ${errMsg}`);
+                    throw new PipelineStepError(`Dependency installation failed: ${errMsg}`, iRes.exitCode);
                   }
                 } catch (e: any) {
                   if (e.message?.includes("Dependency installation failed")) throw e;
@@ -642,7 +695,7 @@ server.listen(port, "0.0.0.0", () => {
             if (bRes.exitCode !== 0) {
               const errMsg = bRes.stderr || bRes.stdout || `Build command exited with code ${bRes.exitCode}`;
               log(`[build:error] ${errMsg}`);
-              throw new Error(`Build command failed: ${errMsg}`);
+              throw new PipelineStepError(`Build command failed: ${errMsg}`, bRes.exitCode);
             }
           } else {
             try {
@@ -653,7 +706,7 @@ server.listen(port, "0.0.0.0", () => {
                 if (bRes.exitCode !== 0) {
                   const errMsg = bRes.stderr || bRes.stdout || `npm run build exited with code ${bRes.exitCode}`;
                   log(`[build:error] ${errMsg}`);
-                  throw new Error(`npm run build failed: ${errMsg}`);
+                  throw new PipelineStepError(`npm run build failed: ${errMsg}`, bRes.exitCode);
                 }
               }
             } catch (err: any) {
@@ -666,7 +719,7 @@ server.listen(port, "0.0.0.0", () => {
           if (bRes.exitCode !== 0) {
             const errMsg = bRes.stderr || bRes.stdout || `Build command exited with code ${bRes.exitCode}`;
             log(`[build:error] ${errMsg}`);
-            throw new Error(`Build command failed: ${errMsg}`);
+            throw new PipelineStepError(`Build command failed: ${errMsg}`, bRes.exitCode);
           }
         }
 
@@ -845,6 +898,7 @@ server.listen(port, "0.0.0.0");
 
         childExitCode = null;
         childErrorMsg = null;
+        childStdioClosed = false;
         startupStderrLines.length = 0;
 
         child.on("error", (err: any) => {
@@ -853,16 +907,17 @@ server.listen(port, "0.0.0.0");
         });
 
         child.stdout?.on("data", (chunk: Buffer) => {
-          const line = chunk.toString().trim();
-          if (line) log(`[app:stdout] ${line}`);
+          for (const line of splitLines(chunk)) log(`[app:stdout] ${line}`);
         });
         child.stderr?.on("data", (chunk: Buffer) => {
-          const line = chunk.toString().trim();
-          if (line) {
+          for (const line of splitLines(chunk)) {
             startupStderrLines.push(line);
-            if (startupStderrLines.length > 25) startupStderrLines.shift();
+            if (startupStderrLines.length > STARTUP_STDERR_LINES) startupStderrLines.shift();
             log(`[app:stderr] ${line}`);
           }
+        });
+        child.on("close", () => {
+          childStdioClosed = true;
         });
         child.on("exit", (code: number | null, signal: string | null) => {
           childExitCode = code !== null ? code : (signal ? 128 : 1);
@@ -889,9 +944,14 @@ server.listen(port, "0.0.0.0");
       while (Date.now() < deadline) {
         // If native child process died, fail fast without waiting for probe timeout
         if (containerId?.startsWith("proc_") && !this.activeProcesses.has(containerId)) {
-          const detail = childErrorMsg || (startupStderrLines.length > 0 ? startupStderrLines.join("\n") : `Process exited with code ${childExitCode ?? 1}`);
-          log(`[build:error] Application crashed during startup: ${detail}`);
-          throw new Error(`Application process terminated prematurely during startup: ${detail}`);
+          // 'exit' can fire before the last stderr chunk is read; wait briefly for stdio to drain.
+          for (let i = 0; i < 10 && !childStdioClosed; i++) {
+            await new Promise((r) => setTimeout(r, 50));
+          }
+          const exitCode = childExitCode ?? 1;
+          const detail = childErrorMsg || (startupStderrLines.length > 0 ? startupStderrLines.join("\n") : `Process exited with code ${exitCode}`);
+          log(`[build:error] Application crashed during startup (exit code ${exitCode}): ${detail}`);
+          throw new PipelineStepError(`Application process terminated prematurely during startup (exit code ${exitCode}): ${detail}`, exitCode);
         }
 
         isHealthy = await this.executor.probeHealth(probeUrl, 1000);
@@ -947,12 +1007,14 @@ server.listen(port, "0.0.0.0");
         imageTag,
         logs,
         durationMs,
+        exitCode: 0,
         simulated: isSimulated,
       };
     } catch (err: any) {
       const durationMs = Date.now() - startTime;
       const errMsg = err.message || String(err);
-      log(`Pipeline failed: ${errMsg}`);
+      const exitCode = err instanceof PipelineStepError ? err.exitCode : (childExitCode ?? 1);
+      log(`Pipeline failed (exit code ${exitCode}): ${errMsg}`);
 
       // Cleanup allocated port on failure
       if (assignedPort !== undefined) {
@@ -974,6 +1036,7 @@ server.listen(port, "0.0.0.0");
         logs,
         durationMs,
         error: errMsg,
+        exitCode,
       };
     }
   }
