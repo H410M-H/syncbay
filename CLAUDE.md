@@ -58,13 +58,28 @@ All five gates (prisma generate, typecheck, knip, lint, build) must pass before 
 - Imports inside `runner/` use explicit `.ts` extensions. They run under Node type-stripping or `tsx`, and `tsc` rewrites them to `.js` in `dist/`.
 
 ### Edge routing
-- `src/lib/edge/service-registry.ts` maps a hostname to `{ targetPort, status, upstreamUrl, isLocal }` and normalises hosts case-insensitively.
-- `src/middleware.ts` (Next 16 "proxy"):
-  - Matches `*.syncbay.app` and `*.localhost` service hosts.
-  - On a registry miss it resolves the route through `/api/v1/services/edge-resolve`, which uses Prisma.
-  - It rewrites `ACTIVE` services to their upstream (or to `RUNNER_URL` with `x-target-port`), and answers `/health` with 200/503/502.
-  - Non-active services are sent to the splash page.
-- `src/app/service-preview/[subdomain]/page.tsx` is the cold-start splash. It shows the status badge, streams live build logs over SSE from `/api/deployments/:id/logs/stream`, and polls `/health` every 1.5 s, reloading into the live app once the service turns `ACTIVE`.
+- `src/lib/edge/service-registry.ts` is a two-tier registry mapping a hostname to `{ targetPort, status, upstreamUrl, isLocal }`. Hosts are normalised case-insensitively.
+  - **L1** is a per-process Map. `ACTIVE` routes live 15 s, every other status 2 s (so `BUILDING` → `ACTIVE` shows up quickly), and misses are negatively cached for 5 s.
+  - **L2** is an `L2Store` chosen by `getL2Store()`:
+    - `UpstashRestStore`: plain `fetch` to `UPSTASH_REDIS_REST_URL` with Bearer `UPSTASH_REDIS_REST_TOKEN`. It stores JSON at `syncbay:edge:route:<host>` (`SET … EX` 7 d) and keeps an index set `syncbay:edge:routes`.
+    - `DbResolveStore`: read-only, backed by `resolveServiceRouteFromDb()` in `src/lib/edge/resolve.ts`, the same lookup `/api/v1/services/edge-resolve` uses. Platform hosts use the subdomain heuristics. Custom domains need an exact, `ACTIVE` `Domain` row.
+    - `MemoryStore`: used when neither is configured. When Upstash and `DATABASE_URL` are both set, an Upstash miss falls through to the DB.
+  - Writers (`engine.ts`, the `domain` router, `edge-register`) call `registerServiceRouteAsync` / `removeServiceRouteAsync`, which write through to L2 and never throw.
+  - Readers call `resolveServiceRoute`: a fresh L1 hit, otherwise L2 hydration, with lookups single-flighted per host. If L2 errors, the stale L1 entry is served.
+  - The sync `registerServiceRoute` / `getServiceRoute` / `removeServiceRoute` are L1-only and kept for tests and in-process callers.
+- `src/proxy.ts` is the Next 16 Proxy. It runs on the Node runtime and exports `proxy`; `middleware.ts` is deprecated.
+  - **Bypass list:** `/api/trpc`, `/api/auth`, `/api/webhooks`, `/api/deployments`, the `edge-resolve`/`edge-register`/`wake` APIs and `/service-preview` are never rewritten.
+  - **Control-plane hosts pass through:** `syncbay.app`, `www.`, `cname.`, `localhost`, any IP, `*.vercel.app`, and the `NEXTAUTH_URL` / `VERCEL_*` hosts.
+  - **Service hosts:** `*.syncbay.app`, `*.localhost`, and any other host only if it resolves as a registered route (a custom domain).
+  - It rewrites `ACTIVE` services to their upstream, or to `RUNNER_URL` with `x-target-port` unless `isLocal`. It answers `/health` with 200/503/502 and sends non-active services to the splash page.
+- `/api/v1/services/edge-register` (POST/DELETE) accepts `{ hostname, targetPort, status, upstreamUrl, isLocal }`.
+  - Auth is Bearer `RUNNER_SECRET` / `SYNCBAY_WEBHOOK_SECRET`.
+  - In production it returns 401 when neither secret is set.
+- `src/app/service-preview/[subdomain]/page.tsx` is the cold-start splash.
+  - An unknown status renders as `BUILDING`.
+  - It streams build logs over SSE from `/api/deployments/:id/logs/stream`. That route also polls the DB every 2 s and emits an `event: status` when the deployment status changes.
+  - It polls `/health` every 1.5 s, stops probing on success, and reloads into the live app.
+  - The wake button POSTs to `/api/v1/services/wake`. The caller must be a workspace member session or send Bearer `RUNNER_SECRET`. The endpoint re-runs the sleeping service's latest deployment through `executeDeployment` (via `after()`) and returns 202.
 
 ### Other modules
 - Auth: `src/lib/auth.ts` (Google, GitHub with `repo` scope, credentials/bcrypt; JWT sessions with the Prisma adapter).
