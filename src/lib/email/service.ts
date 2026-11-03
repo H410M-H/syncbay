@@ -5,13 +5,13 @@ import { DeploymentNotificationEmail, DeploymentNotificationEmailProps } from '.
 import { PasswordResetEmail, PasswordResetEmailProps } from './templates/password-reset';
 import { BillingAlertEmail, BillingAlertEmailProps } from './templates/billing-alert';
 import { UsageWarningEmail, UsageWarningEmailProps } from './templates/usage-warning';
-import React from 'react';
+import { createElement, type ReactElement } from 'react';
 
 export class EmailService {
   private static async sendEmail(options: {
     to: string | string[];
     subject: string;
-    react: React.ReactElement;
+    react: ReactElement;
   }) {
     if (!process.env.RESEND_API_KEY) {
       console.log('Sending email (Dev Mode):', {
@@ -39,7 +39,7 @@ export class EmailService {
     return this.sendEmail({
       to: params.to,
       subject: 'Welcome to SyncBay!',
-      react: WelcomeEmail(params),
+      react: createElement(WelcomeEmail, params),
     });
   }
 
@@ -47,7 +47,7 @@ export class EmailService {
     return this.sendEmail({
       to: params.to,
       subject: `You've been invited to join ${params.teamName} on SyncBay`,
-      react: InvitationEmail(params),
+      react: createElement(InvitationEmail, params),
     });
   }
 
@@ -56,7 +56,7 @@ export class EmailService {
     return this.sendEmail({
       to: params.to,
       subject: `Deployment ${statusText}: ${params.projectName}`,
-      react: DeploymentNotificationEmail(params),
+      react: createElement(DeploymentNotificationEmail, params),
     });
   }
 
@@ -64,7 +64,7 @@ export class EmailService {
     return this.sendEmail({
       to: params.to,
       subject: 'Reset your SyncBay password',
-      react: PasswordResetEmail(params),
+      react: createElement(PasswordResetEmail, params),
     });
   }
 
@@ -72,7 +72,7 @@ export class EmailService {
     return this.sendEmail({
       to: params.to,
       subject: 'SyncBay Billing Alert',
-      react: BillingAlertEmail(params),
+      react: createElement(BillingAlertEmail, params),
     });
   }
 
@@ -80,7 +80,7 @@ export class EmailService {
     return this.sendEmail({
       to: params.to,
       subject: `Usage Warning: ${params.percentage}% reached on SyncBay`,
-      react: UsageWarningEmail(params),
+      react: createElement(UsageWarningEmail, params),
     });
   }
 }

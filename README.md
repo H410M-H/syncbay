@@ -60,8 +60,17 @@ cd runner && npm run build && npm test
 ```
 
 ### OAuth callback URLs
-- Google: `https://syncbay.app/api/auth/callback/google`, plus `http://localhost:3000/api/auth/callback/google` for dev.
-- GitHub: `https://syncbay.app/api/auth/callback/github`.
+Register these redirect URIs with each provider (Google: "Authorized redirect URIs" on the OAuth client; GitHub: "Authorization callback URL" on the OAuth app).
+
+| Environment | Google | GitHub |
+| --- | --- | --- |
+| Production | `https://syncbay.app/api/auth/callback/google` | `https://syncbay.app/api/auth/callback/github` |
+| Vercel preview | `https://<preview-origin>/api/auth/callback/google` | `https://<preview-origin>/api/auth/callback/github` |
+| Local dev | `http://localhost:3000/api/auth/callback/google` | `http://localhost:3000/api/auth/callback/github` |
+
+- Previews: providers match redirect URIs exactly, with no wildcards. Either register each preview origin, or give previews a stable branch domain (for example `https://staging.syncbay.app`, set as `NEXTAUTH_URL` for the Preview environment) and register only that one.
+- A GitHub OAuth app accepts only one callback URL. Use a separate OAuth app for previews and for local dev.
+- After sign-in, the `redirect` callback in `src/lib/auth.ts` accepts only these targets: `https://syncbay.app`, `https://*.syncbay.app`, and the current deployment origin (`VERCEL_URL`, `VERCEL_BRANCH_URL`, `VERCEL_PROJECT_PRODUCTION_URL`).
 
 ## Environment variables
 

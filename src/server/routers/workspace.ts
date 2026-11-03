@@ -3,6 +3,7 @@ import { createTRPCRouter, protectedProcedure, publicProcedure } from "@/server/
 import { TRPCError } from "@trpc/server";
 import { WorkspaceRole } from "@prisma/client";
 import { EmailService } from "@/lib/email";
+import { getAppUrl } from "@/lib/env";
 
 export const workspaceRouter = createTRPCRouter({
   /** List all workspaces the current user belongs to */
@@ -128,14 +129,13 @@ export const workspaceRouter = createTRPCRouter({
           where: { id: input.workspaceId },
           select: { name: true },
         });
-        const appUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.NEXTAUTH_URL || "https://syncbay.app";
         // Email delivery is best-effort: the invite link is still returned to the caller.
         await EmailService.sendInvitation({
           to: input.email,
           inviteeEmail: input.email,
           inviterName: ctx.session.user.name || ctx.session.user.email || "A teammate",
           teamName: workspace?.name ?? "your team",
-          acceptUrl: `${appUrl.replace(/\/$/, "")}/invite/${invite.token}`,
+          acceptUrl: `${getAppUrl()}/invite/${invite.token}`,
         }).catch((err) => console.error("[workspace.invite] invitation email failed:", err));
       }
 
