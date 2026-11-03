@@ -6,7 +6,7 @@
 
 ```mermaid
 flowchart LR
-  user([Browser]) -->|"*.syncbay.app"| proxy["Next.js proxy<br/>src/middleware.ts"]
+  user([Browser]) -->|"*.syncbay.app"| proxy["Next.js proxy<br/>src/proxy.ts"]
   user -->|syncbay.app| app["Control plane<br/>Next.js 16 · tRPC · NextAuth"]
   proxy -->|lookup| registry[("Edge service registry<br/>src/lib/edge/service-registry.ts")]
   proxy -->|BUILDING / SLEEPING| splash["Cold-start splash<br/>/service-preview/[subdomain]"]
@@ -98,7 +98,7 @@ See [`ROADMAP.md`](./ROADMAP.md).
 - [x] PR preview environments with scale-to-zero
 - [x] Cloudflare tunnel and custom-domain ingress
 - [x] v1.0 baseline: knip gate, runner build, lint at 0 errors
-- [ ] Persistent two-tier edge registry and `proxy.ts`
-- [ ] Hardened runner fabric and tunnel reload
-- [ ] Managed Postgres/Redis and web terminal
-- [ ] GitHub Actions CI and env validation
+- [x] Persistent two-tier edge registry and `proxy.ts`
+- [x] Hardened runner fabric and tunnel reload
+- [x] Managed Postgres/Redis and web terminal
+- [x] GitHub Actions CI and env validation

@@ -70,3 +70,12 @@ jobs:
 
       - name: Verify email templates
         run: npm run test:email
+
+      - name: Verify edge registry & proxy
+        run: npm run test:edge
+
+      - name: Verify managed databases
+        run: npm run test:db
+
+      - name: Verify web terminal
+        run: npm run test:terminal

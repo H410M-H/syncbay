@@ -15,7 +15,7 @@ Syncbay (`syncbay.app`) is a hybrid-compute PaaS. The **control plane** is a Nex
 | Lint | `npm run lint` |
 | Production build | `npm run build` (prisma generate + `next build --webpack`) |
 | Runner build / test | `cd runner && npm install && npm run build && npm test` |
-| Focused verifications | `npm run test:fallback`, `npm run test:tunnel` (tsx scripts under `tests/`, mocked DB) |
+| Focused verifications | `npm run test:fallback`, `test:tunnel`, `test:edge`, `test:email`, `test:db`, `test:terminal` (tsx scripts under `tests/`, mocked DB) |
 
 All five gates (prisma generate, typecheck, knip, lint, build) must pass before a change is merged. CI enforces them in `.github/workflows/ci.yml`.
 
@@ -50,7 +50,7 @@ All five gates (prisma generate, typecheck, knip, lint, build) must pass before 
 - `trpc.ts` defines `publicProcedure` and `protectedProcedure` (a session is required). Routers are composed in `root.ts`. Every mutation must use `protectedProcedure` and check workspace membership.
 - `routers/deployment.ts` → `redeploy`:
   - `rebuild: false` is the fast redeploy. It reuses the previous successful build record and keeps caches.
-  - `rebuild: true` is the clean rebuild. It creates a new Build and sends `cleanBuild: true`. The runner then purges `node_modules`, `dist`, `.next`, `build` and `out`, and passes `--no-cache` to Docker/Nixpacks.
+  - `rebuild: true` is the clean rebuild. It creates a new Build and sends `cleanBuild: true`. The runner then purges `node_modules`, `dist`, `.next`, `build`, `out`, `.turbo` and `.cache`, and passes `--no-cache` to Docker/Nixpacks.
 - The REST API lives at `src/app/api/v1/*` (token auth via `src/lib/api/auth-token.ts`, OpenAPI at `/api/v1/openapi.json`).
 
 ### Runner daemon — `runner/`
