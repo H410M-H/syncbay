@@ -64,6 +64,8 @@ interface TerminalSession {
   exitCode: number | null;
 }
 
+/** util-linux `script` allocates a pty so interactive shells behave (prompts, echo, job control). */
+const PTY_WRAPPER = process.env.RUNNER_PTY_WRAPPER || "script";
 const SAFE_ID = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/;
 const MAX_BUFFER = 64 * 1024;
 
@@ -180,7 +182,7 @@ export class RunnerServices {
 
   private hasScript(): Promise<boolean> {
     if (!this.scriptProbe) {
-      this.scriptProbe = run("script", ["--version"], undefined, 3000).then((r) => r.code === 0);
+      this.scriptProbe = run(PTY_WRAPPER, ["--version"], undefined, 3000).then((r) => r.code === 0);
     }
     return this.scriptProbe;
   }
@@ -347,7 +349,7 @@ export class RunnerServices {
     };
 
     const proc = usePty
-      ? spawn("script", ["-qfc", inner, "/dev/null"], { cwd, env, stdio: ["pipe", "pipe", "pipe"] })
+      ? spawn(PTY_WRAPPER, ["-qfc", inner, "/dev/null"], { cwd, env, stdio: ["pipe", "pipe", "pipe"] })
       : inContainer
       ? spawn("docker", ["exec", "-i", containerId, "sh", "-i"], { cwd, env, stdio: ["pipe", "pipe", "pipe"] })
       : spawn("sh", ["-i"], { cwd, env, stdio: ["pipe", "pipe", "pipe"] });

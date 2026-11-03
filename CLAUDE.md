@@ -103,7 +103,9 @@ All five gates (prisma generate, typecheck, knip, lint, build) must pass before 
 - Email: `src/lib/email/` (Resend + React Email templates; it logs instead of sending when `RESEND_API_KEY` is unset).
 - Domains and Cloudflare: `src/lib/domain-service.ts`, `src/lib/tunnel/cloudflare-api.ts`.
 - Managed DBs and buckets: `src/lib/database-provider.ts`, `src/lib/storage-provider.ts`.
-- Web shell: `src/lib/shell/web-shell.ts`.
+  - With `RUNNER_URL` set, Postgres and Redis are provisioned as `postgres:16-alpine`/`redis:7-alpine` containers on the runner (`runner/src/services.ts`: `/api/databases`, health via `pg_isready`/`redis-cli ping`). Without it, and for MySQL, a mock `sb-db-*` instance is created. `DatabaseInstance.status` tracks PROVISIONING → ACTIVE/UNHEALTHY/FAILED/DELETING.
+  - `<NAME>_URL` and `DATABASE_URL` (Postgres) or `REDIS_URL` (Redis) are persisted on existing services when the DB is created. `engine.ts` also merges them in at deploy time (`applyDatabaseEnv`) without overriding user keys. Delete removes rows still pointing at the DB. Signed runner calls go through `src/lib/runner-client.ts`.
+- Web shell: `src/components/dashboard/web-shell.tsx` → `POST /api/services/:id/terminal` (create, or `{sessionId,input}`) + SSE `/api/services/:id/terminal/stream`, with session auth and workspace membership. Sessions (`src/lib/shell/terminal-sessions.ts`, in-memory, 10 min idle) proxy to runner `/api/terminals` (`docker exec -i <container> sh` or `sh` in the job workspace, under `script -qfc`). Without a runner they fall back to the simulated `src/lib/shell/web-shell.ts` with a per-session cwd, env and history. Output masks `isSecret` values and URL credentials.
 
 ## Conventions
 - Next.js 16 differs from older versions. Read `node_modules/next/dist/docs/` before using framework APIs.

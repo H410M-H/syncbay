@@ -11,7 +11,6 @@ import { volumeRouter } from "@/server/routers/volume";
 import { metricsRouter } from "@/server/routers/metrics";
 import { tokenRouter } from "@/server/routers/token";
 import { edgeRouter } from "@/server/routers/edge";
-import { shellRouter } from "@/server/routers/shell";
 import { queryStudioRouter } from "@/server/routers/query-studio";
 import { devopsRouter } from "@/server/routers/devops";
 import { rdRouter } from "@/server/routers/rd";
@@ -34,7 +33,6 @@ export const appRouter = createTRPCRouter({
   metrics: metricsRouter,
   token: tokenRouter,
   edge: edgeRouter,
-  shell: shellRouter,
   queryStudio: queryStudioRouter,
   devops: devopsRouter,
   rd: rdRouter,
