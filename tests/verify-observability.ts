@@ -60,10 +60,12 @@ async function until<T>(fn: () => Promise<T | null | undefined | false>, timeout
   }
 }
 
+/** Canonical runner signature `${ts}.${nonce}.${METHOD}.${path}.${body}` (single-use nonce). */
 function signed(method: string, path: string, body: string) {
   const ts = Date.now().toString();
-  const sig = crypto.createHmac("sha256", SECRET).update(`${ts}.${method}.${path}.${body}`).digest("hex");
-  return { "X-Syncbay-Signature": `sha256=${sig}`, "X-Syncbay-Timestamp": ts };
+  const nonce = crypto.randomBytes(16).toString("hex");
+  const sig = crypto.createHmac("sha256", SECRET).update(`${ts}.${nonce}.${method}.${path}.${body}`).digest("hex");
+  return { "X-Syncbay-Signature": `sha256=${sig}`, "X-Syncbay-Timestamp": ts, "X-Syncbay-Nonce": nonce };
 }
 
 /** Reads SSE `data:` payloads from a ReadableStream until `stop()` returns true. */
@@ -244,12 +246,15 @@ async function main() {
     });
 
     console.log("\n[5] Runner GET /api/metrics/:containerId");
-    await step("native process via /proc (signed); 401 unsigned; 404 unknown", async () => {
+    await step("native process via /proc (signed); 401 unsigned and on replay; 404 unknown", async () => {
       const p = `/api/metrics/${containerId}`;
       const unsigned = await fetch(`${runnerBase}${p}`);
       assert.strictEqual(unsigned.status, 401);
-      const res = await fetch(`${runnerBase}${p}`, { headers: signed("GET", p, p) });
+      const headers = signed("GET", p, p);
+      const res = await fetch(`${runnerBase}${p}`, { headers });
       assert.strictEqual(res.status, 200);
+      const replay = await fetch(`${runnerBase}${p}`, { headers });
+      assert.strictEqual(replay.status, 401, "nonce is single-use");
       const m = await res.json();
       assert.strictEqual(m.source, "proc");
       assert.ok(m.memoryMb > 5, `rss ${m.memoryMb} MB`);

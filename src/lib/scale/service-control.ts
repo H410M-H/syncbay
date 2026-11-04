@@ -2,8 +2,9 @@
  * Syncbay PaaS — Stop a running service for scale-to-zero or the spending cap.
  *
  * Stops the container through the runner driver, marks the latest deployment
- * SLEEPING (optionally pausing the service), and registers every hostname of
- * the service as SLEEPING so the edge proxy serves the wake splash.
+ * SLEEPING (optionally pausing the service), registers every hostname of the
+ * service as SLEEPING so the edge proxy serves the wake splash, and asks for a
+ * tunnel ingress reload.
  */
 
 import { db } from "@/lib/db";
@@ -11,6 +12,7 @@ import { generateDefaultSubdomain } from "@/lib/domain-service";
 import { registerServiceRouteAsync } from "@/lib/edge/service-registry";
 import { getRunnerDriver } from "@/lib/orchestrator/runner-driver";
 import { logEventBus } from "@/lib/telemetry/event-bus";
+import { requestTunnelReload } from "@/lib/tunnel/tunnel-sync";
 
 export interface HostnameSource {
   name: string;
@@ -80,6 +82,8 @@ export async function stopServiceToSleep(
   for (const host of serviceHostnames(service)) {
     await registerServiceRouteAsync(host, undefined, "SLEEPING");
   }
+  // Drop the stopped port from the tunnel ingress (no-op unless a tunnel is configured).
+  await requestTunnelReload(`sleep:${service.id}`);
   await logEventBus.flush();
   return result;
 }
