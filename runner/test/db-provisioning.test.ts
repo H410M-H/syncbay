@@ -23,6 +23,11 @@ import { RunnerServices } from "../src/services.ts";
 import { NativeDatabaseManager } from "../src/native-db.ts";
 import { dockerVolumeFlags, prepareNativeVolumes } from "../src/volumes.ts";
 
+// Binary names via env so hosts with non-PATH installs can point at them.
+const PSQL = process.env.PSQL_BIN || "psql";
+const PG_ISREADY = process.env.PG_ISREADY_BIN || "pg_isready";
+const REDIS_CLI = process.env.REDIS_CLI_BIN || "redis-cli";
+
 const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sb-runner-state-"));
 fs.chmodSync(stateRoot, 0o755); // the unprivileged DB user must traverse it when the runner is root
 
@@ -49,7 +54,7 @@ async function serve(services: RunnerServices) {
 }
 
 function psql(url: string, sql: string): string {
-  return execFileSync("psql", [url, "-At", "-v", "ON_ERROR_STOP=1", "-c", sql], { encoding: "utf8", timeout: 30000 }).trim();
+  return execFileSync(PSQL, [url, "-At", "-v", "ON_ERROR_STOP=1", "-c", sql], { encoding: "utf8", timeout: 30000 }).trim();
 }
 
 const nativeMgr = new NativeDatabaseManager(path.join(stateRoot, "databases"));
@@ -71,7 +76,7 @@ test("native Postgres: initdb/pg_ctl provisioning, health, real query, delete", 
     assert.strictEqual(psql(url, "SELECT id FROM t"), "42");
     assert.match(psql(url, "SHOW server_version"), /^\d+/);
     // Password auth is enforced over TCP
-    const bad = spawnSync("psql", [url.replace(/:[^:@/]+@/, ":wrong@"), "-c", "SELECT 1"], { encoding: "utf8" });
+    const bad = spawnSync(PSQL, [url.replace(/:[^:@/]+@/, ":wrong@"), "-c", "SELECT 1"], { encoding: "utf8" });
     assert.notStrictEqual(bad.status, 0, "wrong password must be rejected");
 
     const health = await call("GET", "/api/databases/pgnative1/health");
@@ -89,7 +94,7 @@ test("native Postgres: initdb/pg_ctl provisioning, health, real query, delete", 
     const deleted = await call("DELETE", "/api/databases/pgnative1");
     assert.strictEqual(deleted.json.deleted, true);
     assert.strictEqual(fs.existsSync(nativeMgr.dirFor("pgnative1")), false, "data dir removed");
-    const probe = spawnSync("pg_isready", ["-h", "127.0.0.1", "-p", String(created.json.port)], { encoding: "utf8" });
+    const probe = spawnSync(PG_ISREADY, ["-h", "127.0.0.1", "-p", String(created.json.port)], { encoding: "utf8" });
     assert.notStrictEqual(probe.status, 0, "server stopped");
   } finally {
     await nativeMgr.destroy("pgnative1").catch(() => null);
@@ -107,7 +112,7 @@ test("native Redis: redis-server provisioning with requirepass, health, delete",
     const url = new URL(created.json.connectionUrl);
     const password = decodeURIComponent(url.password);
     const cli = (args: string[], auth?: string) =>
-      spawnSync("redis-cli", ["-h", "127.0.0.1", "-p", url.port, ...args], { encoding: "utf8", env: { ...process.env, ...(auth ? { REDISCLI_AUTH: auth } : {}) } });
+      spawnSync(REDIS_CLI, ["-h", "127.0.0.1", "-p", url.port, ...args], { encoding: "utf8", env: { ...process.env, ...(auth ? { REDISCLI_AUTH: auth } : {}) } });
     assert.match(cli(["ping"]).stdout, /NOAUTH/, "requirepass enforced");
     assert.strictEqual(cli(["set", "k", "v"], password).stdout.trim(), "OK");
     assert.strictEqual(cli(["get", "k"], password).stdout.trim(), "v");

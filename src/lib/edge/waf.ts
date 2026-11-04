@@ -46,15 +46,7 @@ export class UpstashRateCounter implements RateCounter {
   }
 }
 
-let counterOverride: RateCounter | null = null;
-
-/** Replaces the rate counter (tests). Pass null to restore the default. */
-export function setWafRateCounter(counter: RateCounter | null): void {
-  counterOverride = counter;
-}
-
 function getRateCounter(): RateCounter {
-  if (counterOverride) return counterOverride;
   const url = process.env.UPSTASH_REDIS_REST_URL;
   const token = process.env.UPSTASH_REDIS_REST_TOKEN;
   if (!url || !token) return memoryRateCounter;
