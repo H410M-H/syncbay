@@ -51,7 +51,12 @@ export function verifyCanonicalSignature(secret: string, parts: SignedRequestPar
  */
 export class NonceCache {
   private readonly entries = new Map<string, number>();
-  constructor(private readonly maxEntries: number = DEFAULT_MAX_NONCES) {}
+  private readonly maxEntries: number;
+  private lastSweep = 0;
+
+  constructor(maxEntries: number = DEFAULT_MAX_NONCES) {
+    this.maxEntries = maxEntries;
+  }
 
   /** Records `nonce`; returns false when it was already used. */
   consume(nonce: string, timestampMs: number, now: number = Date.now()): boolean {
@@ -71,7 +76,10 @@ export class NonceCache {
     return this.entries.size;
   }
 
+  /** Drops expired entries, at most once per second (a full scan of the map). */
   private sweep(now: number): void {
+    if (now - this.lastSweep < 1000 && now >= this.lastSweep) return;
+    this.lastSweep = now;
     for (const [key, expiry] of this.entries) {
       if (expiry <= now) this.entries.delete(key);
     }

@@ -512,3 +512,26 @@ model AuditLogEntry {
 
   @@map("audit_log_entries")
 }
+
+// ── Team C ── Edge, tunnel, domains, terminal ─────────────────────────────────
+
+/// Simulated web-shell state shared by every control-plane instance (the runner-backed
+/// shell needs no row: its signed session token carries everything). Output is stored
+/// masked; env holds only the user's own `export`/`unset` overrides, never service secrets.
+model TerminalSession {
+  id             String    @id
+  serviceId      String
+  userId         String
+  cwd            String    @default("/app")
+  envOverrides   Json      @default("{}")
+  history        Json      @default("[]")
+  buffer         String    @default("")
+  outputSeq      Int       @default(0)
+  version        Int       @default(0)
+  lastActivityAt DateTime  @default(now())
+  createdAt      DateTime  @default(now())
+
+  @@index([serviceId])
+  @@index([lastActivityAt])
+  @@map("terminal_sessions")
+}
