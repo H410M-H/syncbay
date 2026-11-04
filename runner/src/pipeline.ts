@@ -1151,7 +1151,8 @@ server.listen(port, "0.0.0.0");
         }
 
         // If app bound to options.targetPort instead of dynamic port, detect it
-        if (options.targetPort && options.targetPort !== assignedPort) {
+        // (never when that port belongs to another instance, e.g. the previous deployment)
+        if (options.targetPort && options.targetPort !== assignedPort && !this.portManager.isPortAllocated(options.targetPort)) {
           const altProbeUrl = `http://127.0.0.1:${options.targetPort}${probePath}`;
           if (await this.executor.probeHealth(altProbeUrl, 500)) {
             isHealthy = true;

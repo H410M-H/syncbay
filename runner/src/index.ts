@@ -93,7 +93,7 @@ export class RunnerDaemon {
     this.webhookSecret = resolveDaemonSecret(config.webhookSecret);
     const queueEnv = (process.env.RUNNER_QUEUE_MODE || "").toLowerCase();
     this.queueMode = config.queueMode ?? (queueEnv === "pull" || queueEnv === "true");
-    this.pollIntervalMs = config.pollIntervalMs ?? 5000;
+    this.pollIntervalMs = config.pollIntervalMs ?? (parseInt(process.env.RUNNER_POLL_INTERVAL_MS || "", 10) || 5000);
     this.portManager = config.portManager || defaultPortManager;
     this.pipeline = config.pipeline || new BuildPipeline({ portManager: this.portManager });
     this.services = config.services || new RunnerServices({ portManager: this.portManager });
@@ -241,6 +241,13 @@ export class RunnerDaemon {
       res.writeHead(204);
       res.end();
       return;
+    }
+
+    // A request carrying x-target-port is application traffic (edge proxy, control-plane health
+    // probe): proxy it before the daemon's own routes, so `/health` reaches the app, not the daemon.
+    const headerTargetPort = parseInt(String(req.headers["x-target-port"] || ""), 10);
+    if (headerTargetPort > 0) {
+      return this.proxyRequest(req, res, headerTargetPort, await this.readBody(req));
     }
 
     // Health Check Endpoint

@@ -87,6 +87,12 @@ async function loadServiceForRouting(serviceId: string, client: Client) {
   });
 }
 
+/** DB edge resolution (`resolveServiceRouteFromDb`) reads `service.port` as the live port. */
+async function setServicePort(client: Client, serviceId: string, port?: number): Promise<void> {
+  if (!port || typeof client.service?.update !== "function") return;
+  await client.service.update({ where: { id: serviceId }, data: { port } }).catch(() => null);
+}
+
 async function setRoutes(hosts: string[], status: string, port?: number, isLocal?: boolean): Promise<void> {
   for (const host of hosts) {
     await registerServiceRouteAsync(host, port, status, port ? `http://127.0.0.1:${port}` : undefined, isLocal);
@@ -164,7 +170,10 @@ export async function onDeploymentActive(ctx: ActiveDeploymentContext, client: C
         if (ctx.containerId && ctx.containerId !== newer.cfContainerId) {
           await ctx.driver.stopContainer(ctx.containerId).catch(() => null);
         }
-        if (newer.assignedPort) await setRoutes(ctx.hosts, "ACTIVE", newer.assignedPort, newer.runnerDriver === "local");
+        if (newer.assignedPort) {
+          await setRoutes(ctx.hosts, "ACTIVE", newer.assignedPort, newer.runnerDriver === "local");
+          await setServicePort(client, ctx.serviceId, newer.assignedPort);
+        }
       } else {
         for (const old of others) {
           const res = await client.deployment.updateMany({
@@ -317,6 +326,7 @@ export async function restartServiceInstance(serviceId: string, userId?: string,
       });
       const service = await loadServiceForRouting(serviceId, client);
       if (service && port) await setRoutes(resolveServiceHostnames(service), "ACTIVE", port, driver.type === "local");
+      await setServicePort(client, serviceId, port);
       return { mode: "restart", deploymentId: active.id, containerId: res.containerId, port };
     }
     if (res.queued) return { mode: "queued", deploymentId: active.id, message: res.message };
@@ -338,6 +348,7 @@ export async function rollbackToDeployment(
     if (res?.restarted && port) {
       const service = await loadServiceForRouting(target.serviceId, client);
       if (service) await setRoutes(resolveServiceHostnames(service), "ACTIVE", port, driver.type === "local");
+      await setServicePort(client, target.serviceId, port);
       await client.deployment.update({
         where: { id: target.id },
         data: { status: "ACTIVE", cfContainerId: res.containerId, assignedPort: port, completedAt: new Date() },
