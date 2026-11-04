@@ -156,9 +156,9 @@ async function main() {
     const cf = new CloudflareApiClient({ apiToken: "cf-test-token", zoneId: "zone123" });
     let chStatus = { status: "pending", ssl: "pending_validation" };
     cfHandler = async (call) => {
-      if (call.url.includes("/custom_hostnames?hostname=")) {
-        return { status: 200, json: { success: true, result: [{ id: "6f1c0d8e-0000-4000-8000-000000000001", hostname: host, status: chStatus.status, ssl: { status: chStatus.ssl } }] } };
-      }
+      const rec = { id: "6f1c0d8e-0000-4000-8000-000000000001", hostname: host, status: chStatus.status, ssl: { status: chStatus.ssl } };
+      if (call.url.includes("/custom_hostnames?hostname=")) return { status: 200, json: { success: true, result: [rec] } };
+      if (call.url.endsWith(`/custom_hostnames/${rec.id}`)) return { status: 200, json: { success: true, result: rec } };
       return { status: 404, json: { success: false, errors: [{ message: "not found" }] } };
     };
     await prisma.domain.update({ where: { id: domain.id }, data: { cfRecordId: null } });
@@ -220,6 +220,7 @@ async function main() {
 
     // ─── 5. Tunnel ingress from the DB route table ──────────────────────────
     console.log("[5] tunnel ingress sync (real Postgres + advisory lock; Cloudflare API mocked)");
+    assert.strictEqual(await domainService.verifyDomain(domain.id), "ACTIVE", "re-verified by DNS (Cloudflare unset)");
     const routes = await buildIngressRoutesFromDb();
     const mine = routes.filter((rt) => rt.hostname.includes(RUN));
     const names = mine.map((rt) => rt.hostname).sort();
