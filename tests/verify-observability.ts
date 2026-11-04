@@ -74,9 +74,14 @@ async function collectSse(stream: ReadableStream<Uint8Array>, stop: (events: any
   const statuses: string[] = [];
   let buf = "";
   const deadline = Date.now() + timeoutMs;
+  // Keep one outstanding read: abandoning a pending read() would drop its chunk.
+  let pending: Promise<ReadableStreamReadResult<Uint8Array>> | null = null;
   while (Date.now() < deadline && !stop(events)) {
-    const next = await Promise.race([reader.read(), sleep(Math.max(1, deadline - Date.now())).then(() => null)]);
-    if (!next || next.done) break;
+    pending = pending || reader.read();
+    const next = await Promise.race([pending, sleep(Math.max(1, Math.min(250, deadline - Date.now()))).then(() => null)]);
+    if (!next) continue;
+    pending = null;
+    if (next.done) break;
     buf += decoder.decode(next.value, { stream: true });
     let idx;
     while ((idx = buf.indexOf("\n\n")) >= 0) {
@@ -90,7 +95,7 @@ async function collectSse(stream: ReadableStream<Uint8Array>, stop: (events: any
       else events.push(parsed);
     }
   }
-  reader.releaseLock();
+  await reader.cancel().catch(() => undefined);
   return { events, statuses };
 }
 
@@ -175,7 +180,7 @@ async function main() {
       setTimeout(() => {
         void db.deploymentLog.create({
           data: { id: `log_${crypto.randomUUID()}`, deploymentId: id, seq: 10_000, stream: "stdout", line: "from other instance", ts: new Date() },
-        });
+        }).then(() => undefined); // PrismaPromise is lazy: it only runs once then() is called
       }, 700);
       const { events, statuses } = await collectSse(
         stream,
@@ -188,7 +193,7 @@ async function main() {
       assert.strictEqual(events[450].message, "Error: timer-flushed");
       assert.strictEqual(events[450].stream, "stderr");
       assert.ok(events.some((e) => e.message === "[syncbay] live line"), "live line");
-      assert.ok(events.some((e) => e.message === "from other instance"), "cross-instance line: " + JSON.stringify(events.slice(-3)) + statuses);
+      assert.ok(events.some((e) => e.message === "from other instance"), "cross-instance line");
       assert.strictEqual(new Set(events.map((e) => e.id)).size, events.length, "no duplicate ids");
       assert.ok(statuses.includes("QUEUED"), "status event");
     });
@@ -203,7 +208,7 @@ async function main() {
       assert.deepStrictEqual(statuses, ["QUEUED"]);
       const history = await caller(user.id).deployment.logs({ deploymentId: emptySvc.deployment.id });
       assert.strictEqual(history.length, 0, "deployment.logs must not synthesise");
-      await assert.rejects(caller(outsider.id).deployment.logs({ deploymentId: logsSvc.deployment.id }), /NOT_FOUND/);
+      await assert.rejects(caller(outsider.id).deployment.logs({ deploymentId: logsSvc.deployment.id }), (e: any) => e.code === "NOT_FOUND");
     });
 
     console.log("\n[4] Real runner build + runner SSE proxy");
@@ -302,7 +307,7 @@ async function main() {
       assert.strictEqual(hist.points.length, 1);
       assert.ok(hist.points[0].cpuPercent > 50);
       assert.ok(Math.abs(Date.parse(hist.points[0].timestamp) - Date.now()) < 6 * 60_000, hist.points[0].timestamp);
-      await assert.rejects(caller(outsider.id).metrics.historical({ serviceId: busySvc.service.id, period: "1h" }), /NOT_FOUND/);
+      await assert.rejects(caller(outsider.id).metrics.historical({ serviceId: busySvc.service.id, period: "1h" }), (e: any) => e.code === "NOT_FOUND");
     });
 
     console.log("\n[7] Hourly usage records");
