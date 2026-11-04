@@ -145,7 +145,7 @@ async function sectionFlows(prisma: PrismaClient, emu: StripeEmulator) {
   (globalThis as any).prisma = prisma;
   const { billingRouter } = await import("../src/server/routers/billing");
   const { POST } = await import("../src/app/api/webhooks/stripe/route");
-  const { buildMonthlyInvoices } = await import("../src/lib/billing/invoicing");
+  const { buildMonthlyInvoices, runMonthlyInvoicingIfDue } = await import("../src/lib/billing/invoicing");
   const { getStripe } = await import("../src/lib/billing/stripe-client");
   const signer = new Stripe("sk_test_signer_only");
 
@@ -285,6 +285,14 @@ async function sectionFlows(prisma: PrismaClient, emu: StripeEmulator) {
   const run2 = await buildMonthlyInvoices(new Date(Date.UTC(2026, 9, 28)), { db: prisma, stripe, workspaceIds: [A.ws.id, B.ws.id] });
   ok(run2.invoices.every((o) => o.status === "exists") && emu.state.invoiceItems.length === itemsBefore && emu.state.invoices.size === 1, "re-running the month is idempotent (no new invoices or Stripe items)");
   ok((await prisma.workspace.findUnique({ where: { id: A.ws.id } }))!.creditBalanceCents === balance - 2090, "credits are not applied twice");
+
+  // Sweep-cron hook: only on day 1 (UTC, from 02:00), for the previous month, idempotent
+  const scope = { db: prisma, stripe, workspaceIds: [A.ws.id, B.ws.id] };
+  const notDue = await runMonthlyInvoicingIfDue(new Date(Date.UTC(2026, 10, 15, 3)), scope);
+  const tooEarly = await runMonthlyInvoicingIfDue(new Date(Date.UTC(2026, 10, 1, 1, 30)), scope);
+  ok(!notDue.due && !tooEarly.due, "sweep hook is a no-op except on the 1st of the month from 02:00 UTC");
+  const due = await runMonthlyInvoicingIfDue(new Date(Date.UTC(2026, 10, 1, 2, 15)), scope);
+  ok(due.due && due.periodKey === "usage:2026-10" && due.created === 0 && due.existing === 2 && emu.state.invoices.size === 1, "on Nov 1 the hook bills October and repeated sweeps create nothing new");
 
   // Invoice webhooks + payInvoice
   const failedInv = await deliver("invoice.payment_failed", stripeInvB);

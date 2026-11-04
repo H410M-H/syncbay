@@ -6,6 +6,7 @@ import Link from "next/link";
 import { useDashboard } from "../dashboard-shell";
 import { BackButton } from "@/components/ui/back-button";
 import { formatExpiry, getBrandMetadata } from "@/lib/billing/card-display";
+import { USAGE_RATES_CENTS, formatRateDollars } from "@/lib/billing/pricing";
 import { StripeCardSetup, confirmTopUpPayment } from "@/components/billing/stripe-card-setup";
 
 export default function UsagePage() {
@@ -106,12 +107,13 @@ export default function UsagePage() {
     BUCKET_STORAGE_GB: 0,
   };
 
-  const cpuCost = (totals.CPU_ACTIVE_SECONDS * 0.00002).toFixed(2);
-  const memCost = (totals.MEMORY_GIB_HOURS * 0.005).toFixed(2);
-  const diskCost = (totals.DISK_GB_HOURS * 0.0001).toFixed(2);
-  const egressCost = (totals.EGRESS_GB * 0.09).toFixed(2);
-  const dbCost = (totals.DB_STORAGE_GB * 0.02).toFixed(2);
-  const bucketCost = (totals.BUCKET_STORAGE_GB * 0.015).toFixed(2);
+  const lineCost = (type: keyof typeof USAGE_RATES_CENTS) => ((totals[type] * USAGE_RATES_CENTS[type]) / 100).toFixed(2);
+  const cpuCost = lineCost("CPU_ACTIVE_SECONDS");
+  const memCost = lineCost("MEMORY_GIB_HOURS");
+  const diskCost = lineCost("DISK_GB_HOURS");
+  const egressCost = lineCost("EGRESS_GB");
+  const dbCost = lineCost("DB_STORAGE_GB");
+  const bucketCost = lineCost("BUCKET_STORAGE_GB");
 
   const creditBalanceDollars = ((billingSummary?.creditBalanceCents ?? 0) / 100).toFixed(2);
 
@@ -689,7 +691,7 @@ export default function UsagePage() {
               {totals.CPU_ACTIVE_SECONDS.toLocaleString()} s
             </div>
             <div style={{ fontSize: "0.8125rem", color: "var(--text-muted)", marginTop: "4px" }}>
-              Rate: $0.00002 / active-sec
+              Rate: {formatRateDollars("CPU_ACTIVE_SECONDS")} / active-sec
             </div>
             <div style={{ marginTop: "12px", paddingTop: "10px", borderTop: "1px solid var(--border-subtle)", display: "flex", justifyContent: "space-between", fontWeight: 600 }}>
               <span style={{ fontSize: "0.8125rem", color: "var(--text-secondary)" }}>Est. Cost:</span>
@@ -707,7 +709,7 @@ export default function UsagePage() {
               {totals.MEMORY_GIB_HOURS.toFixed(2)} GiB-h
             </div>
             <div style={{ fontSize: "0.8125rem", color: "var(--text-muted)", marginTop: "4px" }}>
-              Rate: $0.005 / GiB-hour
+              Rate: {formatRateDollars("MEMORY_GIB_HOURS")} / GiB-hour
             </div>
             <div style={{ marginTop: "12px", paddingTop: "10px", borderTop: "1px solid var(--border-subtle)", display: "flex", justifyContent: "space-between", fontWeight: 600 }}>
               <span style={{ fontSize: "0.8125rem", color: "var(--text-secondary)" }}>Est. Cost:</span>
@@ -725,7 +727,7 @@ export default function UsagePage() {
               {totals.DISK_GB_HOURS.toFixed(2)} GB-h
             </div>
             <div style={{ fontSize: "0.8125rem", color: "var(--text-muted)", marginTop: "4px" }}>
-              Rate: $0.0001 / GB-hour
+              Rate: {formatRateDollars("DISK_GB_HOURS")} / GB-hour
             </div>
             <div style={{ marginTop: "12px", paddingTop: "10px", borderTop: "1px solid var(--border-subtle)", display: "flex", justifyContent: "space-between", fontWeight: 600 }}>
               <span style={{ fontSize: "0.8125rem", color: "var(--text-secondary)" }}>Est. Cost:</span>
@@ -743,7 +745,7 @@ export default function UsagePage() {
               {totals.EGRESS_GB.toFixed(2)} GB
             </div>
             <div style={{ fontSize: "0.8125rem", color: "var(--text-muted)", marginTop: "4px" }}>
-              Rate: $0.09 / GB (Cloudflare edge)
+              Rate: {formatRateDollars("EGRESS_GB")} / GB (Cloudflare edge)
             </div>
             <div style={{ marginTop: "12px", paddingTop: "10px", borderTop: "1px solid var(--border-subtle)", display: "flex", justifyContent: "space-between", fontWeight: 600 }}>
               <span style={{ fontSize: "0.8125rem", color: "var(--text-secondary)" }}>Est. Cost:</span>
@@ -833,7 +835,7 @@ export default function UsagePage() {
                   <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>Worker execution &amp; web serving</div>
                 </td>
                 <td>{totals.CPU_ACTIVE_SECONDS.toLocaleString()} sec</td>
-                <td>$0.00002 / s</td>
+                <td>{formatRateDollars("CPU_ACTIVE_SECONDS")} / s</td>
                 <td style={{ textAlign: "right", fontWeight: 600 }}>${cpuCost}</td>
               </tr>
               <tr>

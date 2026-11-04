@@ -13,7 +13,8 @@
  * writes carry idempotency keys derived from the local invoice id. Re-running a
  * month only retries Stripe issuance for invoices that are not yet in Stripe.
  *
- * Intended to be called by a monthly cron (not wired up here).
+ * Scheduled by `runMonthlyInvoicingIfDue()` from the 15-minute sweep cron
+ * (src/app/api/cron/sweep/route.ts).
  */
 
 import type { Invoice, PrismaClient } from "@prisma/client";
@@ -222,4 +223,29 @@ export async function buildMonthlyInvoices(
   }
 
   return { periodKey, periodStart: start, periodEnd: end, stripeConfigured: !!stripe, invoices: outcomes };
+}
+
+/** Invoicing for the previous month runs on day 1 (UTC) from this hour on, after the last hour's usage is written. */
+const MONTHLY_INVOICE_START_HOUR_UTC = 2;
+
+/**
+ * Cron entry point: on the 1st of each month (UTC, from 02:00) builds the
+ * previous month's invoices. Every sweep that day re-runs it, which is safe:
+ * existing invoices are skipped and only failed Stripe issuance is retried.
+ * Any other time it is a no-op.
+ */
+export async function runMonthlyInvoicingIfDue(now = new Date(), options: Parameters<typeof buildMonthlyInvoices>[1] = {}) {
+  if (now.getUTCDate() !== 1 || now.getUTCHours() < MONTHLY_INVOICE_START_HOUR_UTC) {
+    return { due: false as const };
+  }
+  const previousMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
+  const run = await buildMonthlyInvoices(previousMonth, options);
+  return {
+    due: true as const,
+    periodKey: run.periodKey,
+    stripeConfigured: run.stripeConfigured,
+    created: run.invoices.filter((i) => i.status === "created").length,
+    existing: run.invoices.filter((i) => i.status === "exists").length,
+    stripeErrors: run.invoices.filter((i) => i.stripeError).length,
+  };
 }

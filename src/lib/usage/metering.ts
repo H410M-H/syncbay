@@ -16,19 +16,10 @@ import { db } from "@/lib/db";
 import { EmailService } from "@/lib/email/service";
 import { SAMPLE_INTERVAL_SECS } from "@/lib/telemetry/metrics-sampler";
 import { stopServiceToSleep } from "@/lib/scale/service-control";
+import { estimateCostCents } from "@/lib/billing/pricing"; // single rate card shared with invoicing
 
 const HOUR_MS = 3_600_000;
 export const USAGE_WARNING_RATIO = 0.8;
-
-/** Cents per unit (CPU: $0.00002/s, memory: $0.005/GiB-h, disk: $0.0001/GB-h, egress: $0.09/GB). */
-export const USAGE_RATES_CENTS: Record<UsageResourceType, number> = {
-  CPU_ACTIVE_SECONDS: 0.002,
-  MEMORY_GIB_HOURS: 0.5,
-  DISK_GB_HOURS: 0.01,
-  EGRESS_GB: 9.0,
-  DB_STORAGE_GB: 2.0,
-  BUCKET_STORAGE_GB: 1.5,
-};
 
 export type UsageTotals = Record<UsageResourceType, number>;
 
@@ -41,14 +32,6 @@ export function emptyTotals(): UsageTotals {
     DB_STORAGE_GB: 0,
     BUCKET_STORAGE_GB: 0,
   };
-}
-
-export function estimateCostCents(totals: UsageTotals): number {
-  let cents = 0;
-  for (const [type, qty] of Object.entries(totals) as Array<[UsageResourceType, number]>) {
-    cents += qty * USAGE_RATES_CENTS[type];
-  }
-  return Math.round(cents);
 }
 
 /** First instant of the UTC calendar month containing `at`. */

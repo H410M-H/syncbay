@@ -4,6 +4,7 @@ import { sleepIdleServices } from "@/lib/scale/idle-sleeper";
 import { enforceSpendingCaps, writeUsageRecords } from "@/lib/usage/metering";
 import { purgeOldLogs } from "@/lib/telemetry/log-store";
 import { purgeOldSamples } from "@/lib/telemetry/metrics-sampler";
+import { runMonthlyInvoicingIfDue } from "@/lib/billing/invoicing";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -19,7 +20,7 @@ async function step<T>(fn: () => Promise<T>): Promise<T | { error: string }> {
   }
 }
 
-/** Every 15 minutes (vercel.json): idle sleep, hourly usage records, spending caps, retention. */
+/** Every 15 minutes (vercel.json): idle sleep, hourly usage records, spending caps, monthly invoices, retention. */
 export async function GET(req: NextRequest) {
   if (!isAuthorizedCronRequest(req.headers)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -27,9 +28,10 @@ export async function GET(req: NextRequest) {
   const idle = await step(() => sleepIdleServices());
   const usage = await step(() => writeUsageRecords());
   const spendingCaps = await step(() => enforceSpendingCaps());
+  const invoicing = await step(() => runMonthlyInvoicingIfDue()); // Team D: previous month, on day 1 (UTC)
   const retention = await step(async () => ({
     logs: await purgeOldLogs(LOG_RETENTION_DAYS),
     samples: await purgeOldSamples(METRIC_RETENTION_DAYS),
   }));
-  return NextResponse.json({ ok: true, at: new Date().toISOString(), idle, usage, spendingCaps, retention });
+  return NextResponse.json({ ok: true, at: new Date().toISOString(), idle, usage, spendingCaps, invoicing, retention });
 }
