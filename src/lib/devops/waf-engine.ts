@@ -1,39 +1,77 @@
 /**
- * Syncbay PaaS — Automated Edge WAF & Rate Limiting Engine
- * PRD Phase 3 & Vercel Challenger — Automated Cloudflare-grade Edge Firewall
- * Provides IP blacklisting, sliding-window rate limiting, DDoS mitigation,
- * Geo-blocking, and security event telemetry.
+ * Syncbay PaaS — Edge WAF rules engine
+ *
+ * Rules are `WafRule` rows (one per IP/CIDR, path pattern, country or rate
+ * limit). This module holds the pure evaluation logic (IPv4/IPv6 CIDR
+ * matching, glob path patterns, precedence) plus the DB helpers the devops
+ * router uses. Enforcement happens in `src/proxy.ts` via `src/lib/edge/waf.ts`.
+ *
+ * Precedence: IP_ALLOW > IP_BLOCK > GEO_BLOCK > PATH_BLOCK > RATE_LIMIT.
  */
 
+import type { PrismaClient } from "@prisma/client";
+
+export const WAF_RULE_TYPES = ["IP_BLOCK", "IP_ALLOW", "PATH_BLOCK", "GEO_BLOCK", "RATE_LIMIT"] as const;
+export type WafRuleType = (typeof WAF_RULE_TYPES)[number];
+
+/** The subset of a `WafRule` row needed to evaluate a request. */
+export interface WafRuleLike {
+  id: string;
+  type: WafRuleType | string;
+  value: string;
+  rateLimitRpm?: number | null;
+  enabled: boolean;
+}
+
+export interface WafRequest {
+  ip: string;
+  path: string;
+  countryCode?: string;
+}
+
+export interface WafDecision {
+  allowed: boolean;
+  status: number;
+  reason?: string;
+  ruleId?: string;
+  ruleType?: WafRuleType;
+  retryAfterSec?: number;
+}
+
+/** Counter used by RATE_LIMIT rules: records a hit and returns the window count. */
+export interface RateCounter {
+  hit(key: string, limit: number, windowMs: number): Promise<{ count: number; resetSec: number }>;
+}
+
+/** Aggregated view used by the dashboard (backed by rule rows). */
 export interface WafConfig {
   serviceId: string;
   enabled: boolean;
-  rateLimitRpm: number; // requests per minute threshold (e.g. 120)
-  rateLimitAction: "BLOCK_429" | "CHALLENGE";
-  ddosShieldEnabled: boolean;
-  botProtectionEnabled: boolean;
-  ipBlocklist: string[]; // List of IPs or CIDR blocks
+  rateLimitRpm: number | null;
+  ipBlocklist: string[];
   ipAllowlist: string[];
-  geoBlockCountries: string[]; // ISO country codes to block e.g. ["RU", "CN"]
-  updatedAt: string;
+  geoBlockCountries: string[];
+  pathBlocklist: string[];
+  ruleCount: number;
+  updatedAt: string | null;
 }
 
+/** A rule that has matched real traffic (from the hit counters the proxy flushes). */
 export interface SecurityEvent {
   id: string;
   serviceId: string;
   timestamp: string;
   clientIp: string;
   countryCode: string;
-  actionTaken: "BLOCKED_429" | "BLOCKED_IP" | "BLOCKED_GEO" | "DDOS_MITIGATED" | "ALLOWED";
+  actionTaken: "BLOCKED_429" | "BLOCKED_IP" | "BLOCKED_GEO" | "BLOCKED_PATH";
   ruleMatched: string;
   popRegion: string;
   path: string;
+  hitCount: number;
 }
 
-// In-memory sliding window rate tracker: ip -> timestamps[]
+// In-memory sliding window rate tracker: key -> timestamps[]
 const rateWindowMap: Map<string, number[]> = new Map();
-const wafConfigsStore: Map<string, WafConfig> = new Map();
-const securityEventsStore: Map<string, SecurityEvent[]> = new Map();
 
 function parseIpv4ToInt(ip: string): number | null {
   const parts = ip.trim().split(".");
@@ -215,147 +253,276 @@ export function evaluateRateLimit(
   };
 }
 
-export function getDefaultWafConfig(serviceId: string): WafConfig {
-  const existing = wafConfigsStore.get(serviceId);
-  if (existing) return existing;
 
-  const config: WafConfig = {
+/** In-process sliding-window counter (per instance). */
+export const memoryRateCounter: RateCounter = {
+  async hit(key, limit, windowMs) {
+    const res = evaluateRateLimit(key, limit, windowMs);
+    return { count: res.allowed ? res.currentCount : limit + 1, resetSec: res.resetSec };
+  },
+};
+
+// ─── Validation & matching helpers ───────────────────────────────────────────
+
+/** True for a valid IPv4/IPv6 address or CIDR block. */
+export function isValidIpOrCidr(entry: string): boolean {
+  const value = (entry || "").trim();
+  if (!value) return false;
+  const [addr, prefixStr, extra] = value.split("/");
+  if (extra !== undefined) return false;
+  const v4 = parseIpv4ToInt(addr) !== null;
+  const v6 = !v4 && parseIpv6ToBigInt(addr) !== null;
+  if (!v4 && !v6) return false;
+  if (prefixStr === undefined) return true;
+  if (!/^\d+$/.test(prefixStr)) return false;
+  const prefix = parseInt(prefixStr, 10);
+  return v4 ? prefix <= 32 : prefix <= 128;
+}
+
+function normalizePath(path: string): string {
+  let p = path || "/";
+  try {
+    p = decodeURIComponent(p);
+  } catch {
+    // keep raw on malformed escapes
+  }
+  return p.replace(/\/{2,}/g, "/");
+}
+
+const patternCache = new Map<string, RegExp>();
+
+/**
+ * Glob path match: `*` matches any run of characters (including `/`).
+ * A pattern without `*` matches that exact path. Case-insensitive.
+ */
+export function matchPathPattern(path: string, pattern: string): boolean {
+  const pat = (pattern || "").trim();
+  if (!pat) return false;
+  if (pat === "*" || pat === "/*") return true;
+  let re = patternCache.get(pat);
+  if (!re) {
+    const escaped = pat.split("*").map((s) => s.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*");
+    re = new RegExp(`^${escaped}$`, "i");
+    if (patternCache.size > 1000) patternCache.clear();
+    patternCache.set(pat, re);
+  }
+  return re.test(normalizePath(path));
+}
+
+export function validateWafRule(input: { type: string; value: string; rateLimitRpm?: number | null }): void {
+  if (!(WAF_RULE_TYPES as readonly string[]).includes(input.type)) {
+    throw new Error(`Unknown WAF rule type "${input.type}"`);
+  }
+  const value = (input.value || "").trim();
+  if (!value) throw new Error("WAF rule value is required");
+  if ((input.type === "IP_BLOCK" || input.type === "IP_ALLOW") && !isValidIpOrCidr(value)) {
+    throw new Error(`"${value}" is not a valid IP address or CIDR block`);
+  }
+  if (input.type === "GEO_BLOCK" && !/^[A-Za-z]{2}$/.test(value)) {
+    throw new Error(`"${value}" is not an ISO 3166-1 alpha-2 country code`);
+  }
+  if ((input.type === "PATH_BLOCK" || input.type === "RATE_LIMIT") && !value.startsWith("/") && !value.startsWith("*")) {
+    throw new Error(`Path pattern must start with "/" or "*"`);
+  }
+  if (input.type === "RATE_LIMIT") {
+    const rpm = input.rateLimitRpm ?? 0;
+    if (!Number.isInteger(rpm) || rpm < 1 || rpm > 100000) {
+      throw new Error("RATE_LIMIT rules need rateLimitRpm between 1 and 100000");
+    }
+  }
+}
+
+// ─── Evaluation ───────────────────────────────────────────────────────────────
+
+const ALLOWED: WafDecision = { allowed: true, status: 200 };
+
+/**
+ * Evaluates a request against a service's rules. Only RATE_LIMIT rules touch
+ * the counter; the first matching rule of the highest-precedence type wins.
+ */
+export async function inspectRequest(
+  rules: WafRuleLike[],
+  req: WafRequest,
+  counter: RateCounter = memoryRateCounter
+): Promise<WafDecision> {
+  const active = rules.filter((r) => r.enabled);
+  if (active.length === 0) return ALLOWED;
+  const ip = (req.ip || "").trim();
+  const byType = (t: WafRuleType) => active.filter((r) => r.type === t);
+
+  if (ip && byType("IP_ALLOW").some((r) => isIpInList(ip, [r.value]))) return ALLOWED;
+
+  const blockedIp = ip ? byType("IP_BLOCK").find((r) => isIpInList(ip, [r.value])) : undefined;
+  if (blockedIp) {
+    return { allowed: false, status: 403, reason: "Access Denied by Syncbay Edge Firewall", ruleId: blockedIp.id, ruleType: "IP_BLOCK" };
+  }
+
+  const country = (req.countryCode || "").toUpperCase();
+  const geo = country ? byType("GEO_BLOCK").find((r) => r.value.toUpperCase() === country) : undefined;
+  if (geo) {
+    return { allowed: false, status: 403, reason: "Country geo-restricted by administrator policy", ruleId: geo.id, ruleType: "GEO_BLOCK" };
+  }
+
+  const pathRule = byType("PATH_BLOCK").find((r) => matchPathPattern(req.path, r.value));
+  if (pathRule) {
+    return { allowed: false, status: 403, reason: "Path blocked by Syncbay Edge Firewall", ruleId: pathRule.id, ruleType: "PATH_BLOCK" };
+  }
+
+  for (const rule of byType("RATE_LIMIT")) {
+    const limit = rule.rateLimitRpm || 0;
+    if (limit <= 0 || !matchPathPattern(req.path, rule.value)) continue;
+    const { count, resetSec } = await counter.hit(`${rule.id}:${ip || "unknown"}`, limit, 60_000);
+    if (count > limit) {
+      return {
+        allowed: false,
+        status: 429,
+        reason: `Too Many Requests. Retry after ${resetSec} seconds.`,
+        ruleId: rule.id,
+        ruleType: "RATE_LIMIT",
+        retryAfterSec: resetSec,
+      };
+    }
+  }
+  return ALLOWED;
+}
+
+// ─── DB helpers ───────────────────────────────────────────────────────────────
+
+export type WafDb = Pick<PrismaClient, "wafRule" | "$transaction">;
+type WafRuleRow = Awaited<ReturnType<WafDb["wafRule"]["findUniqueOrThrow"]>>;
+
+export async function listWafRules(db: WafDb, serviceId: string): Promise<WafRuleRow[]> {
+  return db.wafRule.findMany({ where: { serviceId }, orderBy: { createdAt: "asc" } });
+}
+
+export async function createWafRule(
+  db: WafDb,
+  input: { serviceId: string; type: WafRuleType; value: string; rateLimitRpm?: number | null; description?: string }
+): Promise<WafRuleRow> {
+  validateWafRule(input);
+  return db.wafRule.create({
+    data: {
+      serviceId: input.serviceId,
+      type: input.type,
+      value: input.type === "GEO_BLOCK" ? input.value.trim().toUpperCase() : input.value.trim(),
+      rateLimitRpm: input.type === "RATE_LIMIT" ? input.rateLimitRpm : null,
+      description: input.description,
+    },
+  });
+}
+
+export function buildWafConfig(serviceId: string, rules: WafRuleRow[]): WafConfig {
+  const values = (t: WafRuleType) => rules.filter((r) => r.type === t).map((r) => r.value);
+  const rate = rules.find((r) => r.type === "RATE_LIMIT" && (r.value === "/*" || r.value === "*"));
+  const updated = rules.reduce<Date | null>((acc, r) => (!acc || r.updatedAt > acc ? r.updatedAt : acc), null);
+  return {
     serviceId,
-    enabled: true,
-    rateLimitRpm: 120,
-    rateLimitAction: "BLOCK_429",
-    ddosShieldEnabled: true,
-    botProtectionEnabled: true,
-    ipBlocklist: ["198.51.100.44", "203.0.113.0/24"],
-    ipAllowlist: ["127.0.0.1", "10.0.0.0/8"],
-    geoBlockCountries: ["XX"],
-    updatedAt: new Date().toISOString(),
+    enabled: rules.length === 0 ? true : rules.some((r) => r.enabled),
+    rateLimitRpm: rate?.rateLimitRpm ?? null,
+    ipBlocklist: values("IP_BLOCK"),
+    ipAllowlist: values("IP_ALLOW"),
+    geoBlockCountries: values("GEO_BLOCK"),
+    pathBlocklist: values("PATH_BLOCK"),
+    ruleCount: rules.length,
+    updatedAt: updated ? updated.toISOString() : null,
   };
-
-  wafConfigsStore.set(serviceId, config);
-
-  // Generate initial security event telemetry
-  const initialEvents: SecurityEvent[] = [
-    {
-      id: `sec_${Date.now()}_1`,
-      serviceId,
-      timestamp: new Date(Date.now() - 1000 * 60 * 12).toISOString(),
-      clientIp: "198.51.100.44",
-      countryCode: "US",
-      actionTaken: "BLOCKED_IP",
-      ruleMatched: "IP Blocklist Match",
-      popRegion: "iad1",
-      path: "/login",
-    },
-    {
-      id: `sec_${Date.now()}_2`,
-      serviceId,
-      timestamp: new Date(Date.now() - 1000 * 60 * 35).toISOString(),
-      clientIp: "203.0.113.88",
-      countryCode: "DE",
-      actionTaken: "BLOCKED_429",
-      ruleMatched: "Rate Limit Exceeded (>120 rpm)",
-      popRegion: "fra1",
-      path: "/api/v1/query",
-    },
-    {
-      id: `sec_${Date.now()}_3`,
-      serviceId,
-      timestamp: new Date(Date.now() - 1000 * 60 * 95).toISOString(),
-      clientIp: "192.0.2.140",
-      countryCode: "SG",
-      actionTaken: "DDOS_MITIGATED",
-      ruleMatched: "SYN Flood Mitigation Layer 4/7",
-      popRegion: "sin1",
-      path: "/",
-    },
-  ];
-  securityEventsStore.set(serviceId, initialEvents);
-
-  return config;
 }
 
-export function updateWafConfig(serviceId: string, partial: Partial<WafConfig>): WafConfig {
-  const current = getDefaultWafConfig(serviceId);
-  const updated: WafConfig = {
-    ...current,
-    ...partial,
-    updatedAt: new Date().toISOString(),
-  };
-  wafConfigsStore.set(serviceId, updated);
-  return updated;
-}
-
-export function getSecurityEvents(serviceId: string): SecurityEvent[] {
-  return securityEventsStore.get(serviceId) || [];
+export async function getWafConfig(db: WafDb, serviceId: string): Promise<WafConfig> {
+  return buildWafConfig(serviceId, await listWafRules(db, serviceId));
 }
 
 /**
- * Inspects an incoming request against the WAF rules
+ * Applies the dashboard's list-style edits: each provided list replaces the
+ * rules of that type (rules whose value is unchanged keep their hit counters),
+ * `rateLimitRpm` upserts the site-wide `/*` RATE_LIMIT rule (null removes it)
+ * and `enabled` toggles every rule of the service.
  */
-export function inspectRequest(
+export async function updateWafConfig(
+  db: WafDb,
   serviceId: string,
-  req: { ip: string; path: string; countryCode?: string; popRegion?: string }
-): { allowed: boolean; status: number; reason?: string } {
-  const config = getDefaultWafConfig(serviceId);
-  if (!config.enabled) return { allowed: true, status: 200 };
-
-  // 1. Check Allowlist
-  if (isIpInList(req.ip, config.ipAllowlist)) {
-    return { allowed: true, status: 200 };
+  partial: {
+    enabled?: boolean;
+    rateLimitRpm?: number | null;
+    ipBlocklist?: string[];
+    ipAllowlist?: string[];
+    geoBlockCountries?: string[];
+    pathBlocklist?: string[];
   }
-
-  // 2. Check Blocklist
-  if (isIpInList(req.ip, config.ipBlocklist)) {
-    recordEvent(serviceId, {
-      clientIp: req.ip,
-      countryCode: req.countryCode || "US",
-      actionTaken: "BLOCKED_IP",
-      ruleMatched: "IP Blacklist Rule",
-      popRegion: req.popRegion || "iad1",
-      path: req.path,
-    });
-    return { allowed: false, status: 403, reason: "Access Denied by Syncbay Edge Firewall" };
+): Promise<WafConfig> {
+  const lists: Array<[WafRuleType, string[] | undefined]> = [
+    ["IP_BLOCK", partial.ipBlocklist],
+    ["IP_ALLOW", partial.ipAllowlist],
+    ["GEO_BLOCK", partial.geoBlockCountries?.map((c) => c.trim().toUpperCase())],
+    ["PATH_BLOCK", partial.pathBlocklist],
+  ];
+  for (const [type, list] of lists) {
+    for (const value of list || []) validateWafRule({ type, value });
   }
+  if (partial.rateLimitRpm != null) validateWafRule({ type: "RATE_LIMIT", value: "/*", rateLimitRpm: partial.rateLimitRpm });
 
-  // 3. Check Geo-Block
-  if (req.countryCode && config.geoBlockCountries.includes(req.countryCode.toUpperCase())) {
-    recordEvent(serviceId, {
-      clientIp: req.ip,
-      countryCode: req.countryCode,
-      actionTaken: "BLOCKED_GEO",
-      ruleMatched: `Geo-location ${req.countryCode} restricted`,
-      popRegion: req.popRegion || "iad1",
-      path: req.path,
-    });
-    return { allowed: false, status: 403, reason: "Country geo-restricted by administrator policy" };
-  }
+  await db.$transaction(async (tx) => {
+    const existing = await tx.wafRule.findMany({ where: { serviceId } });
+    const enabledDefault = existing.length === 0 ? true : existing.some((r) => r.enabled);
+    const enabled = partial.enabled ?? enabledDefault;
 
-  // 4. Rate Limiting
-  const rateResult = evaluateRateLimit(req.ip, config.rateLimitRpm);
-  if (!rateResult.allowed) {
-    recordEvent(serviceId, {
-      clientIp: req.ip,
-      countryCode: req.countryCode || "US",
-      actionTaken: "BLOCKED_429",
-      ruleMatched: `Rate limit threshold of ${config.rateLimitRpm} rpm exceeded`,
-      popRegion: req.popRegion || "iad1",
-      path: req.path,
-    });
-    return { allowed: false, status: 429, reason: `Too Many Requests. Retry after ${rateResult.resetSec} seconds.` };
-  }
+    for (const [type, list] of lists) {
+      if (!list) continue;
+      const wanted = new Set(list.map((v) => v.trim()).filter(Boolean));
+      const current = existing.filter((r) => r.type === type);
+      const stale = current.filter((r) => !wanted.has(r.value)).map((r) => r.id);
+      if (stale.length) await tx.wafRule.deleteMany({ where: { id: { in: stale } } });
+      const have = new Set(current.map((r) => r.value));
+      for (const value of wanted) {
+        if (!have.has(value)) await tx.wafRule.create({ data: { serviceId, type, value, enabled } });
+      }
+    }
 
-  return { allowed: true, status: 200 };
+    if (partial.rateLimitRpm !== undefined) {
+      const site = existing.find((r) => r.type === "RATE_LIMIT" && (r.value === "/*" || r.value === "*"));
+      if (partial.rateLimitRpm === null) {
+        if (site) await tx.wafRule.delete({ where: { id: site.id } });
+      } else if (site) {
+        await tx.wafRule.update({ where: { id: site.id }, data: { rateLimitRpm: partial.rateLimitRpm } });
+      } else {
+        await tx.wafRule.create({
+          data: { serviceId, type: "RATE_LIMIT", value: "/*", rateLimitRpm: partial.rateLimitRpm, enabled, description: "Site-wide rate limit" },
+        });
+      }
+    }
+
+    if (partial.enabled !== undefined) {
+      await tx.wafRule.updateMany({ where: { serviceId }, data: { enabled: partial.enabled } });
+    }
+  });
+
+  return getWafConfig(db, serviceId);
 }
 
-function recordEvent(serviceId: string, event: Omit<SecurityEvent, "id" | "serviceId" | "timestamp">) {
-  const list = securityEventsStore.get(serviceId) || [];
-  list.unshift({
-    id: `sec_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-    serviceId,
-    timestamp: new Date().toISOString(),
-    ...event,
+const ACTION_BY_TYPE: Record<string, SecurityEvent["actionTaken"]> = {
+  IP_BLOCK: "BLOCKED_IP",
+  GEO_BLOCK: "BLOCKED_GEO",
+  PATH_BLOCK: "BLOCKED_PATH",
+  RATE_LIMIT: "BLOCKED_429",
+};
+
+/** Rules that have blocked real requests, most recent first. */
+export async function getSecurityEvents(db: WafDb, serviceId: string, limit = 50): Promise<SecurityEvent[]> {
+  const rows = await db.wafRule.findMany({
+    where: { serviceId, hitCount: { gt: 0 }, lastHitAt: { not: null } },
+    orderBy: { lastHitAt: "desc" },
+    take: limit,
   });
-  if (list.length > 50) list.pop();
-  securityEventsStore.set(serviceId, list);
+  return rows.map((r) => ({
+    id: r.id,
+    serviceId,
+    timestamp: r.lastHitAt!.toISOString(),
+    clientIp: r.lastHitIp || "unknown",
+    countryCode: r.type === "GEO_BLOCK" ? r.value : "",
+    actionTaken: ACTION_BY_TYPE[r.type] || "BLOCKED_IP",
+    ruleMatched: r.description || `${r.type} ${r.value}${r.rateLimitRpm ? ` (${r.rateLimitRpm} rpm)` : ""}`,
+    popRegion: "edge",
+    path: r.lastHitPath || "/",
+    hitCount: r.hitCount,
+  }));
 }

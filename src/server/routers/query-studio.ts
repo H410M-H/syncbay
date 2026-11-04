@@ -1,48 +1,63 @@
 /**
  * Syncbay PaaS — Database Query Studio tRPC Router (M7)
- * Provides SQL & Redis query execution and schema tree introspection.
+ * Runs real queries against a managed database's connection URL and returns its real schema.
+ * Read-only by default; write mode requires the OWNER or ADMIN workspace role.
  */
 
 import { z } from "zod";
 import { createTRPCRouter, protectedProcedure } from "@/server/trpc";
 import { TRPCError } from "@trpc/server";
-import { executeQuery, getDatabaseSchema } from "@/lib/query-studio/engine";
+import { executeQuery, getDatabaseSchema, type QueryProvider } from "@/lib/query-studio/engine";
+
+const WRITE_ROLES = new Set(["OWNER", "ADMIN"]);
+
+async function loadDatabaseForUser(db: any, userId: string, databaseId: string) {
+  const dbInstance = await db.databaseInstance.findFirst({
+    where: {
+      id: databaseId,
+      environment: { project: { deletedAt: null, workspace: { members: { some: { userId } } } } },
+    },
+    include: {
+      environment: {
+        include: {
+          project: { include: { workspace: { include: { members: { where: { userId }, select: { role: true } } } } } },
+        },
+      },
+    },
+  });
+  if (!dbInstance) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Database not found or unauthorized" });
+  }
+  const role: string | undefined = dbInstance.environment?.project?.workspace?.members?.[0]?.role;
+  return { dbInstance, role };
+}
 
 export const queryStudioRouter = createTRPCRouter({
-  /** Execute SQL or Redis query against managed database */
+  /** Execute SQL or a Redis command against a managed database */
   execute: protectedProcedure
     .input(
       z.object({
         databaseId: z.string(),
-        query: z.string().min(1),
+        query: z.string().min(1).max(100_000),
         safeMode: z.boolean().default(true),
+        mode: z.enum(["read", "write"]).default("read"),
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const dbInstance = await ctx.db.databaseInstance.findFirst({
-        where: {
-          id: input.databaseId,
-          environment: {
-            project: {
-              workspace: {
-                members: {
-                  some: {
-                    userId: ctx.session.user.id,
-                    role: { in: ["OWNER", "ADMIN", "MEMBER"] },
-                  },
-                },
-              },
-            },
-          },
-        },
-      });
-
-      if (!dbInstance) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Database not found or unauthorized" });
+      const { dbInstance, role } = await loadDatabaseForUser(ctx.db, ctx.session.user.id, input.databaseId);
+      if (!role || role === "VIEWER") {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Viewers cannot run queries" });
+      }
+      if (input.mode === "write" && !WRITE_ROLES.has(role)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Write mode requires the OWNER or ADMIN role" });
       }
 
       try {
-        const result = await executeQuery(input.query, dbInstance.provider as any, input.safeMode);
+        const result = await executeQuery(
+          { provider: dbInstance.provider as QueryProvider, connectionUrl: dbInstance.connectionUrl },
+          input.query,
+          { mode: input.mode, safeMode: input.safeMode }
+        );
         return {
           ...result,
           databaseName: dbInstance.name,
@@ -56,26 +71,24 @@ export const queryStudioRouter = createTRPCRouter({
       }
     }),
 
-  /** Get database tables and schema tree */
+  /** Get database tables (or Redis keys) from live introspection */
   getSchema: protectedProcedure
     .input(z.object({ databaseId: z.string() }))
     .query(async ({ ctx, input }) => {
-      const dbInstance = await ctx.db.databaseInstance.findFirst({
-        where: {
-          id: input.databaseId,
-          environment: { project: { workspace: { members: { some: { userId: ctx.session.user.id } } } } },
-        },
-      });
-
-      if (!dbInstance) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Database not found or unauthorized" });
+      const { dbInstance, role } = await loadDatabaseForUser(ctx.db, ctx.session.user.id, input.databaseId);
+      try {
+        const tables = await getDatabaseSchema({
+          provider: dbInstance.provider as QueryProvider,
+          connectionUrl: dbInstance.connectionUrl,
+        });
+        return {
+          databaseName: dbInstance.name,
+          provider: dbInstance.provider,
+          canWrite: Boolean(role && WRITE_ROLES.has(role)),
+          tables,
+        };
+      } catch (err: any) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: `Schema introspection failed: ${err.message}` });
       }
-
-      const tables = getDatabaseSchema(dbInstance.provider as any);
-      return {
-        databaseName: dbInstance.name,
-        provider: dbInstance.provider,
-        tables,
-      };
     }),
 });

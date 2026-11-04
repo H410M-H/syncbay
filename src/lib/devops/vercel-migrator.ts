@@ -9,8 +9,8 @@
  * - Computes total cost savings and eliminates Vercel seat taxes ($20/seat).
  */
 
-import { createCronJob } from "./cron-engine";
-import { updateWafConfig } from "./waf-engine";
+import { createCronJob, type CronDb } from "./cron-engine";
+import { updateWafConfig, type WafDb } from "./waf-engine";
 
 export interface VercelCronConfig {
   path: string;
@@ -55,8 +55,6 @@ export interface VercelMigrationPlan {
   wafRules: {
     securityHeaders: Record<string, string>;
     rateLimitRpm: number;
-    ddosShieldEnabled: boolean;
-    botProtectionEnabled: boolean;
   };
   edgeRoutes: {
     redirects: Array<{ source: string; destination: string; permanent: boolean }>;
@@ -166,7 +164,7 @@ export function parseVercelConfig(input: string | VercelJsonSchema): VercelMigra
   const competitiveAdvantages = [
     "Zero Seat Tax: Unlimited team collaborators included (Save $20/user/mo vs Vercel)",
     "Persistent Volume Support: Attach real UNIX SSD volumes for databases and stateful workloads",
-    "Automated Edge WAF: Built-in sliding-window rate limiting & DDoS mitigation included at no extra cost",
+    "Edge WAF: IP/CIDR, path and geo blocking plus per-IP rate limits enforced at the Syncbay proxy",
     "Native Managed DBs: Instant 1-click PostgreSQL and Redis provisioned inside private subnets",
     "Canary Traffic Shifting: Automated 0-100% gradual traffic routing with 5xx circuit-breaker rollbacks",
     "Interactive Web Terminal: Direct container shell execution and live DB Query Studio",
@@ -178,8 +176,6 @@ export function parseVercelConfig(input: string | VercelJsonSchema): VercelMigra
     wafRules: {
       securityHeaders,
       rateLimitRpm: 120,
-      ddosShieldEnabled: true,
-      botProtectionEnabled: true,
     },
     edgeRoutes: {
       redirects,
@@ -201,34 +197,38 @@ export function parseVercelConfig(input: string | VercelJsonSchema): VercelMigra
 }
 
 /**
- * Automatically applies migrated Vercel configurations to an existing Syncbay service.
+ * Applies a migration plan to an existing Syncbay service: creates `CronJob`
+ * rows for the Vercel crons (skipping ones whose path+schedule already exist)
+ * and a site-wide RATE_LIMIT `WafRule`. Security headers are reported only.
  */
-export function applyVercelMigration(
+export async function applyVercelMigration(
+  db: CronDb & WafDb,
   serviceId: string,
   plan: VercelMigrationPlan
-): { cronsAdded: number; wafConfigured: boolean } {
+): Promise<{ cronsAdded: number; cronsSkipped: number; wafConfigured: boolean }> {
   let cronsAdded = 0;
+  let cronsSkipped = 0;
+  const existing = await db.cronJob.findMany({ where: { serviceId }, select: { path: true, schedule: true } });
+  const seen = new Set(existing.map((c) => `${c.path} ${c.schedule}`));
 
   for (const cron of plan.cronsToCreate) {
-    createCronJob({
+    const key = `${cron.path} ${cron.schedule.trim()}`;
+    if (seen.has(key)) {
+      cronsSkipped++;
+      continue;
+    }
+    await createCronJob(db, {
       serviceId,
       name: cron.name,
       schedule: cron.schedule,
       path: cron.path,
       method: cron.method,
     });
+    seen.add(key);
     cronsAdded++;
   }
 
-  updateWafConfig(serviceId, {
-    enabled: true,
-    rateLimitRpm: plan.wafRules.rateLimitRpm,
-    ddosShieldEnabled: plan.wafRules.ddosShieldEnabled,
-    botProtectionEnabled: plan.wafRules.botProtectionEnabled,
-  });
+  await updateWafConfig(db, serviceId, { rateLimitRpm: plan.wafRules.rateLimitRpm });
 
-  return {
-    cronsAdded,
-    wafConfigured: true,
-  };
+  return { cronsAdded, cronsSkipped, wafConfigured: true };
 }

@@ -276,6 +276,11 @@ model Service {
   variables   EnvironmentVariable[]
   volumes     Volume[]
 
+  // Team E — DevOps engines
+  cronJobs     CronJob[]
+  wafRules     WafRule[]
+  canaryConfig CanaryConfig?
+
   @@map("services")
 }
 
@@ -661,4 +666,97 @@ model StripeEvent {
 
   @@index([type])
   @@map("stripe_events")
+
+// ── Team E ── DevOps engines: scheduled HTTP crons, edge WAF rules, canary routing ──
+
+model CronJob {
+  id             String    @id @default(cuid())
+  serviceId      String
+  name           String
+  schedule       String // 5-field cron expression, evaluated in UTC
+  path           String // request path on the service, e.g. "/api/cron/cleanup"
+  method         String    @default("GET")
+  headers        Json?
+  body           String?
+  timeoutMs      Int       @default(10000)
+  maxRetries     Int       @default(2)
+  enabled        Boolean   @default(true)
+  nextRunAt      DateTime
+  lastRunAt      DateTime?
+  lastStatus     String? // SUCCESS | FAILED | TIMEOUT
+  lastDurationMs Int?
+  lockedUntil    DateTime? // claim lease: concurrent cron invocations never run a job twice
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  service Service   @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  runs    CronRun[]
+
+  @@index([serviceId])
+  @@index([enabled, nextRunAt])
+  @@map("cron_jobs")
+}
+
+model CronRun {
+  id              String   @id @default(cuid())
+  cronJobId       String
+  executedAt      DateTime @default(now())
+  trigger         String   @default("schedule") // schedule | manual
+  status          String // SUCCESS | FAILED | TIMEOUT
+  statusCode      Int?
+  durationMs      Int
+  attempts        Int      @default(1)
+  url             String
+  responseSnippet String?
+  error           String?
+
+  cronJob CronJob @relation(fields: [cronJobId], references: [id], onDelete: Cascade)
+
+  @@index([cronJobId, executedAt])
+  @@map("cron_runs")
+}
+
+model WafRule {
+  id           String    @id @default(cuid())
+  serviceId    String
+  type         String // IP_BLOCK | IP_ALLOW | PATH_BLOCK | GEO_BLOCK | RATE_LIMIT
+  value        String // IP or CIDR, path pattern ("/admin/*"), ISO country code; RATE_LIMIT: path pattern
+  rateLimitRpm Int? // RATE_LIMIT only: requests per minute per client IP
+  enabled      Boolean   @default(true)
+  description  String?
+  hitCount     Int       @default(0)
+  lastHitAt    DateTime?
+  lastHitIp    String?
+  lastHitPath  String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@index([serviceId])
+  @@map("waf_rules")
+}
+
+model CanaryConfig {
+  id                              String    @id @default(cuid())
+  serviceId                       String    @unique
+  stableDeploymentId              String
+  canaryDeploymentId              String
+  stableUpstreamUrl               String
+  canaryUpstreamUrl               String
+  weightPercent                   Int       @default(10)
+  autoRollbackThreshold5xxPercent Float     @default(5)
+  status                          String    @default("ACTIVE") // ACTIVE | PROMOTED | ROLLED_BACK
+  stableRequests                  Int       @default(0)
+  canaryRequests                  Int       @default(0)
+  lastEvaluatedAt                 DateTime?
+  lastErrorRatePercent            Float?
+  lastHealthy                     Boolean?
+  lastReason                      String?
+  startedAt                       DateTime  @default(now())
+  updatedAt                       DateTime  @updatedAt
+
+  service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@map("canary_configs")
 }

@@ -1,8 +1,10 @@
 /**
- * Syncbay PaaS — Zero-Config Framework Auto-Detector & Performance Optimizer
- * PRD Phase 3 & Vercel Challenger — Automated Framework Optimization
- * Analyzes repository structure and configuration files to synthesize optimal
- * runtime flags, port bindings, cache directories, and scaling configurations.
+ * Syncbay PaaS — Framework detector & settings suggestions (heuristic)
+ *
+ * Rule-based: matches repository file names / package.json against known
+ * frameworks and returns suggested build/start commands, port, cache dirs and
+ * env presets. Nothing is applied to the service; `optimizationNotes` are
+ * recommendations the user can adopt.
  */
 
 export interface FrameworkTuningResult {
@@ -17,7 +19,11 @@ export interface FrameworkTuningResult {
   idleTimeoutSecs: number;
   cacheDirectories: string[];
   recommendedEnvPresets: Record<string, string>;
+  /** Suggestions only — nothing here has been applied to a service. */
   optimizationNotes: string[];
+  /** Always "heuristic": derived from file-name rules, not from builds or profiling. */
+  method: "heuristic";
+  applied: false;
 }
 
 export function autoTuneFramework(files: string[], packageJsonContent?: string): FrameworkTuningResult {
@@ -47,10 +53,12 @@ export function autoTuneFramework(files: string[], packageJsonContent?: string):
         NEXT_TELEMETRY_DISABLED: "1",
       },
       optimizationNotes: [
-        "Enabled Next.js standalone output & multi-stage layer caching",
-        "Configured 300s scale-to-zero idle timeout with 200ms cold resume",
-        "Auto-routed static assets (_next/static) to 6 global edge POPs",
+        'Suggest `output: "standalone"` in next.config and caching .next/cache between builds',
+        "Suggest scale-to-zero with a 300 s idle timeout",
+        "Suggest long-lived Cache-Control headers for _next/static assets",
       ],
+      method: "heuristic",
+      applied: false,
     };
   }
 
@@ -77,9 +85,11 @@ export function autoTuneFramework(files: string[], packageJsonContent?: string):
         NITRO_PRESET: "node-server",
       },
       optimizationNotes: [
-        "Pre-configured Nitro edge server engine",
-        "Enabled persistent cache for .nuxt assets",
+        "Suggest the Nitro node-server preset for container deploys",
+        "Suggest caching .nuxt between builds",
       ],
+      method: "heuristic",
+      applied: false,
     };
   }
 
@@ -104,8 +114,10 @@ export function autoTuneFramework(files: string[], packageJsonContent?: string):
         PORT: "3000",
       },
       optimizationNotes: [
-        "Configured server-side rendering streaming cache headers",
+        "Suggest Cache-Control headers for SSR responses",
       ],
+      method: "heuristic",
+      applied: false,
     };
   }
 
@@ -132,8 +144,10 @@ export function autoTuneFramework(files: string[], packageJsonContent?: string):
         HOST: "0.0.0.0",
       },
       optimizationNotes: [
-        "Configured zero-JS baseline with edge island hydration",
+        "Suggest static output where pages need no server rendering",
       ],
+      method: "heuristic",
+      applied: false,
     };
   }
 
@@ -156,9 +170,11 @@ export function autoTuneFramework(files: string[], packageJsonContent?: string):
         PORT: "8000",
       },
       optimizationNotes: [
-        "Enabled Python bytecode cache & unbuffered standard I/O for real-time SSE logs",
-        "Set multi-worker Uvicorn loop",
+        "Suggest PYTHONUNBUFFERED=1 so logs stream in real time",
+        "Suggest running Uvicorn with multiple workers",
       ],
+      method: "heuristic",
+      applied: false,
     };
   }
 
@@ -180,9 +196,11 @@ export function autoTuneFramework(files: string[], packageJsonContent?: string):
         GIN_MODE: "release",
       },
       optimizationNotes: [
-        "Stripped debug symbols (-ldflags='-s -w') for minimal 15MB container footprint",
-        "Instantaneous 0ms cold-start resume",
+        "Suggest -ldflags='-s -w' to shrink the binary",
+        "Static Go binaries usually start quickly from scale-to-zero",
       ],
+      method: "heuristic",
+      applied: false,
     };
   }
 
@@ -204,8 +222,10 @@ export function autoTuneFramework(files: string[], packageJsonContent?: string):
         PORT: "8080",
       },
       optimizationNotes: [
-        "Configured Cargo layer caching for 10x faster subsequent builds",
+        "Suggest caching target/ and the Cargo registry between builds",
       ],
+      method: "heuristic",
+      applied: false,
     };
   }
 
@@ -226,7 +246,9 @@ export function autoTuneFramework(files: string[], packageJsonContent?: string):
       PORT: "3000",
     },
     optimizationNotes: [
-      "Auto-detected Node.js package scripts",
+      "Detected Node.js package scripts",
     ],
+    method: "heuristic",
+      applied: false,
   };
 }

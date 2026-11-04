@@ -14,6 +14,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { promisify } from "node:util";
 import { PortManager, defaultPortManager } from "./port-manager.ts";
+import { dockerVolumeFlags, prepareNativeVolumes, type VolumeMount } from "./volumes.ts";
 
 const execAsync = promisify(exec);
 
@@ -52,6 +53,8 @@ export interface PipelineOptions {
   healthCheckTimeoutMs?: number;
   healthCheckIntervalMs?: number;
   cleanBuild?: boolean;
+  /** Persistent volumes (Volume rows) mounted into the container or bound for native processes. */
+  volumes?: VolumeMount[];
   onLog?: (line: string) => void;
 }
 
@@ -732,7 +735,7 @@ server.listen(port, "0.0.0.0", () => {
         envFlags.push(`-e PORT=${targetPort}`);
 
         const startCmd = options.startCommand ? ` ${options.startCommand}` : "";
-        const runCmd = `docker run -d --name ${containerName} --restart unless-stopped -p ${assignedPort}:${targetPort} ${envFlags.join(" ")} ${imageTag}${startCmd}`.trim();
+        const runCmd = `docker run -d --name ${containerName} --restart unless-stopped -p ${assignedPort}:${targetPort} ${dockerVolumeFlags(options.volumes)} ${envFlags.join(" ")} ${imageTag}${startCmd}`.trim();
 
         log(`Launching application container: ${runCmd}`);
         const runRes = await this.executor.execute(runCmd);
@@ -791,7 +794,7 @@ server.listen(port, "0.0.0.0", () => {
         envFlags.push(`-e PORT=${targetPort}`);
 
         const startCmd = options.startCommand ? ` ${options.startCommand}` : "";
-        const runCmd = `docker run -d --name ${containerName} --restart unless-stopped -p ${assignedPort}:${targetPort} ${envFlags.join(" ")} ${imageTag}${startCmd}`.trim();
+        const runCmd = `docker run -d --name ${containerName} --restart unless-stopped -p ${assignedPort}:${targetPort} ${dockerVolumeFlags(options.volumes)} ${envFlags.join(" ")} ${imageTag}${startCmd}`.trim();
 
         log(`Launching application container: ${runCmd}`);
         const runRes = await this.executor.execute(runCmd);
@@ -1040,9 +1043,12 @@ server.listen(port, "0.0.0.0");
         }
 
         log(`Launching application process: ${runCmd} with PORT=${assignedPort}`);
+        const nativeVolumes = prepareNativeVolumes(options.volumes, sourceDir);
+        for (const m of nativeVolumes.mounts) log(`Volume ${m.id} bound at ${m.hostPath} (mountPath ${m.mountPath})`);
         const childEnv: NodeJS.ProcessEnv = {
           ...process.env,
           ...options.environmentVariables,
+          ...nativeVolumes.env,
           PATH: `${nmBin}:${currentPath}`,
           PORT: String(assignedPort),
           HTTP_PORT: String(assignedPort),

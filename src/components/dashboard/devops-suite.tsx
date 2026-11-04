@@ -115,8 +115,6 @@ export function DevOpsSuite({ serviceId, projectId }: DevOpsSuiteProps) {
         })),
         wafRules: {
           rateLimitRpm: 120,
-          ddosShieldEnabled: true,
-          botProtectionEnabled: true,
           securityHeaders: (parsed.headers?.[0]?.headers || []).reduce((acc: any, h: any) => {
             acc[h.key] = h.value;
             return acc;
@@ -131,7 +129,7 @@ export function DevOpsSuite({ serviceId, projectId }: DevOpsSuiteProps) {
         competitiveAdvantages: [
           "Zero Seat Tax: Unlimited team collaborators included (Save $20/user/mo vs Vercel)",
           "Persistent Volume Support: Attach real UNIX SSD volumes for databases and stateful workloads",
-          "Automated Edge WAF: Built-in sliding-window rate limiting & DDoS mitigation included at no extra cost",
+          "Edge WAF: IP/CIDR, path and geo blocking plus per-IP rate limits enforced at the Syncbay proxy",
           "Native Managed DBs: Instant 1-click PostgreSQL and Redis provisioned inside private subnets",
           "Canary Traffic Shifting: Automated 0-100% gradual traffic routing with 5xx circuit-breaker rollbacks",
           "Interactive Web Terminal: Direct container shell execution and live DB Query Studio",
@@ -220,7 +218,7 @@ export function DevOpsSuite({ serviceId, projectId }: DevOpsSuiteProps) {
         serviceId,
         rateLimitRpm,
       });
-      setWafSavedMsg("WAF Rate Limiting rules updated successfully across 6 POPs!");
+      setWafSavedMsg("WAF rate limit saved. The edge proxy picks it up within 15 seconds.");
       await refetchWaf();
       setTimeout(() => setWafSavedMsg(null), 3000);
     } catch (err: any) {
@@ -308,7 +306,7 @@ export function DevOpsSuite({ serviceId, projectId }: DevOpsSuiteProps) {
             </span>
           </div>
           <p style={{ fontSize: "0.8125rem", color: "var(--text-secondary)", marginTop: "4px" }}>
-            Surpassing Vercel and Railway with automated edge crons, intelligent WAF, canary traffic shifting, and AI log diagnostics.
+            Surpassing Vercel and Railway with automated edge crons, intelligent WAF, canary traffic shifting, and rule-based log diagnostics.
           </p>
         </div>
       </div>
@@ -346,7 +344,7 @@ export function DevOpsSuite({ serviceId, projectId }: DevOpsSuiteProps) {
           onClick={() => setActiveTab("ai")}
           className={`btn btn-sm ${activeTab === "ai" ? "btn-primary" : "btn-secondary"}`}
         >
-          🤖 AI Deploy Diagnoser
+          🤖 Log Diagnoser (heuristic)
         </button>
         <button
           onClick={() => setActiveTab("autotune")}
@@ -385,7 +383,7 @@ export function DevOpsSuite({ serviceId, projectId }: DevOpsSuiteProps) {
             <div>
               <h4 style={{ fontSize: "0.95rem" }}>Automated Scheduled Functions</h4>
               <p style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
-                Runs HTTP triggers across 6 POPs on precise cron cadence without timeout bottlenecks.
+                Calls your service over HTTP on a UTC cron schedule, with per-attempt timeouts, retries and recorded run history.
               </p>
             </div>
           </div>
@@ -589,26 +587,22 @@ export function DevOpsSuite({ serviceId, projectId }: DevOpsSuiteProps) {
               </button>
             </div>
 
-            {/* DDoS Shield Card */}
+            {/* Enforcement summary (real rule counts) */}
             <div style={{ padding: "16px", background: "var(--bg-overlay)", borderRadius: "var(--radius-md)", border: "1px solid var(--border-subtle)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
-                <h4 style={{ fontSize: "0.95rem" }}>Edge DDoS &amp; Layer 7 Shield</h4>
-                <span className="badge badge-active" style={{ fontSize: "0.65rem" }}>Enforced</span>
+                <h4 style={{ fontSize: "0.95rem" }}>Edge Firewall Enforcement</h4>
+                <span className="badge badge-active" style={{ fontSize: "0.65rem" }}>{wafConfig?.enabled === false ? "Disabled" : "Proxy"}</span>
               </div>
               <p style={{ fontSize: "0.8125rem", color: "var(--text-secondary)", marginBottom: "12px" }}>
-                Multi-terabit Anycast protection across all 6 POPs with automated TCP SYN flood &amp; HTTP challenge mitigation.
+                Rules are enforced by the Syncbay edge proxy on every request to this service (cached up to 15 s). Volumetric
+                L3/L4 DDoS protection is provided by Cloudflare in front of the tunnel, not by these rules.
               </p>
 
               <div style={{ display: "flex", flexDirection: "column", gap: "8px", fontSize: "0.8125rem" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                  <span style={{ color: "var(--status-active)" }}>✔</span> Layer 3/4 Volume Defense: Active
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                  <span style={{ color: "var(--status-active)" }}>✔</span> Layer 7 HTTP Flood Mitigation: Active
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                  <span style={{ color: "var(--status-active)" }}>✔</span> Bot Signature Heuristics: Enabled
-                </div>
+                <div>IP / CIDR blocks: {wafConfig?.ipBlocklist?.length ?? 0}</div>
+                <div>Allowlisted IPs: {wafConfig?.ipAllowlist?.length ?? 0}</div>
+                <div>Blocked paths: {wafConfig?.pathBlocklist?.length ?? 0}</div>
+                <div>Rate limit: {wafConfig?.rateLimitRpm ? `${wafConfig.rateLimitRpm} req/min per IP` : "off"}</div>
               </div>
             </div>
           </div>
@@ -814,7 +808,7 @@ export function DevOpsSuite({ serviceId, projectId }: DevOpsSuiteProps) {
         <div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
             <div>
-              <h4 style={{ fontSize: "0.95rem" }}>AI Operations Build &amp; Deploy Diagnoser</h4>
+              <h4 style={{ fontSize: "0.95rem" }}>Build &amp; Deploy Log Diagnoser (rule-based heuristics)</h4>
               <p style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
                 Automatically analyzes build failures and container runtime logs to prescribe instant 1-click fixes.
               </p>
@@ -846,7 +840,7 @@ export function DevOpsSuite({ serviceId, projectId }: DevOpsSuiteProps) {
                     {diagnosticReport.severity}
                   </span>
                   <span className="badge badge-sleeping" style={{ fontSize: "0.7rem" }}>
-                    {Math.round(diagnosticReport.confidenceScore * 100)}% Confidence
+                    {Math.round(diagnosticReport.confidenceScore * 100)}% rule weight
                   </span>
                 </div>
               </div>
