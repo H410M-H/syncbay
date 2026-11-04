@@ -8,11 +8,8 @@
  */
 
 import { db } from "@/lib/db";
-import { generateDefaultSubdomain } from "@/lib/domain-service";
-import { registerServiceRouteAsync } from "@/lib/edge/service-registry";
-import { getRunnerDriver } from "@/lib/orchestrator/runner-driver";
+import { resolveServiceHostnames, stopServiceInstances } from "@/lib/orchestrator/lifecycle";
 import { logEventBus } from "@/lib/telemetry/event-bus";
-import { requestTunnelReload } from "@/lib/tunnel/tunnel-sync";
 
 export interface HostnameSource {
   name: string;
@@ -20,26 +17,9 @@ export interface HostnameSource {
   environment?: { name: string; isPrEnv?: boolean | null; prNumber?: number | null } | null;
 }
 
-/** Every hostname the engine registers for a service (mirrors executeDeployment()). */
+/** Every hostname the engine registers for a service (shared with the deploy lifecycle). */
 export function serviceHostnames(service: HostnameSource): string[] {
-  const hosts = new Set<string>();
-  const addWithAliases = (host: string) => {
-    hosts.add(host);
-    if (host.endsWith(".syncbay.app")) {
-      const sub = host.slice(0, -".syncbay.app".length);
-      hosts.add(`${sub}.localhost`);
-      hosts.add(sub);
-    }
-  };
-  addWithAliases(generateDefaultSubdomain(service.name || "web", service.environment?.name || "production"));
-  for (const d of service.domains || []) {
-    if (d.hostname) addWithAliases(d.hostname.toLowerCase());
-  }
-  if (service.environment?.isPrEnv && service.environment.prNumber) {
-    hosts.add(`${service.name}-pr-${service.environment.prNumber}.syncbay.app`);
-    hosts.add(`${service.name}-pr-${service.environment.prNumber}.localhost`);
-  }
-  return [...hosts];
+  return resolveServiceHostnames(service);
 }
 
 export interface StopForSleepResult {
@@ -52,6 +32,10 @@ export interface StopForSleepResult {
 /**
  * Puts a service to sleep. `pause: true` also sets `Service.isPaused` (used by the
  * spending cap, so only a user action resumes it).
+ *
+ * The stop itself is the deploy lifecycle's `stopServiceInstances(…, "pause")`: it stops every
+ * live instance through the driver that runs it, marks them (and `deployment`) SLEEPING, routes
+ * every hostname SLEEPING and reloads the tunnel ingress. In-flight deploys are left alone.
  */
 export async function stopServiceToSleep(
   service: HostnameSource & { id: string },
@@ -64,26 +48,32 @@ export async function stopServiceToSleep(
 
   log(`[scale-to-zero] ${options.reason}`);
 
-  if (deployment.cfContainerId) {
-    try {
-      const res = await getRunnerDriver().stopContainer(deployment.cfContainerId);
-      result.containerStopped = Boolean(res.stopped);
-      log(`[scale-to-zero] Container ${deployment.cfContainerId} ${res.stopped ? "stopped" : "was not running"}`);
-    } catch (err) {
-      result.error = (err as Error)?.message || String(err);
-      log(`[scale-to-zero] Failed to stop container ${deployment.cfContainerId}: ${result.error}`, "stderr");
-    }
+  try {
+    await stopServiceInstances(service.id, "pause", db, {
+      cancelInFlight: false,
+      include: [deployment.id],
+      reason: `sleep:${service.id}`,
+      onInstance: (depId, containerId, res) => {
+        if (!containerId) return;
+        if (depId === deployment.id) {
+          result.containerStopped = Boolean(res.stopped);
+          if (!res.stopped && !res.queued && res.message && res.message !== "no instance") result.error = res.message;
+        }
+        logEventBus.publish(depId, {
+          stream: res.stopped || res.queued ? "system" : "stderr",
+          message: `[scale-to-zero] Container ${containerId} ${res.stopped ? "stopped" : res.queued ? "stop queued for its runner" : `was not running${res.message ? ` (${res.message})` : ""}`}`,
+          timestamp: new Date().toISOString(),
+        });
+      },
+    });
+  } catch (err) {
+    result.error = (err as Error)?.message || String(err);
+    log(`[scale-to-zero] Failed to stop service ${service.id}: ${result.error}`, "stderr");
   }
 
-  await db.deployment.update({ where: { id: deployment.id }, data: { status: "SLEEPING" } });
   if (options.pause) {
     await db.service.update({ where: { id: service.id }, data: { isPaused: true } });
   }
-  for (const host of serviceHostnames(service)) {
-    await registerServiceRouteAsync(host, undefined, "SLEEPING");
-  }
-  // Drop the stopped port from the tunnel ingress (no-op unless a tunnel is configured).
-  await requestTunnelReload(`sleep:${service.id}`);
   await logEventBus.flush();
   return result;
 }

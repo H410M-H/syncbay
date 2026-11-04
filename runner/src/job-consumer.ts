@@ -6,7 +6,8 @@
  *  - `POST {SYNCBAY_API_URL}/api/v1/runner/jobs/claim`        body `{ runnerId }` → 200 `{ job }` | 204
  *  - `POST {SYNCBAY_API_URL}/api/v1/runner/jobs/:id/events`   body `{ runnerId, logs?, status?, result? }`
  * Both are signed exactly like control plane → runner requests: HMAC-SHA256 over
- * `${ts}.POST.${pathname}.${body}` in `X-Syncbay-Signature` / `X-Syncbay-Timestamp`.
+ * `${ts}.${nonce}.POST.${pathname}.${body}` in `X-Syncbay-Signature` / `-Timestamp` / `-Nonce`
+ * (a fresh 16-byte nonce per request; the control plane accepts each nonce once).
  * Events double as the lease heartbeat; the response says when the job was cancelled.
  */
 
@@ -116,10 +117,16 @@ export class JobPullConsumer {
     const signedPath = new URL(url).pathname;
     const body = JSON.stringify(payload);
     const ts = Date.now().toString();
-    const sig = crypto.createHmac("sha256", this.secret).update(`${ts}.POST.${signedPath}.${body}`).digest("hex");
+    const nonce = crypto.randomBytes(16).toString("hex");
+    const sig = crypto.createHmac("sha256", this.secret).update(`${ts}.${nonce}.POST.${signedPath}.${body}`).digest("hex");
     return this.fetchFn(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-Syncbay-Signature": `sha256=${sig}`, "X-Syncbay-Timestamp": ts },
+      headers: {
+        "Content-Type": "application/json",
+        "X-Syncbay-Signature": `sha256=${sig}`,
+        "X-Syncbay-Timestamp": ts,
+        "X-Syncbay-Nonce": nonce,
+      },
       body,
       signal: AbortSignal.timeout(15000),
     });

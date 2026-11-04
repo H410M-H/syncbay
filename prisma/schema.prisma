@@ -585,6 +585,8 @@ model MetricSample {
   @@index([deploymentId, sampledAt])
   @@index([sampledAt])
   @@map("metric_samples")
+}
+
 // ── Team A ── durable deployment queue, leases and runner pull consumer
 
 enum DeploymentJobStatus {

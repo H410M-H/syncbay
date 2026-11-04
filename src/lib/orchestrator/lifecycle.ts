@@ -13,6 +13,7 @@ import { generateDefaultSubdomain } from "@/lib/domain-service";
 import { registerServiceRouteAsync, removeServiceRouteAsync } from "@/lib/edge/service-registry";
 import { getRunnerDriver, type RestartContainerResult, type RunnerDriver, type RunnerDriverType } from "./runner-driver";
 import { cancelDeploymentJob, completeDeploymentJob } from "./job-queue";
+import { requestTunnelReload } from "@/lib/tunnel/tunnel-sync";
 
 type Client = any;
 type PreviewState = "pending" | "success" | "failure";
@@ -39,7 +40,7 @@ export function resolveServiceHostnames(service: {
     }
   };
   addPlatform(generateDefaultSubdomain(serviceName, service.environment?.name || "production"));
-  for (const d of service.domains || []) if (d.hostname) addPlatform(d.hostname);
+  for (const d of service.domains || []) if (d.hostname) addPlatform(d.hostname.toLowerCase());
   if (service.environment?.isPrEnv && service.environment.prNumber) {
     hosts.add(`${serviceName}-pr-${service.environment.prNumber}.syncbay.app`);
     hosts.add(`${serviceName}-pr-${service.environment.prNumber}.localhost`);
@@ -218,20 +219,39 @@ export interface StopReport {
   hosts: string[];
 }
 
+export interface StopOptions {
+  /** Cancel QUEUED/BUILDING/DEPLOYING deployments too (default true; scale-to-zero passes false). */
+  cancelInFlight?: boolean;
+  /** Also stop and mark these deployments, whatever their status (scale-to-zero / spending cap target). */
+  include?: string[];
+  /** Per-instance callback, e.g. to write the outcome into the deployment's log. */
+  onInstance?: (deploymentId: string, containerId: string | null, res: { stopped: boolean; queued?: boolean; message?: string }) => void;
+  /** Tunnel reload reason (default `<mode>:<serviceId>`). */
+  reason?: string;
+}
+
 /**
+ * The one stop implementation, shared by the routers, PR previews and scale-to-zero
+ * (`src/lib/scale/service-control.ts`).
  * `pause`: stop live instances, mark them SLEEPING and route every host to the sleeping splash.
- * `delete`: stop live and sleeping instances, mark them CANCELLED and remove every route. The
- * runner's stop endpoint frees the port and drops the tunnel ingress for the instance.
- * In-flight deployments are cancelled in both cases.
+ * `delete`: stop live and sleeping instances, mark them CANCELLED and remove every route.
+ * The runner's stop endpoint frees the port and drops the instance's tunnel ingress, and the
+ * control-plane tunnel config is reloaded afterwards.
  */
-export async function stopServiceInstances(serviceId: string, mode: "pause" | "delete", client: Client = db): Promise<StopReport> {
+export async function stopServiceInstances(
+  serviceId: string,
+  mode: "pause" | "delete",
+  client: Client = db,
+  opts: StopOptions = {}
+): Promise<StopReport> {
   const report: StopReport = { stopped: [], queued: [], failed: [], cancelled: [], hosts: [] };
   const service = await loadServiceForRouting(serviceId, client);
   if (!service) return report;
 
   const statuses = mode === "pause" ? LIVE_STATUSES : [...LIVE_STATUSES, "SLEEPING"];
+  const include = (opts.include || []).filter(Boolean);
   const live: any[] = await client.deployment.findMany({
-    where: { serviceId, status: { in: statuses } },
+    where: { serviceId, OR: [{ status: { in: statuses } }, ...(include.length ? [{ id: { in: include } }] : [])] },
     select: { id: true, cfContainerId: true, runnerDriver: true },
   });
   for (const dep of live) {
@@ -239,25 +259,30 @@ export async function stopServiceInstances(serviceId: string, mode: "pause" | "d
     if (res.stopped) report.stopped.push(dep.id);
     else if (res.queued) report.queued.push(dep.id);
     else if (dep.cfContainerId) report.failed.push({ deploymentId: dep.id, message: res.message });
+    opts.onInstance?.(dep.id, dep.cfContainerId ?? null, res);
     await client.deployment.update({
       where: { id: dep.id },
       data: { status: mode === "pause" ? "SLEEPING" : "CANCELLED" },
     });
   }
 
-  const inFlight: any[] = await client.deployment.findMany({
-    where: { serviceId, status: { in: IN_FLIGHT_STATUSES } },
-    select: { id: true },
-  });
-  for (const dep of inFlight) {
-    await cancelDeploymentJob(dep.id, client);
-    await client.deployment.update({ where: { id: dep.id }, data: { status: "CANCELLED", completedAt: new Date() } });
-    report.cancelled.push(dep.id);
+  if (opts.cancelInFlight !== false) {
+    const inFlight: any[] = await client.deployment.findMany({
+      where: { serviceId, status: { in: IN_FLIGHT_STATUSES }, id: { notIn: include } },
+      select: { id: true },
+    });
+    for (const dep of inFlight) {
+      await cancelDeploymentJob(dep.id, client);
+      await client.deployment.update({ where: { id: dep.id }, data: { status: "CANCELLED", completedAt: new Date() } });
+      report.cancelled.push(dep.id);
+    }
   }
 
   report.hosts = resolveServiceHostnames(service);
   if (mode === "pause") await setRoutes(report.hosts, "SLEEPING");
   else for (const host of report.hosts) await removeServiceRouteAsync(host);
+  // Drop the stopped ports from the tunnel ingress (no-op unless a tunnel is configured; never throws).
+  await requestTunnelReload(opts.reason || `${mode}:${serviceId}`);
   return report;
 }
 
@@ -327,6 +352,7 @@ export async function restartServiceInstance(serviceId: string, userId?: string,
       const service = await loadServiceForRouting(serviceId, client);
       if (service && port) await setRoutes(resolveServiceHostnames(service), "ACTIVE", port, driver.type === "local");
       await setServicePort(client, serviceId, port);
+      await requestTunnelReload(`restart:${serviceId}`);
       return { mode: "restart", deploymentId: active.id, containerId: res.containerId, port };
     }
     if (res.queued) return { mode: "queued", deploymentId: active.id, message: res.message };
@@ -357,6 +383,7 @@ export async function rollbackToDeployment(
         await client.deployment.update({ where: { id: currentActive.id }, data: { status: "SUPERSEDED" } });
         if (currentActive.cfContainerId && currentActive.cfContainerId !== res.containerId) await stopInstance(currentActive, driver);
       }
+      await requestTunnelReload(`rollback:${target.id}`);
       return { mode: "restart", deploymentId: target.id, containerId: res.containerId, port };
     }
   }
