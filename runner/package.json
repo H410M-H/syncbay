@@ -14,6 +14,7 @@
     "start": "node src/index.ts",
     "dev": "node src/index.ts",
     "test": "node ../node_modules/tsx/dist/cli.mjs test/runner.test.ts",
+    "test:provision": "node ../node_modules/tsx/dist/cli.mjs test/db-provisioning.test.ts",
     "start:dist": "node dist/index.js"
   },
   "engines": {
