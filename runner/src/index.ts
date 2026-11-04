@@ -32,6 +32,7 @@ function resolveDaemonSecret(explicit?: string): string {
   return DEV_RUNNER_SECRET;
 }
 import { RunnerServices } from "./services.ts";
+import { handleMetricsRequest } from "./metrics.ts";
 
 export interface DaemonConfig {
   port?: number;
@@ -274,6 +275,9 @@ export class RunnerDaemon {
     if (await this.services.handle(req, res, pathname, body, (p, s, t) => this.verifySignedRequest(method, pathname, p, s, t, req.headers["x-syncbay-nonce"] as string | undefined))) {
       return;
     }
+
+    // Resource metrics: GET /api/metrics/:containerId (runner/src/metrics.ts)
+    if (await handleMetricsRequest(req, res, pathname, (p, s, t) => this.verifySignedRequest(method, pathname, p, s, t, req.headers["x-syncbay-nonce"] as string | undefined))) return;
 
     // POST /api/builds: Dispatch new build
     if (pathname === "/api/builds" && method === "POST") {

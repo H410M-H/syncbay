@@ -44,7 +44,7 @@ export async function GET(req: NextRequest) {
         createdAt: d.createdAt,
         completedAt: d.completedAt,
         buildDurationMs: d.buildDurationMs,
-        errorMessage: logEventBus.getError(d.id) || null,
+        errorMessage: d.errorMessage || logEventBus.getError(d.id) || null,
       })),
     });
   } catch (err: any) {

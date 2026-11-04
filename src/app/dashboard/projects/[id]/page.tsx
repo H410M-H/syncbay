@@ -274,8 +274,9 @@ function ProjectConsoleContent() {
   interface MetricData {
     cpuPercent: number;
     memoryMiB: number;
-    networkEgressKb: number;
-    diskUsedMiB: number;
+    networkEgressKb: number | null;
+    diskUsedMiB: number | null;
+    memoryLimitMiB?: number | null;
     timestamp: string;
   }
   const [metricsPeriod, setMetricsPeriod] = useState<"Live" | "1h" | "24h" | "7d">("Live");
@@ -327,10 +328,7 @@ function ProjectConsoleContent() {
           liveMetric,
         ];
       }
-      return [
-        { cpuPercent: 12.0, memoryMiB: 180, networkEgressKb: 20, diskUsedMiB: 120, timestamp: "" },
-        { cpuPercent: 14.2, memoryMiB: 185, networkEgressKb: 22, diskUsedMiB: 120, timestamp: "" },
-      ];
+      return [];
     } else {
       const pts = historicalMetrics?.points;
       if (pts && pts.length > 0) {
@@ -1671,29 +1669,33 @@ function ProjectConsoleContent() {
             <div className="stat-card">
               <span className="stat-label">CPU Usage</span>
               <div className="stat-value" style={{ color: "var(--brand-accent)" }}>
-                {liveMetric ? `${liveMetric.cpuPercent}%` : "14.2%"}
+                {liveMetric ? `${liveMetric.cpuPercent}%` : "—"}
               </div>
               <div className="stat-change">1.0 vCPU allocation</div>
               <div style={{ width: "100%", height: "6px", background: "var(--bg-overlay)", borderRadius: "99px", marginTop: "8px", overflow: "hidden" }}>
-                <div style={{ width: `${liveMetric?.cpuPercent || 14.2}%`, height: "100%", background: "var(--brand-accent)" }} />
+                <div style={{ width: `${liveMetric?.cpuPercent || 0}%`, height: "100%", background: "var(--brand-accent)" }} />
               </div>
             </div>
 
             <div className="stat-card">
               <span className="stat-label">Memory Used</span>
               <div className="stat-value" style={{ color: "var(--brand-primary)" }}>
-                {liveMetric ? `${liveMetric.memoryMiB} MB` : "185 MB"}
+                {liveMetric ? `${liveMetric.memoryMiB} MB` : "—"}
               </div>
-              <div className="stat-change">of 512 MB limit (36%)</div>
+              <div className="stat-change">
+                {liveMetric?.memoryLimitMiB
+                  ? `of ${Math.round(liveMetric.memoryLimitMiB)} MB limit (${Math.round((liveMetric.memoryMiB / liveMetric.memoryLimitMiB) * 100)}%)`
+                  : "No limit reported"}
+              </div>
               <div style={{ width: "100%", height: "6px", background: "var(--bg-overlay)", borderRadius: "99px", marginTop: "8px", overflow: "hidden" }}>
-                <div style={{ width: "36%", height: "100%", background: "var(--brand-primary)" }} />
+                <div style={{ width: `${liveMetric?.memoryLimitMiB ? Math.min(100, (liveMetric.memoryMiB / liveMetric.memoryLimitMiB) * 100) : 0}%`, height: "100%", background: "var(--brand-primary)" }} />
               </div>
             </div>
 
             <div className="stat-card">
               <span className="stat-label">Network Egress</span>
               <div className="stat-value">
-                {liveMetric ? `${liveMetric.networkEgressKb} KB/s` : "42.1 KB/s"}
+                {liveMetric?.networkEgressKb != null ? `${liveMetric.networkEgressKb} KB/s` : "—"}
               </div>
               <div className="stat-change">Edge CDN routing</div>
             </div>
@@ -1701,7 +1703,7 @@ function ProjectConsoleContent() {
             <div className="stat-card">
               <span className="stat-label">Disk Storage</span>
               <div className="stat-value">
-                {liveMetric ? `${liveMetric.diskUsedMiB} MB` : "120 MB"}
+                {liveMetric?.diskUsedMiB != null ? `${liveMetric.diskUsedMiB} MB` : "—"}
               </div>
               <div className="stat-change">1024 MB provisioned</div>
             </div>
@@ -1772,11 +1774,11 @@ function ProjectConsoleContent() {
                 <div style={{ display: "flex", gap: "20px" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                     <span style={{ width: "12px", height: "3px", background: "#06b6d4", display: "inline-block", borderRadius: "2px" }} />
-                    <span>CPU: <strong style={{ color: "#06b6d4" }}>{liveMetric ? `${liveMetric.cpuPercent}%` : "14.2%"}</strong></span>
+                    <span>CPU: <strong style={{ color: "#06b6d4" }}>{liveMetric ? `${liveMetric.cpuPercent}%` : "—"}</strong></span>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                     <span style={{ width: "12px", height: "3px", background: "#6366f1", display: "inline-block", borderRadius: "2px" }} />
-                    <span>Memory: <strong style={{ color: "#6366f1" }}>{liveMetric ? `${liveMetric.memoryMiB} MB` : "185 MB"}</strong></span>
+                    <span>Memory: <strong style={{ color: "#6366f1" }}>{liveMetric ? `${liveMetric.memoryMiB} MB` : "—"}</strong></span>
                   </div>
                 </div>
 

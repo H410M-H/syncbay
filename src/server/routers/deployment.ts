@@ -37,216 +37,19 @@ export const deploymentRouter = createTRPCRouter({
       if (!deployment) throw new TRPCError({ code: "NOT_FOUND" });
       return {
         ...deployment,
-        errorMessage: logEventBus.getError(deployment.id) || null,
+        errorMessage: deployment.errorMessage || logEventBus.getError(deployment.id) || null,
       };
     }),
 
-  /** Get live or historical log lines for a deployment */
+  /** Persisted + live log lines for a deployment (never synthesised) */
   logs: protectedProcedure
     .input(z.object({ deploymentId: z.string() }))
     .query(async ({ ctx, input }) => {
-      let history = logEventBus.getHistory(input.deploymentId);
-      if (history.length > 0) return history;
-
-      const deployment = await ctx.db.deployment.findUnique({
-        where: { id: input.deploymentId },
-        include: {
-          build: true,
-          service: {
-            include: {
-              environment: true,
-            },
-          },
-        },
-      });
-
-      if (!deployment) return history;
-
-      if (deployment.buildId && deployment.buildId !== input.deploymentId) {
-        history = logEventBus.getHistory(deployment.buildId);
-        if (history.length > 0) return history;
-      }
-
-      const runnerUrl = process.env.RUNNER_URL || "http://127.0.0.1:8080";
-      const { resolveRunnerSecret, signRequest } = await import("@/lib/orchestrator/runner-driver");
-      let runnerSecret: string | undefined;
-      try {
-        runnerSecret = resolveRunnerSecret();
-      } catch {
-        runnerSecret = undefined; // production without RUNNER_SECRET: skip the runner lookup
-      }
-      const targetJobIds = (runnerSecret ? [input.deploymentId, deployment.buildId].filter(Boolean) : []) as string[];
-
-      for (const targetId of targetJobIds) {
-        try {
-          const apiPath = `/api/builds/${encodeURIComponent(targetId)}`;
-          const { headers } = signRequest(runnerSecret!, "GET", apiPath, targetId);
-          const res = await fetch(`${runnerUrl.replace(/\/$/, '')}${apiPath}`, {
-            headers,
-            signal: AbortSignal.timeout(3000),
-          });
-          if (res.ok) {
-            const data = await res.json();
-            if (data.logs && Array.isArray(data.logs) && data.logs.length > 0) {
-              const mapped = data.logs.map((msg: string, idx: number) => ({
-                id: `log_${idx}`,
-                deploymentId: input.deploymentId,
-                timestamp: new Date().toISOString(),
-                stream: msg.includes("[error]") || msg.includes("Error:") ? "stderr" : msg.includes("[stdout]") ? "stdout" : "system",
-                message: msg,
-              }));
-              for (const item of mapped) {
-                logEventBus.publish(input.deploymentId, item);
-              }
-              return mapped;
-            }
-          }
-        } catch {
-          // try next target or fallback
-        }
-      }
-
-      // If no raw runner buffer is present, synthesize accurate structured deployment logs
-      // based on the immutable deployment and build database record
-      const synthesized: any[] = [];
-      const createdAt = deployment.createdAt ? new Date(deployment.createdAt).toISOString() : new Date().toISOString();
-      const startedAt = deployment.startedAt ? new Date(deployment.startedAt).toISOString() : createdAt;
-      const completedAt = deployment.completedAt ? new Date(deployment.completedAt).toISOString() : new Date().toISOString();
-      const commit = deployment.build?.commitSha?.slice(0, 7) || "manual";
-      const commitMsg = deployment.build?.commitMessage || "Deployment via console";
-      const serviceName = deployment.service?.name || "app";
-      const envName = deployment.service?.environment?.name || "production";
-      const containerId = deployment.cfContainerId || `proc_${deployment.id.slice(0, 8)}`;
-      const port = deployment.service?.port || 3000;
-      const defaultSubdomain = `${serviceName}-${envName}.syncbay.app`;
-
-      synthesized.push({
-        id: `log_init_${deployment.id}`,
-        deploymentId: deployment.id,
-        timestamp: createdAt,
-        stream: "system",
-        message: `[syncbay] Deployment ${deployment.id.slice(0, 8)} initiated for service ${serviceName} (${envName})`,
-      });
-
-      synthesized.push({
-        id: `log_commit_${deployment.id}`,
-        deploymentId: deployment.id,
-        timestamp: createdAt,
-        stream: "system",
-        message: `[syncbay] Target commit: ${commit} — "${commitMsg}"`,
-      });
-
-      if (deployment.status === "QUEUED") {
-        synthesized.push({
-          id: `log_queue_${deployment.id}`,
-          deploymentId: deployment.id,
-          timestamp: createdAt,
-          stream: "system",
-          message: `[runner] Job queued. Waiting for available runner agent worker...`,
-        });
-        return synthesized;
-      }
-
-      synthesized.push({
-        id: `log_build_start_${deployment.id}`,
-        deploymentId: deployment.id,
-        timestamp: startedAt,
-        stream: "system",
-        message: `[build] Status updated to BUILDING`,
-      });
-
-      synthesized.push({
-        id: `log_clone_${deployment.id}`,
-        deploymentId: deployment.id,
-        timestamp: startedAt,
-        stream: "stdout",
-        message: `[runner] Repository checked out on branch "${deployment.service?.branch || "main"}" (${commit})`,
-      });
-
-      synthesized.push({
-        id: `log_plan_${deployment.id}`,
-        deploymentId: deployment.id,
-        timestamp: startedAt,
-        stream: "system",
-        message: `[runner] Build strategy: ${deployment.service?.dockerImage ? "dockerfile" : "nixpacks (Node.js/Next.js)"}`,
-      });
-
-      if (deployment.status === "BUILDING") {
-        synthesized.push({
-          id: `log_building_${deployment.id}`,
-          deploymentId: deployment.id,
-          timestamp: new Date().toISOString(),
-          stream: "stdout",
-          message: `[build] Compiling production build artifacts...`,
-        });
-        return synthesized;
-      }
-
-      synthesized.push({
-        id: `log_artifacts_${deployment.id}`,
-        deploymentId: deployment.id,
-        timestamp: startedAt,
-        stream: "stdout",
-        message: `[build] Production build artifacts compiled successfully`,
-      });
-
-      if (deployment.status === "FAILED" || deployment.status === "CRASHED") {
-        const errorMsg = (deployment as any).errorMessage || logEventBus.getError(deployment.id) || "Build or health check failed";
-        synthesized.push({
-          id: `log_err_${deployment.id}`,
-          deploymentId: deployment.id,
-          timestamp: completedAt,
-          stream: "stderr",
-          message: `[error] Deployment failed: ${errorMsg}`,
-        });
-        return synthesized;
-      }
-
-      synthesized.push({
-        id: `log_deploy_${deployment.id}`,
-        deploymentId: deployment.id,
-        timestamp: completedAt,
-        stream: "system",
-        message: `[deploy] Application container/process ${containerId} initialized on port ${port}`,
-      });
-
-      synthesized.push({
-        id: `log_health_${deployment.id}`,
-        deploymentId: deployment.id,
-        timestamp: completedAt,
-        stream: "stdout",
-        message: `[health] Health check passed on http://127.0.0.1:${port} (HTTP 200 OK)`,
-      });
-
-      synthesized.push({
-        id: `log_proxy_${deployment.id}`,
-        deploymentId: deployment.id,
-        timestamp: completedAt,
-        stream: "system",
-        message: `[proxy] Edge reverse proxy targets shifted to container instance ${containerId} on port ${port}`,
-      });
-
-      synthesized.push({
-        id: `log_url_${deployment.id}`,
-        deploymentId: deployment.id,
-        timestamp: completedAt,
-        stream: "system",
-        message: `[proxy] Service routing live at: https://${defaultSubdomain}`,
-      });
-
-      synthesized.push({
-        id: `log_active_${deployment.id}`,
-        deploymentId: deployment.id,
-        timestamp: completedAt,
-        stream: "system",
-        message: `[syncbay] Deployment ${deployment.id.slice(0, 8)} is ACTIVE and serving traffic 🚀`,
-      });
-
-      for (const item of synthesized) {
-        logEventBus.publish(input.deploymentId, item);
-      }
-
-      return synthesized;
+      const { findAccessibleDeployment } = await import("@/lib/telemetry/log-stream");
+      const deployment = await findAccessibleDeployment(input.deploymentId, ctx.session.user.id);
+      if (!deployment) throw new TRPCError({ code: "NOT_FOUND" });
+      const { loadDeploymentLogHistory } = await import("@/lib/telemetry/log-store");
+      return loadDeploymentLogHistory(deployment.id);
     }),
 
   /** Get deployment history for a service */
@@ -274,7 +77,7 @@ export const deploymentRouter = createTRPCRouter({
       });
       return deployments.map((d) => ({
         ...d,
-        errorMessage: logEventBus.getError(d.id) || null,
+        errorMessage: d.errorMessage || logEventBus.getError(d.id) || null,
       }));
     }),
 
@@ -301,7 +104,7 @@ export const deploymentRouter = createTRPCRouter({
       if (!deployment) return null;
       return {
         ...deployment,
-        errorMessage: logEventBus.getError(deployment.id) || null,
+        errorMessage: deployment.errorMessage || logEventBus.getError(deployment.id) || null,
       };
     }),
 
@@ -529,8 +332,9 @@ export const deploymentRouter = createTRPCRouter({
         } catch {}
       }
 
-      // 2. Remove logs from event bus and filesystem
+      // 2. Remove logs from the event bus and the DeploymentLog table
       logEventBus.clear(deployment.id);
+      await (await import("@/lib/telemetry/log-store")).deleteDeploymentLogs(deployment.id);
 
       // 3. Count remaining deployments for this build
       const siblingCount = await ctx.db.deployment.count({

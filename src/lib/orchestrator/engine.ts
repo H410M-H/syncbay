@@ -413,6 +413,7 @@ export async function executeDeployment(
         status: "ACTIVE",
         cfContainerId: containerId,
         completedAt: new Date(),
+        errorMessage: null,
       },
     }).catch(() => null);
 
@@ -442,9 +443,12 @@ export async function executeDeployment(
 
     await db.deployment.update({
       where: { id: deploymentId },
-      data: { status: "FAILED", completedAt: new Date() },
+      data: { status: "FAILED", completedAt: new Date(), errorMessage: String(error?.message || error).slice(0, 4000) },
     }).catch(() => null);
 
     throw error;
+  } finally {
+    // Persist buffered log lines before a serverless invocation can be frozen.
+    await logEventBus.flush();
   }
 }

@@ -161,6 +161,9 @@ model Workspace {
   spendingCapCents   Int?
   stripeCustomerId   String?
   creditBalanceCents Int      @default(0)
+  // Team B — spending-cap notification state (once per calendar month)
+  usageWarnedAt      DateTime?
+  spendCapReachedAt  DateTime?
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 
@@ -261,6 +264,8 @@ model Service {
   idleTimeoutSecs Int       @default(300)
   isPaused        Boolean   @default(false)
   deletedAt       DateTime?
+  // Team B — scale-to-zero activity tracking (DB fallback when Upstash is unset)
+  lastRequestAt   DateTime?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
@@ -310,6 +315,8 @@ model Deployment {
   buildDurationMs  Int?
   deployDurationMs Int?
   createdAt        DateTime         @default(now())
+  // Team B — persisted failure reason (written by the engine)
+  errorMessage     String?
 
   service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
   build   Build   @relation(fields: [buildId], references: [id])
@@ -456,6 +463,8 @@ model UsageRecord {
   workspace Workspace @relation(fields: [workspaceId], references: [id])
 
   @@index([serviceId, periodStart])
+  // Team B — one row per service, resource and hour (idempotent hourly writer)
+  @@unique([serviceId, resourceType, periodStart])
   @@map("usage_records")
 }
 
@@ -534,4 +543,42 @@ model TerminalSession {
   @@index([serviceId])
   @@index([lastActivityAt])
   @@map("terminal_sessions")
+}
+
+// ── Team B ── Observability, usage metering and scale-to-zero ─────────────────
+
+/// One persisted log line of a deployment. `id` is the LogEntry id published on
+/// the in-process event bus, so live and replayed lines can be de-duplicated.
+model DeploymentLog {
+  id           String   @id
+  deploymentId String
+  seq          Int
+  stream       String // "stdout" | "stderr" | "system"
+  line         String
+  ts           DateTime
+
+  @@index([deploymentId, seq])
+  @@index([ts])
+  @@map("deployment_logs")
+}
+
+/// A resource sample of a running deployment, taken from the runner's
+/// `GET /api/metrics/:containerId` (docker stats or /proc).
+model MetricSample {
+  id            String   @id @default(cuid())
+  serviceId     String
+  deploymentId  String?
+  containerId   String
+  source        String // "docker" | "proc"
+  cpuPercent    Float
+  memoryMb      Float
+  memoryLimitMb Float?
+  netRxBytes    Float?
+  netTxBytes    Float?
+  sampledAt     DateTime @default(now())
+
+  @@index([serviceId, sampledAt])
+  @@index([deploymentId, sampledAt])
+  @@index([sampledAt])
+  @@map("metric_samples")
 }

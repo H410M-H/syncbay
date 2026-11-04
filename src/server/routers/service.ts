@@ -57,7 +57,7 @@ export const serviceRouter = createTRPCRouter({
         ...s,
         deployments: s.deployments.map((d) => ({
           ...d,
-          errorMessage: logEventBus.getError(d.id) || null,
+          errorMessage: d.errorMessage || logEventBus.getError(d.id) || null,
         })),
       }));
     }),
@@ -98,7 +98,7 @@ export const serviceRouter = createTRPCRouter({
         ...service,
         deployments: service.deployments.map((d) => ({
           ...d,
-          errorMessage: logEventBus.getError(d.id) || null,
+          errorMessage: d.errorMessage || logEventBus.getError(d.id) || null,
         })),
       };
     }),
