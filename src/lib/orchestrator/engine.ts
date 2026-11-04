@@ -7,6 +7,7 @@ import { generateDefaultSubdomain } from "@/lib/domain-service";
 import { runKnipAnalysis } from "@/lib/buildpack/knip-analyzer";
 import { registerServiceRouteAsync } from "@/lib/edge/service-registry";
 import { applyDatabaseEnv } from "@/lib/database-provider";
+import { requestTunnelReload } from "@/lib/tunnel/tunnel-sync";
 import {
   getRunnerDriver,
   RunnerDriverFactory,
@@ -422,6 +423,7 @@ export async function executeDeployment(
       }).catch(() => null);
     }
 
+    await requestTunnelReload(`deploy:${deploymentId}:active`); // no-op unless a tunnel is configured; never throws
     log(`[syncbay] Deployment ${deploymentId} is ACTIVE and serving traffic 🚀`, "system");
 
     return { status: "ACTIVE", url: `https://${defaultUrl}`, port: targetPort, containerId };

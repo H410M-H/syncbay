@@ -5,6 +5,7 @@ import { executeDeployment } from "@/lib/orchestrator/engine";
 import { purgeEdgeCache } from "@/lib/edge/edge-router";
 import { executeInstantRollback } from "@/lib/devops/instant-rollback";
 import { logEventBus } from "@/lib/telemetry/event-bus";
+import { requestTunnelReload } from "@/lib/tunnel/tunnel-sync";
 
 export const deploymentRouter = createTRPCRouter({
   /** Get single deployment by id */
@@ -543,6 +544,7 @@ export const deploymentRouter = createTRPCRouter({
       await ctx.db.deployment.delete({
         where: { id: input.deploymentId },
       });
+      await requestTunnelReload(`deployment:${input.deploymentId}:deleted`);
 
       // 5. Clean up orphan build if no other deployments reference it
       if (siblingCount === 0) {

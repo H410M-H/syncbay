@@ -55,9 +55,10 @@ export default function ServiceDetailsPage(props: { params: Promise<{ id: string
       const res = await verifyDomainMutation.mutateAsync({ domainId });
       refetchDomains();
       if (res.status === "ACTIVE") {
-        alert("Domain verified successfully! SSL certificate is active.");
+        alert(res.cloudflareConfigured ? "Domain verified! SSL certificate is active." : "Domain verified via DNS.");
       } else {
-        alert(`Domain status: ${res.status}. Please check your DNS records and try again in a few moments.`);
+        const details = res.errors?.length ? `\n\n${res.errors.join("\n")}` : "";
+        alert(`Domain status: ${res.status}. Please check your DNS records and try again in a few moments.${details}`);
       }
     } catch (err: any) {
       alert(`Verification failed: ${err.message}`);

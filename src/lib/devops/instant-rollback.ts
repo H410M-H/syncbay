@@ -94,8 +94,8 @@ export async function executeInstantRollback(
     data: { status: "ACTIVE" },
   });
 
-  // Purge edge cache across all 6 POPs
-  const purgeResult = purgeEdgeCache({ all: true });
+  // Purge the Cloudflare edge cache (reports "not configured" when Cloudflare is unset)
+  const purgeResult = await purgeEdgeCache({ all: true });
 
   // Record audit log entry
   try {

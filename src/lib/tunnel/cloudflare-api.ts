@@ -5,7 +5,10 @@
  * 1. Custom Hostname creation with automated SSL/TLS certificate provisioning.
  * 2. DNS ownership verification (CNAME target and TXT challenge verification).
  * 3. Real-time SSL certificate state machine monitoring (Pending -> Issuing -> Active).
- * 4. High-fidelity simulation mode for offline/local/CI execution when API keys are absent.
+ * 4. Simulation mode for offline/local/CI execution when API keys are absent — outside
+ *    production only. With NODE_ENV=production and no API credentials every call that would
+ *    simulate throws `CloudflareNotConfiguredError` instead (no simulated ACTIVE hostnames, no
+ *    fake tunnel tokens). When the API IS configured, API failures are thrown, never simulated.
  */
 
 import crypto from "node:crypto";
@@ -39,6 +42,24 @@ export interface CloudflareCustomHostname {
     http_body: string;
   };
   createdAt?: string;
+  /** True only for records produced by the non-production simulation. */
+  simulated?: boolean;
+}
+
+export class CloudflareNotConfiguredError extends Error {
+  constructor(what: string) {
+    super(`Cloudflare is not configured (${what}); refusing to simulate in production`);
+    this.name = "CloudflareNotConfiguredError";
+  }
+}
+
+function assertSimulationAllowed(what: string): void {
+  if (process.env.NODE_ENV === "production") throw new CloudflareNotConfiguredError(what);
+}
+
+/** Cloudflare custom-hostname ids are UUIDs (simulated ones `ch_…`); hostnames contain dots. */
+function looksLikeHostname(value: string): boolean {
+  return value.includes(".");
 }
 
 export interface CreateCustomHostnameOptions {
@@ -58,6 +79,7 @@ export interface CustomHostnameVerificationResult {
   txtHost: string;
   verifiedAt?: string;
   errors?: string[];
+  simulated?: boolean;
 }
 
 export interface CloudflareApiConfig {
@@ -90,6 +112,23 @@ export class CloudflareApiClient {
     return Boolean(this.apiToken && this.zoneId);
   }
 
+  /** Calls the Cloudflare API and returns `result`; throws with Cloudflare's error messages. */
+  private async api<T>(method: string, path: string, body?: unknown): Promise<T> {
+    const res = await fetch(`${this.baseUrl}${path}`, {
+      method,
+      headers: { Authorization: `Bearer ${this.apiToken}`, "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const json: any = await res.json().catch(() => ({}));
+    if (!res.ok || json?.success === false) {
+      const detail = Array.isArray(json?.errors) && json.errors.length
+        ? json.errors.map((e: any) => e?.message || String(e)).join("; ")
+        : `HTTP ${res.status}`;
+      throw new Error(`Cloudflare ${method} ${path.split("?")[0]} failed: ${detail}`);
+    }
+    return json?.result as T;
+  }
+
   /**
    * Generates deterministic verification tokens for a domain
    */
@@ -116,35 +155,19 @@ export class CloudflareApiClient {
     const cleanHost = options.hostname.toLowerCase().trim();
 
     if (this.isLiveApiConfigured) {
-      try {
-        const url = `${this.baseUrl}/zones/${this.zoneId}/custom_hostnames`;
-        const res = await fetch(url, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${this.apiToken}`,
-            "Content-Type": "application/json",
+      return this.api<CloudflareCustomHostname>("POST", `/zones/${this.zoneId}/custom_hostnames`, {
+        hostname: cleanHost,
+        ssl: {
+          method: options.sslMethod || "txt",
+          type: "dv",
+          settings: {
+            min_tls_version: options.minTlsVersion || "1.2",
+            http2: "on",
           },
-          body: JSON.stringify({
-            hostname: cleanHost,
-            ssl: {
-              method: options.sslMethod || "txt",
-              type: "dv",
-              settings: {
-                min_tls_version: options.minTlsVersion || "1.2",
-                http2: "on",
-              },
-            },
-          }),
-        });
-
-        const json = await res.json();
-        if (json.success && json.result) {
-          return json.result as CloudflareCustomHostname;
-        }
-      } catch (err: any) {
-        console.warn(`[cloudflare-api] Live API call failed, falling back to simulation: ${err.message}`);
-      }
+        },
+      });
     }
+    assertSimulationAllowed("createCustomHostname");
 
     // High-fidelity Simulated Response
     const tokens = this.generateTokens(cleanHost);
@@ -173,6 +196,7 @@ export class CloudflareApiClient {
         value: tokens.txtValue,
       },
       createdAt: new Date().toISOString(),
+      simulated: true,
     };
 
     this.simulatedHostnames.set(mockId, record);
@@ -187,31 +211,16 @@ export class CloudflareApiClient {
     const cleanKey = idOrHostname.toLowerCase().trim();
 
     if (this.isLiveApiConfigured) {
-      try {
-        const isId = cleanKey.startsWith("ch_");
-        const url = isId
-          ? `${this.baseUrl}/zones/${this.zoneId}/custom_hostnames/${cleanKey}`
-          : `${this.baseUrl}/zones/${this.zoneId}/custom_hostnames?hostname=${encodeURIComponent(cleanKey)}`;
-
-        const res = await fetch(url, {
-          method: "GET",
-          headers: {
-            Authorization: `Bearer ${this.apiToken}`,
-            "Content-Type": "application/json",
-          },
-        });
-
-        const json = await res.json();
-        if (json.success) {
-          if (Array.isArray(json.result)) {
-            return (json.result[0] as CloudflareCustomHostname) || null;
-          }
-          return (json.result as CloudflareCustomHostname) || null;
-        }
-      } catch (err: any) {
-        console.warn(`[cloudflare-api] Live API call failed: ${err.message}`);
+      if (!looksLikeHostname(cleanKey)) {
+        return this.api<CloudflareCustomHostname>("GET", `/zones/${this.zoneId}/custom_hostnames/${encodeURIComponent(cleanKey)}`);
       }
+      const list = await this.api<CloudflareCustomHostname[]>(
+        "GET",
+        `/zones/${this.zoneId}/custom_hostnames?hostname=${encodeURIComponent(cleanKey)}`
+      );
+      return (Array.isArray(list) ? list[0] : null) || null;
     }
+    if (process.env.NODE_ENV === "production") return null;
 
     return this.simulatedHostnames.get(cleanKey) || null;
   }
@@ -229,37 +238,35 @@ export class CloudflareApiClient {
     const tokens = this.generateTokens(hostname);
     const isError = hostname.includes("fail") || hostname.includes("invalid");
 
-    if (this.isLiveApiConfigured && existing?.id) {
-      try {
-        // Trigger verification check in Cloudflare
-        const url = `${this.baseUrl}/zones/${this.zoneId}/custom_hostnames/${existing.id}`;
-        const res = await fetch(url, {
-          method: "GET",
-          headers: {
-            Authorization: `Bearer ${this.apiToken}`,
-            "Content-Type": "application/json",
-          },
-        });
-        const json = await res.json();
-        if (json.success && json.result) {
-          const rec = json.result as CloudflareCustomHostname;
-          const isActive = rec.status === "active";
-          return {
-            hostname: rec.hostname,
-            cfRecordId: rec.id,
-            status: isActive ? "ACTIVE" : rec.status === "failed" ? "FAILED" : "VERIFYING",
-            sslStatus: rec.ssl?.status === "active" ? "ACTIVE" : rec.ssl?.status === "failed" ? "FAILED" : "ISSUING",
-            sslIssuer: "Cloudflare Managed CA (Let's Encrypt / Google Trust Services)",
-            cnameTarget: this.cnameTarget,
-            txtRecord: tokens.txtValue,
-            txtHost: tokens.txtName,
-            verifiedAt: isActive ? new Date().toISOString() : undefined,
-          };
-        }
-      } catch (err: any) {
-        console.warn(`[cloudflare-api] Live verify call failed: ${err.message}`);
+    if (this.isLiveApiConfigured) {
+      if (!existing) {
+        return {
+          hostname,
+          cfRecordId: "",
+          status: "PENDING",
+          sslStatus: "PENDING",
+          sslIssuer: "Cloudflare Managed CA",
+          cnameTarget: this.cnameTarget,
+          txtRecord: tokens.txtValue,
+          txtHost: tokens.txtName,
+          errors: ["Custom hostname is not registered with Cloudflare yet"],
+        };
       }
+      const rec = existing;
+      const isActive = rec.status === "active" && rec.ssl?.status === "active";
+      return {
+        hostname: rec.hostname,
+        cfRecordId: rec.id,
+        status: isActive ? "ACTIVE" : rec.status === "failed" ? "FAILED" : "VERIFYING",
+        sslStatus: rec.ssl?.status === "active" ? "ACTIVE" : rec.ssl?.status === "failed" ? "FAILED" : "ISSUING",
+        sslIssuer: "Cloudflare Managed CA (Let's Encrypt / Google Trust Services)",
+        cnameTarget: this.cnameTarget,
+        txtRecord: rec.ownership_verification?.value || tokens.txtValue,
+        txtHost: rec.ownership_verification?.name || tokens.txtName,
+        verifiedAt: isActive ? new Date().toISOString() : undefined,
+      };
     }
+    assertSimulationAllowed("verifyCustomHostname");
 
     // High-fidelity Simulated Verification
     if (isError) {
@@ -273,6 +280,7 @@ export class CloudflareApiClient {
         txtRecord: tokens.txtValue,
         txtHost: tokens.txtName,
         errors: ["DNS CNAME record could not be resolved or TXT ownership verification timed out."],
+        simulated: true,
       };
     }
 
@@ -287,6 +295,7 @@ export class CloudflareApiClient {
         certificate_authority: "google",
       },
       createdAt: existing?.createdAt || new Date().toISOString(),
+      simulated: true,
     };
 
     this.simulatedHostnames.set(updatedRecord.id, updatedRecord);
@@ -302,6 +311,7 @@ export class CloudflareApiClient {
       txtRecord: tokens.txtValue,
       txtHost: tokens.txtName,
       verifiedAt: new Date().toISOString(),
+      simulated: true,
     };
   }
 
@@ -311,30 +321,12 @@ export class CloudflareApiClient {
   public async deleteCustomHostname(idOrHostname: string): Promise<boolean> {
     const cleanKey = idOrHostname.toLowerCase().trim();
     const existing = await this.getCustomHostname(cleanKey);
-    const targetId = existing?.id || (cleanKey.startsWith("ch_") ? cleanKey : null);
+    const targetId = existing?.id || (!looksLikeHostname(cleanKey) ? cleanKey : null);
 
-    if (this.isLiveApiConfigured && targetId) {
-      try {
-        const url = `${this.baseUrl}/zones/${this.zoneId}/custom_hostnames/${targetId}`;
-        const res = await fetch(url, {
-          method: "DELETE",
-          headers: {
-            Authorization: `Bearer ${this.apiToken}`,
-            "Content-Type": "application/json",
-          },
-        });
-        const json = await res.json();
-        if (json.success) {
-          if (existing) {
-            this.simulatedHostnames.delete(existing.id);
-            this.simulatedHostnames.delete(existing.hostname);
-          }
-          this.simulatedHostnames.delete(cleanKey);
-          return true;
-        }
-      } catch (err: any) {
-        console.warn(`[cloudflare-api] Live delete call failed: ${err.message}`);
-      }
+    if (this.isLiveApiConfigured) {
+      if (!targetId) return false;
+      await this.api("DELETE", `/zones/${this.zoneId}/custom_hostnames/${encodeURIComponent(targetId)}`);
+      return true;
     }
 
     if (existing) {
@@ -381,38 +373,19 @@ export class CloudflareApiClient {
    */
   public async provisionTunnelToken(
     tunnelName: string = "syncbay-edge-tunnel"
-  ): Promise<{ tunnelId: string; token: string }> {
-    if (this.isLiveApiConfigured && this.accountId) {
-      try {
-        const url = `${this.baseUrl}/accounts/${this.accountId}/cfd_tunnel`;
-        const res = await fetch(url, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${this.apiToken}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            name: `${tunnelName}-${crypto.randomBytes(4).toString("hex")}`,
-            tunnel_secret: crypto.randomBytes(32).toString("base64"),
-          }),
-        });
-        const json = await res.json();
-        if (json.success && json.result) {
-          const tunnelId = json.result.id;
-          const tokenRes = await fetch(`${url}/${tunnelId}/token`, {
-            headers: { Authorization: `Bearer ${this.apiToken}` },
-          });
-          const tokenJson = await tokenRes.json();
-          if (tokenJson.success && tokenJson.result) {
-            return { tunnelId, token: tokenJson.result };
-          }
-        }
-      } catch (err: any) {
-        console.warn(`[cloudflare-api] Live tunnel provision call failed: ${err.message}`);
-      }
+  ): Promise<{ tunnelId: string; token: string; simulated?: boolean }> {
+    if (this.apiToken && this.accountId) {
+      const created = await this.api<{ id: string }>("POST", `/accounts/${this.accountId}/cfd_tunnel`, {
+        name: `${tunnelName}-${crypto.randomBytes(4).toString("hex")}`,
+        config_src: "cloudflare",
+        tunnel_secret: crypto.randomBytes(32).toString("base64"),
+      });
+      const token = await this.api<string>("GET", `/accounts/${this.accountId}/cfd_tunnel/${created.id}/token`);
+      return { tunnelId: created.id, token };
     }
+    assertSimulationAllowed("provisionTunnelToken");
 
-    // High-fidelity fallback / simulated token
+    // Development-only placeholder: NOT a usable cloudflared token.
     const mockTunnelId = crypto.randomUUID();
     const mockPayload = {
       a: this.accountId || "syncbay-cf-account",
@@ -424,6 +397,7 @@ export class CloudflareApiClient {
     return {
       tunnelId: mockTunnelId,
       token: mockToken,
+      simulated: true,
     };
   }
 }
