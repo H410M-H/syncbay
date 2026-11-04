@@ -194,9 +194,10 @@ type CloudflareHostnames = Pick<CloudflareApiClient, "isLiveApiConfigured" | "ge
  */
 export async function verifyDomainDetailed(
   domainId: string,
-  deps: { resolver?: DnsResolver; cloudflare?: CloudflareHostnames } = {}
+  deps: { resolver?: DnsResolver; cloudflare?: CloudflareHostnames; client?: Pick<typeof db, "domain"> } = {}
 ): Promise<DomainVerificationResult> {
-  const domain = await db.domain.findUnique({ where: { id: domainId } });
+  const client = deps.client || db;
+  const domain = await client.domain.findUnique({ where: { id: domainId } });
   if (!domain) {
     throw new Error(`Domain not found: ${domainId}`);
   }
@@ -204,17 +205,17 @@ export async function verifyDomainDetailed(
 
   if (domain.isGenerated) {
     if (domain.status !== "ACTIVE") {
-      await db.domain.update({ where: { id: domainId }, data: { status: "ACTIVE", verifiedAt: new Date() } });
+      await client.domain.update({ where: { id: domainId }, data: { status: "ACTIVE", verifiedAt: new Date() } });
     }
     return { status: "ACTIVE", dns: null, cloudflare: { configured: cf.isLiveApiConfigured }, errors: [] };
   }
 
   if (!isValidHostname(domain.hostname)) {
-    await db.domain.update({ where: { id: domainId }, data: { status: "FAILED" } });
+    await client.domain.update({ where: { id: domainId }, data: { status: "FAILED" } });
     return { status: "FAILED", dns: null, cloudflare: { configured: cf.isLiveApiConfigured }, errors: ["Invalid hostname"] };
   }
 
-  await db.domain.update({ where: { id: domainId }, data: { status: "VERIFYING" } });
+  await client.domain.update({ where: { id: domainId }, data: { status: "VERIFYING" } });
 
   const expectedTxt = domain.verificationTxt || generateVerificationRecords(domain.hostname).txtRecord;
   const dnsCheck = await checkDomainDns(domain.hostname, expectedTxt, deps.resolver);
@@ -233,7 +234,7 @@ export async function verifyDomainDetailed(
         cloudflare.sslStatus = record.ssl?.status;
         cloudflare.recordId = record.id;
         if (record.id && record.id !== domain.cfRecordId) {
-          await db.domain.update({ where: { id: domainId }, data: { cfRecordId: record.id } });
+          await client.domain.update({ where: { id: domainId }, data: { cfRecordId: record.id } });
         }
         if (record.status === "active" && record.ssl?.status === "active") {
           status = "ACTIVE";
@@ -249,7 +250,7 @@ export async function verifyDomainDetailed(
     }
   }
 
-  await db.domain.update({
+  await client.domain.update({
     where: { id: domainId },
     data: { status, verifiedAt: status === "ACTIVE" ? new Date() : null },
   });

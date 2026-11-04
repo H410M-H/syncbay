@@ -180,8 +180,8 @@ export const domainRouter = createTRPCRouter({
       if (!domain) throw new TRPCError({ code: "NOT_FOUND", message: "Domain not found" });
 
       // Real DNS (TXT challenge + CNAME) and, when configured, Cloudflare custom-hostname status
-      const result = await verifyDomainDetailed(domain.id);
-      const updated = await ctx.db.domain.findUniqueOrThrow({ where: { id: domain.id } });
+      const result = await verifyDomainDetailed(domain.id, { client: ctx.db });
+      const updated = (await ctx.db.domain.findUnique({ where: { id: domain.id } })) ?? domain;
 
       if (result.status === "ACTIVE" && domain.service) {
         // Route the custom host exactly like the service's live platform route (same upstream,

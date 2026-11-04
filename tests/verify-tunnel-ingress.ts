@@ -42,6 +42,9 @@ import { NextRequest } from "next/server";
 import { POST as edgeRegisterPost, DELETE as edgeRegisterDelete } from "../src/app/api/v1/services/edge-register/route";
 import { generateTunnelConfigJson, writeTunnelConfig, reloadTunnel } from "../src/lib/tunnel/tunnel-config";
 import { createTunnelDriver as createRunnerTunnelDriver } from "../runner/src/tunnel-driver";
+import * as dnsPromises from "node:dns/promises";
+import { startDnsStub } from "./harness/dns-stub";
+import { generateVerificationRecords } from "../src/lib/domain-service";
 
 // Mock child process helper for deterministic test simulation
 function createMockChildProcess(options: { autoEmitRunning?: boolean; shouldCrash?: boolean; crashDelayMs?: number } = {}) {
@@ -428,10 +431,20 @@ async function runTunnelIngressVerification() {
   const dnsRecords = await domainCaller.records({ domainId: createdDomain.id });
   assert(dnsRecords.records.cnameTarget === "cname.syncbay.app", "domain.records returned cname.syncbay.app");
 
-  // 6c. Verify Domain
+  // 6c. Verify Domain — real DNS lookups against a local authoritative DNS server (port 43054)
+  const dnsZone = new Map<string, any>();
+  const dnsStub = await startDnsStub(43054, dnsZone);
+  const previousServers = dnsPromises.getServers();
+  dnsPromises.setServers(["127.0.0.1:43054"]);
+  const pendingDomain = await domainCaller.verify({ domainId: createdDomain.id });
+  assert(pendingDomain.status === "VERIFYING", "domain.verify keeps VERIFYING until DNS records exist (no simulated ACTIVE)");
+  dnsZone.set("_syncbay-challenge.checkout.customer.org", { TXT: [generateVerificationRecords("checkout.customer.org").txtRecord] });
+  dnsZone.set("checkout.customer.org", { CNAME: "cname.syncbay.app" });
   const verifiedDomain = await domainCaller.verify({ domainId: createdDomain.id });
-  assert(verifiedDomain.status === "ACTIVE", "domain.verify activated domain status to ACTIVE");
-  assert(verifiedDomain.sslStatus === "ACTIVE", "domain.verify activated SSL certificate");
+  dnsPromises.setServers(previousServers);
+  await dnsStub.close();
+  assert(verifiedDomain.status === "ACTIVE", "domain.verify activated domain status to ACTIVE once TXT + CNAME resolve");
+  assert(verifiedDomain.sslStatus === "not_managed", "without Cloudflare for SaaS the certificate is reported as not managed");
 
   const edgeRouteLookup = getServiceRoute("checkout.customer.org");
   assert(edgeRouteLookup !== null && edgeRouteLookup.targetPort === 10045, "domain.verify automatically registered route in Edge Ingress Registry");
