@@ -1,5 +1,6 @@
 import { db } from "@/lib/db";
-import { executeDeployment } from "./engine";
+import { scheduleDeployment } from "./schedule";
+import { stopServiceInstances } from "./lifecycle";
 import { slugifyHostPart } from "@/lib/domain-service";
 import { Octokit } from "@octokit/rest";
 
@@ -50,55 +51,39 @@ export interface PostCommentOptions {
   branch?: string;
   projectId?: string;
   octokit?: Octokit;
+  /** Deployment state the comment reports (default `success`). */
+  state?: "pending" | "success" | "failure";
+  errorMessage?: string;
 }
 
 /**
  * Resolves an authenticated GitHub Octokit instance.
- * Checks environment variable tokens (GITHUB_TOKEN / GITHUB_PAT) first,
- * then checks workspace project members and connected GitHub accounts.
+ * Order: GITHUB_TOKEN / GITHUB_PAT env, then the triggering user's GitHub account, then a
+ * GitHub account of a member of the project's workspace (owners first). It never borrows an
+ * unrelated user's token; with no match it returns null.
  */
-export async function getOctokitClient(projectId?: string): Promise<Octokit | null> {
+export async function getOctokitClient(projectId?: string, userId?: string): Promise<Octokit | null> {
   const envToken = process.env.GITHUB_TOKEN || process.env.GITHUB_PAT || process.env.GITHUB_ACCESS_TOKEN;
   if (envToken) {
     return new Octokit({ auth: envToken });
   }
 
   try {
-    if (projectId) {
-      const member = await db.workspaceMember.findFirst({
-        where: {
-          workspace: {
-            projects: {
-              some: { id: projectId },
-            },
-          },
-        },
-        include: {
-          user: {
-            include: {
-              accounts: {
-                where: { provider: "github" },
-              },
-            },
-          },
-        },
-      });
-
-      const userToken = member?.user?.accounts?.[0]?.access_token;
-      if (userToken) {
-        return new Octokit({ auth: userToken });
-      }
+    const memberOfProject = projectId
+      ? { memberships: { some: { workspace: { projects: { some: { id: projectId } } } } } }
+      : undefined;
+    const lookups: any[] = [];
+    if (userId) lookups.push({ userId, ...(memberOfProject ? { user: memberOfProject } : {}) });
+    if (memberOfProject) {
+      lookups.push({ user: { memberships: { some: { role: "OWNER", workspace: { projects: { some: { id: projectId } } } } } } });
+      lookups.push({ user: memberOfProject });
     }
-
-    const anyAccount = await db.account.findFirst({
-      where: {
-        provider: "github",
-        access_token: { not: null },
-      },
-    });
-
-    if (anyAccount?.access_token) {
-      return new Octokit({ auth: anyAccount.access_token });
+    for (const where of lookups) {
+      const account = await db.account.findFirst({
+        where: { provider: "github", access_token: { not: null }, ...where },
+        select: { access_token: true },
+      });
+      if (account?.access_token) return new Octokit({ auth: account.access_token });
     }
   } catch (err: any) {
     console.warn("Could not retrieve GitHub account token:", err?.message);
@@ -148,17 +133,27 @@ export async function postPreviewComment(options: PostCommentOptions): Promise<b
     const octokit = options.octokit || (await getOctokitClient(options.projectId));
     if (!octokit) return false;
 
-    const shortSha = options.commitSha.slice(0, 7);
+    const shortSha = options.commitSha ? options.commitSha.slice(0, 7) : "unknown";
     const commentMarker = "<!-- syncbay-preview-comment -->";
+    const state = options.state || "success";
+    const view = {
+      pending: { title: "Syncbay Ephemeral Preview Deploying", badge: "Deploying-f59e0b", status: "🟡 Building / deploying" },
+      success: { title: "Syncbay Ephemeral Preview Ready", badge: "Preview%20Ready-06b6d4", status: "🟢 Active" },
+      failure: { title: "Syncbay Ephemeral Preview Failed", badge: "Failed-ef4444", status: "🔴 Failed" },
+    }[state];
+    const errorLine = state === "failure" && options.errorMessage
+      ? [`- **Error**: \`${options.errorMessage.replace(/[`\r\n]+/g, " ").slice(0, 300)}\``]
+      : [];
     const body = [
-      `### 🚀 Syncbay Ephemeral Preview Ready`,
+      `### ${state === "failure" ? "❌" : state === "pending" ? "⏳" : "🚀"} ${view.title}`,
       ``,
-      `[![Syncbay Preview](https://img.shields.io/badge/Syncbay-Preview%20Ready-06b6d4?style=flat-square)](${options.previewUrl})`,
+      `[![Syncbay Preview](https://img.shields.io/badge/Syncbay-${view.badge}?style=flat-square)](${options.previewUrl})`,
       ``,
       `- **Preview URL**: [${options.previewUrl}](${options.previewUrl})`,
       `- **Commit**: \`${shortSha}\``,
       ...(options.branch ? [`- **Branch**: \`${options.branch}\``] : []),
-      `- **Status**: 🟢 Active`,
+      `- **Status**: ${view.status}`,
+      ...errorLine,
       `- **Idle Timeout**: 30m auto-sleep enabled`,
       ``,
       commentMarker,
@@ -196,6 +191,92 @@ export async function postPreviewComment(options: PostCommentOptions): Promise<b
   }
 }
 
+/** Splits a GitHub repo URL (`https://github.com/o/r(.git)`, `git@github.com:o/r`) into owner/repo. */
+export function parseGitHubRepo(repoUrl?: string | null): { owner: string; repo: string } | null {
+  if (!repoUrl) return null;
+  const m = repoUrl.trim().match(/github\.com[/:]([^/\s]+)\/([^/\s#?]+?)(?:\.git)?\/?$/i);
+  return m ? { owner: m[1], repo: m[2] } : null;
+}
+
+/**
+ * Resolves the HEAD commit SHA of `branch` (or the default branch) through the GitHub API.
+ * Returns null when the repo is not on GitHub, no token is available or the call fails:
+ * callers store null instead of inventing a SHA.
+ */
+export async function resolveHeadCommitSha(
+  repoUrl: string | null | undefined,
+  branch?: string | null,
+  opts: { projectId?: string; userId?: string; octokit?: Octokit } = {}
+): Promise<string | null> {
+  const parsed = parseGitHubRepo(repoUrl);
+  if (!parsed) return null;
+  try {
+    const octokit = opts.octokit || (await getOctokitClient(opts.projectId, opts.userId));
+    if (!octokit) return null;
+    let ref = branch || "";
+    if (!ref) {
+      const repo = await octokit.rest.repos.get({ owner: parsed.owner, repo: parsed.repo });
+      ref = repo.data.default_branch;
+    }
+    const res = await octokit.rest.repos.getCommit({ owner: parsed.owner, repo: parsed.repo, ref });
+    return res.data.sha || null;
+  } catch (err: any) {
+    console.warn(`Could not resolve HEAD of ${parsed.owner}/${parsed.repo}@${branch || "default"}:`, err?.message);
+    return null;
+  }
+}
+
+/**
+ * Engine hook: posts the `syncbay/preview` commit status and rewrites the PR comment for a
+ * PR-environment deployment once it reaches a terminal state. No-op for other deployments.
+ */
+export async function reportPreviewDeploymentStatus(
+  deploymentId: string,
+  state: "pending" | "success" | "failure",
+  clientArg?: any,
+  octokit?: Octokit
+): Promise<boolean> {
+  const client = clientArg || getPrismaClient();
+  if (typeof client?.deployment?.findUnique !== "function") return false;
+  const dep = await client.deployment.findUnique({
+    where: { id: deploymentId },
+    include: { build: true, service: { include: { domains: true, environment: true } } },
+  });
+  const env = dep?.service?.environment;
+  if (!dep || !env?.isPrEnv || !env.prNumber) return false;
+  const repo = parseGitHubRepo(dep.service.repoUrl);
+  if (!repo) return false;
+
+  const prHost =
+    dep.service.domains?.find((d: any) => /-pr-\d+\.syncbay\.app$/.test(d.hostname))?.hostname ||
+    `${slugifyHostPart(dep.service.name)}-pr-${env.prNumber}.syncbay.app`;
+  const previewUrl = `https://${prHost}`;
+  const commitSha: string = dep.build?.commitSha || "";
+  const errorMessage = state === "failure" ? (await import("@/lib/telemetry/event-bus")).logEventBus.getError(deploymentId) : undefined;
+  const client2 = octokit || (await getOctokitClient(env.projectId));
+  if (!client2) return false;
+
+  const description = {
+    pending: "Syncbay ephemeral preview deploying...",
+    success: "Syncbay ephemeral preview is live",
+    failure: "Syncbay ephemeral preview failed to deploy",
+  }[state];
+  const statusOk = commitSha
+    ? await postPreviewCommitStatus({ ...repo, commitSha, previewUrl, state, description, octokit: client2 })
+    : false;
+  const commentOk = await postPreviewComment({
+    ...repo,
+    prNumber: env.prNumber,
+    commitSha,
+    previewUrl,
+    branch: dep.service.branch || undefined,
+    state,
+    errorMessage: errorMessage || undefined,
+    octokit: client2,
+  });
+  return statusOk || commentOk;
+}
+
 /**
  * Transitions active deployments of a PR ephemeral environment to SLEEPING.
  */
@@ -223,6 +304,12 @@ export async function sleepPreviewEnvironment(
   }
 
   const serviceIds = (prEnv.services || []).map((s: any) => s.id);
+  // Stop the running preview instances and route their hosts to the sleeping splash.
+  for (const id of serviceIds) {
+    await stopServiceInstances(id, "pause", client).catch((err: any) =>
+      console.warn(`Could not stop preview service ${id}:`, err?.message)
+    );
+  }
   if (serviceIds.length > 0) {
     await client.deployment.updateMany({
       where: {
@@ -281,6 +368,13 @@ export async function destroyPreviewEnvironment(
       prNumber,
       message: `Preview environment ${envName} not found`,
     };
+  }
+
+  // Stop instances, free ports and drop routes/tunnel ingress before the rows cascade away.
+  for (const svc of prEnv.services || []) {
+    await stopServiceInstances(svc.id, "delete", client).catch((err: any) =>
+      console.warn(`Could not stop preview service ${svc.id}:`, err?.message)
+    );
   }
 
   await client.environment.delete({
@@ -466,13 +560,7 @@ export async function handlePullRequestWebhook(event: GitHubPullRequestEvent) {
         },
       });
 
-      executeDeployment(deployment.id, build.id, prService.id, {
-        serviceId: prService.id,
-        commitSha,
-        commitMessage: `PR #${prNumber}: ${event.pull_request.title}`,
-      }).catch((e) => console.error("PR deploy error:", e));
-
-      // Post commit status check and PR comment via Octokit
+      // Post the pending commit status and PR comment first; the engine updates both on completion
       const repoFullName = event.repository.full_name || "";
       const [owner, repo] = repoFullName
         ? repoFullName.split("/")
@@ -497,8 +585,15 @@ export async function handlePullRequestWebhook(event: GitHubPullRequestEvent) {
           previewUrl,
           branch,
           projectId: project.id,
+          state: "pending",
         });
       }
+
+      await scheduleDeployment(deployment.id, build.id, prService.id, {
+        serviceId: prService.id,
+        commitSha,
+        commitMessage: `PR #${prNumber}: ${event.pull_request.title}`,
+      });
 
       results.push({
         serviceId: prService.id,

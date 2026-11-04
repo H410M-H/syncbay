@@ -17,9 +17,10 @@ import { BuildPipeline, type PipelineResult } from "./pipeline.ts";
 import { PortManager, defaultPortManager } from "./port-manager.ts";
 import { createTunnelDriver, type TunnelDriver, type TunnelDriverConfig } from "./tunnel-driver.ts";
 import { isValidIngressHostname } from "./tunnel-config.ts";
+import { NonceCache, verifyAndConsume, verifyCanonicalSignature } from "./request-auth.ts";
+import { JobPullConsumer } from "./job-consumer.ts";
 
 /** Max clock skew / replay window for signed requests. */
-const SIGNATURE_TOLERANCE_MS = 300000;
 /** Dev-only fallback secret; the daemon refuses to start without RUNNER_SECRET in production. */
 const DEV_RUNNER_SECRET = "syncbay-runner-secret";
 
@@ -32,6 +33,7 @@ function resolveDaemonSecret(explicit?: string): string {
   return DEV_RUNNER_SECRET;
 }
 import { RunnerServices } from "./services.ts";
+import { handleMetricsRequest } from "./metrics.ts";
 
 export interface DaemonConfig {
   port?: number;
@@ -59,6 +61,8 @@ export interface JobState {
   exitCode?: number;
   /** Public hostnames routed to this job's port through the tunnel ingress. */
   hostnames?: string[];
+  /** True when the pipeline ran with a mock executor (no real process). */
+  simulated?: boolean;
   sseClients: Set<http.ServerResponse>;
 }
 
@@ -76,9 +80,10 @@ export class RunnerDaemon {
   private server: http.Server | null = null;
   private jobs: Map<string, JobState> = new Map();
   private pollTimer: NodeJS.Timeout | null = null;
+  private pullConsumer: JobPullConsumer | null = null;
   private isShuttingDown: boolean = false;
-  /** Header signatures already accepted for state-changing POSTs (sig → expiry). */
-  private seenSignatures: Map<string, number> = new Map();
+  /** Nonces of accepted signed requests (all methods); see runner/src/request-auth.ts. */
+  private readonly nonces = new NonceCache();
   /** Tunnel ingress: hostname → { port, jobId, containerId }. */
   private ingressRoutes: Map<string, { port: number; jobId: string; containerId?: string }> = new Map();
 
@@ -86,8 +91,9 @@ export class RunnerDaemon {
     this.port = config.port ?? parseInt(process.env.RUNNER_PORT || "8080", 10);
     this.host = config.host || process.env.RUNNER_HOST || "0.0.0.0";
     this.webhookSecret = resolveDaemonSecret(config.webhookSecret);
-    this.queueMode = config.queueMode ?? (process.env.RUNNER_QUEUE_MODE === "true");
-    this.pollIntervalMs = config.pollIntervalMs ?? 5000;
+    const queueEnv = (process.env.RUNNER_QUEUE_MODE || "").toLowerCase();
+    this.queueMode = config.queueMode ?? (queueEnv === "pull" || queueEnv === "true");
+    this.pollIntervalMs = config.pollIntervalMs ?? (parseInt(process.env.RUNNER_POLL_INTERVAL_MS || "", 10) || 5000);
     this.portManager = config.portManager || defaultPortManager;
     this.pipeline = config.pipeline || new BuildPipeline({ portManager: this.portManager });
     this.services = config.services || new RunnerServices({ portManager: this.portManager });
@@ -98,59 +104,55 @@ export class RunnerDaemon {
 
   /**
    * Timing-safe HMAC SHA-256 verification of the canonical request string
-   * `${ts}.${METHOD}.${path}.${body}` (must match `signRequest()` in the control plane's
+   * `${ts}.${nonce}.${METHOD}.${path}.${body}` (must match `signRequest()` in the control plane's
    * runner-driver.ts). `path` is the request pathname; for GET routes `body` is the job id.
+   * Pure check: it does not consume the nonce (see `verifySignedRequest`).
    */
   public verifySignature(
     method: string,
     pathname: string,
     body: string,
     signatureHeader: string | undefined,
-    timestampHeader: string | undefined
+    timestampHeader: string | undefined,
+    nonce: string | undefined
   ): boolean {
-    if (!signatureHeader || !this.webhookSecret) {
-      return false;
-    }
-
-    if (!timestampHeader || !/^\d+$/.test(timestampHeader)) {
-      return false;
-    }
-
-    const timestamp = Number(timestampHeader);
-    if (!Number.isSafeInteger(timestamp) || Math.abs(Date.now() - timestamp) > SIGNATURE_TOLERANCE_MS) {
-      return false;
-    }
-
-    const expected = crypto
-      .createHmac("sha256", this.webhookSecret)
-      .update(`${timestampHeader}.${method.toUpperCase()}.${pathname}.${body}`)
-      .digest("hex");
-    const provided = signatureHeader.replace(/^sha256=/, "").trim();
-
-    if (!/^[a-f0-9]{64}$/i.test(provided)) {
-      return false;
-    }
-
-    return crypto.timingSafeEqual(Buffer.from(provided, "hex"), Buffer.from(expected, "hex"));
+    return verifyCanonicalSignature(this.webhookSecret, {
+      method,
+      pathname,
+      body,
+      signature: signatureHeader,
+      timestamp: timestampHeader,
+      nonce,
+    });
   }
 
-  /** Verifies a header-signed POST and rejects a replay of an already-accepted signature. */
+  /** Verifies a signed request and consumes its nonce, so any replay (any method) gets 401. */
+  private verifySignedRequest(
+    method: string,
+    pathname: string,
+    body: string,
+    signature: string | undefined,
+    timestamp: string | undefined,
+    nonce: string | undefined
+  ): boolean {
+    return verifyAndConsume(this.webhookSecret, this.nonces, { method, pathname, body, signature, timestamp, nonce });
+  }
+
+  /** Header-signed request (`X-Syncbay-Signature` / `-Timestamp` / `-Nonce`), single-use. */
+  private verifySignedHeaders(req: http.IncomingMessage, method: string, pathname: string, body: string): boolean {
+    return this.verifySignedRequest(
+      method,
+      pathname,
+      body,
+      req.headers["x-syncbay-signature"] as string | undefined,
+      req.headers["x-syncbay-timestamp"] as string | undefined,
+      req.headers["x-syncbay-nonce"] as string | undefined
+    );
+  }
+
+  /** Verifies a header-signed POST and rejects a replay. */
   private verifySignedPost(req: http.IncomingMessage, pathname: string, body: string): boolean {
-    const signature = req.headers["x-syncbay-signature"] as string | undefined;
-    const timestamp = req.headers["x-syncbay-timestamp"] as string | undefined;
-    if (!this.verifySignature("POST", pathname, body, signature, timestamp)) {
-      return false;
-    }
-    const now = Date.now();
-    for (const [sig, expiry] of this.seenSignatures) {
-      if (expiry <= now) this.seenSignatures.delete(sig);
-    }
-    const key = signature!.replace(/^sha256=/, "").trim().toLowerCase();
-    if (this.seenSignatures.has(key)) {
-      return false;
-    }
-    this.seenSignatures.set(key, Number(timestamp) + SIGNATURE_TOLERANCE_MS);
-    return true;
+    return this.verifySignedHeaders(req, "POST", pathname, body);
   }
 
   /**
@@ -195,6 +197,7 @@ export class RunnerDaemon {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
     }
+    await this.pullConsumer?.stop();
 
     this.services.shutdown();
 
@@ -232,12 +235,19 @@ export class RunnerDaemon {
     // CORS & Common Headers
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Syncbay-Signature, X-Syncbay-Timestamp");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Syncbay-Signature, X-Syncbay-Timestamp, X-Syncbay-Nonce");
 
     if (method === "OPTIONS") {
       res.writeHead(204);
       res.end();
       return;
+    }
+
+    // A request carrying x-target-port is application traffic (edge proxy, control-plane health
+    // probe): proxy it before the daemon's own routes, so `/health` reaches the app, not the daemon.
+    const headerTargetPort = parseInt(String(req.headers["x-target-port"] || ""), 10);
+    if (headerTargetPort > 0) {
+      return this.proxyRequest(req, res, headerTargetPort, await this.readBody(req));
     }
 
     // Health Check Endpoint
@@ -275,9 +285,12 @@ export class RunnerDaemon {
     const body = await this.readBody(req);
 
     // Managed databases & web terminals (runner/src/services.ts)
-    if (await this.services.handle(req, res, pathname, body, (p, s, t) => this.verifySignature((req.method || "GET").toUpperCase(), pathname, p, s, t))) {
+    if (await this.services.handle(req, res, pathname, body, (p, s, t) => this.verifySignedRequest(method, pathname, p, s, t, req.headers["x-syncbay-nonce"] as string | undefined))) {
       return;
     }
+
+    // Resource metrics: GET /api/metrics/:containerId (runner/src/metrics.ts)
+    if (await handleMetricsRequest(req, res, pathname, (p, s, t) => this.verifySignedRequest(method, pathname, p, s, t, req.headers["x-syncbay-nonce"] as string | undefined))) return;
 
     // POST /api/builds: Dispatch new build
     if (pathname === "/api/builds" && method === "POST") {
@@ -290,13 +303,7 @@ export class RunnerDaemon {
     if (buildMatch && method === "GET") {
       const jobId = decodeURIComponent(buildMatch[1]);
       // Header-only: query-string credentials are accepted solely on the SSE log route.
-      const isAuthed = this.verifySignature(
-        "GET",
-        pathname,
-        jobId,
-        req.headers["x-syncbay-signature"] as string | undefined,
-        req.headers["x-syncbay-timestamp"] as string | undefined
-      );
+      const isAuthed = this.verifySignedHeaders(req, "GET", pathname, jobId);
 
       if (!isAuthed) {
         res.writeHead(401, { "Content-Type": "application/json" });
@@ -313,16 +320,20 @@ export class RunnerDaemon {
     if (logsMatch && method === "GET") {
       const jobId = decodeURIComponent(logsMatch[1]);
       const headerSig = req.headers["x-syncbay-signature"] as string | undefined;
-      // EventSource cannot set headers, so an SSE request may carry `sig`/`ts` in the query
-      // string. The signature is still bound to GET + this exact pathname + job id.
+      // EventSource cannot set headers, so an SSE request may carry `sig`/`ts`/`nonce` in the
+      // query string. The signature is still bound to GET + this exact pathname + job id, and
+      // the nonce is single-use like every other signed request.
       const isEventStream = String(req.headers["accept"] || "").includes("text/event-stream");
       const useQuery = !headerSig && isEventStream;
       const signature = useQuery ? url.searchParams.get("sig") || undefined : headerSig;
       const timestamp = useQuery
         ? url.searchParams.get("ts") || undefined
         : (req.headers["x-syncbay-timestamp"] as string | undefined);
+      const nonce = useQuery
+        ? url.searchParams.get("nonce") || undefined
+        : (req.headers["x-syncbay-nonce"] as string | undefined);
 
-      const isAuthed = this.verifySignature("GET", pathname, jobId, signature, timestamp);
+      const isAuthed = this.verifySignedRequest("GET", pathname, jobId, signature, timestamp, nonce);
 
       if (!isAuthed) {
         res.writeHead(401, { "Content-Type": "application/json" });
@@ -338,6 +349,20 @@ export class RunnerDaemon {
     const stopMatch = pathname.match(/^\/api\/containers\/([^\/]+)\/stop$/);
     if (stopMatch && method === "POST") {
       await this.handleStopContainer(req, res, decodeURIComponent(stopMatch[1]), pathname, body);
+      return;
+    }
+
+    // POST /api/containers/:containerId/restart: stop + start the same image/process
+    const restartMatch = pathname.match(/^\/api\/containers\/([^\/]+)\/restart$/);
+    if (restartMatch && method === "POST") {
+      if (!this.verifySignedPost(req, pathname, body)) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Unauthorized: Invalid HMAC signature" }));
+        return;
+      }
+      const result = await this.restartInstance(decodeURIComponent(restartMatch[1]));
+      res.writeHead(result.restarted ? 200 : 409, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result));
       return;
     }
 
@@ -423,6 +448,22 @@ export class RunnerDaemon {
       return;
     }
 
+    const { job: jobState } = this.startJob(params);
+    const jobId = jobState.jobId;
+
+    // Return 202 Accepted with stream URL
+    res.writeHead(202, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        jobId,
+        status: "BUILDING",
+        streamUrl: `/api/builds/${jobId}/logs`,
+      })
+    );
+  }
+
+  /** Registers a build job and runs its pipeline in the background (HTTP dispatch and pull consumer). */
+  public startJob(params: any): { job: JobState; done: Promise<void> } {
     const jobId = params.jobId || params.buildId || params.deploymentId || "job_" + crypto.randomUUID();
 
     // Register Job in memory
@@ -442,18 +483,7 @@ export class RunnerDaemon {
       this.saveJobToDisk(params.deploymentId, jobState);
     }
 
-    // Return 202 Accepted with stream URL
-    res.writeHead(202, { "Content-Type": "application/json" });
-    res.end(
-      JSON.stringify({
-        jobId,
-        status: "BUILDING",
-        streamUrl: `/api/builds/${jobId}/logs`,
-      })
-    );
-
-    // Asynchronously launch pipeline
-    this.runJobPipeline(jobId, params);
+    return { job: jobState, done: this.runJobPipeline(jobId, { ...params, jobId }) };
   }
 
   private getLogFilePath(jobId: string): string {
@@ -570,6 +600,7 @@ export class RunnerDaemon {
         job.containerId = result.containerId;
         job.assignedPort = result.assignedPort;
         job.strategy = result.strategy;
+        job.simulated = Boolean(result.simulated);
         log(`[runner] Job ${jobId} succeeded. Container: ${result.containerId}, Port: ${result.assignedPort}`);
         if (result.assignedPort) {
           await this.registerEdgeRoute(params, result.assignedPort, log);
@@ -623,6 +654,8 @@ export class RunnerDaemon {
         error: job.error,
         errorMessage: job.error,
         exitCode: job.exitCode,
+        simulated: Boolean(job.simulated),
+        metadata: { simulated: Boolean(job.simulated) },
         logs: job.logs,
       })
     );
@@ -682,11 +715,16 @@ export class RunnerDaemon {
       return;
     }
 
-    // Release port associated with container/service
-    this.portManager.releaseJobPort(containerId);
+    const result = await this.stopInstance(containerId);
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ containerId, ...result, message: "Container stop signaled" }));
+  }
 
-    // Stop container or process via pipeline
-    await this.pipeline.stopContainer(containerId).catch(() => null);
+  /** Stops an instance, frees its port and drops its tunnel ingress (HTTP route and pull consumer). */
+  public async stopInstance(containerId: string): Promise<{ stopped: boolean; releasedPort?: number }> {
+    // Stop container or process via pipeline (it releases the port it recorded)
+    const res = await this.pipeline.stopContainer(containerId).catch(() => null);
+    this.portManager.releaseJobPort(containerId);
 
     // Mark job cancelled if found
     for (const job of this.jobs.values()) {
@@ -696,23 +734,62 @@ export class RunnerDaemon {
     }
 
     await this.removeTunnelIngress(containerId);
-
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ containerId, stopped: true, message: "Container stop signaled" }));
+    return { stopped: Boolean(res?.stopped), releasedPort: res?.releasedPort };
   }
 
-  private startQueuePoller(): void {
-    this.pollTimer = setInterval(async () => {
-      // Queue poller hook: checks for QUEUED builds and triggers pipeline
-      // In standalone runner daemon, pending queue jobs are processed sequentially
-      for (const [id, job] of this.jobs.entries()) {
-        if (job.status === "QUEUED") {
-          job.status = "BUILDING";
-          this.runJobPipeline(id, { jobId: id });
-          break; // process one job at a time
+  /**
+   * Restarts an instance via the pipeline's launch spec and moves the job record and tunnel
+   * ingress to the new instance id / port.
+   */
+  public async restartInstance(
+    containerId: string
+  ): Promise<{ restarted: boolean; containerId: string; port?: number; error?: string }> {
+    const job = Array.from(this.jobs.values()).find((j) => j.containerId === containerId);
+    const log = (msg: string) => {
+      if (job) job.logs.push(msg);
+    };
+    const result = await this.pipeline.restartContainer(containerId, log);
+    if (result.restarted) {
+      if (job) {
+        job.containerId = result.containerId;
+        job.assignedPort = result.port;
+        job.status = "ACTIVE";
+        this.saveJobToDisk(job.jobId, job);
+      }
+      let changed = false;
+      for (const [host, r] of this.ingressRoutes) {
+        if (r.containerId === containerId) {
+          this.ingressRoutes.set(host, { ...r, containerId: result.containerId, port: result.port ?? r.port });
+          changed = true;
         }
       }
-    }, this.pollIntervalMs);
+      // A stopped job's ingress was removed; restore it for its hostnames.
+      for (const host of job?.hostnames || []) {
+        if (!this.ingressRoutes.has(host.toLowerCase()) && result.port) {
+          this.ingressRoutes.set(host.toLowerCase(), { port: result.port, jobId: job!.jobId, containerId: result.containerId });
+          changed = true;
+        }
+      }
+      if (changed) await this.syncTunnelIngress();
+    }
+    return result;
+  }
+
+  /** `RUNNER_QUEUE_MODE=pull`: claim jobs from the control plane instead of waiting for webhooks. */
+  private startQueuePoller(): void {
+    const apiUrl = process.env.SYNCBAY_API_URL;
+    if (!apiUrl) {
+      console.warn("[runner-daemon] RUNNER_QUEUE_MODE=pull needs SYNCBAY_API_URL; pull consumer not started");
+      return;
+    }
+    this.pullConsumer = new JobPullConsumer({
+      apiUrl,
+      secret: this.webhookSecret,
+      runnerId: process.env.RUNNER_ID,
+      pollIntervalMs: this.pollIntervalMs,
+      daemon: this,
+    });
+    this.pullConsumer.start();
   }
 
   private resolveRouteHostnames(params: any): string[] {

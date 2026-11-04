@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { purgeEdgeCache } from "@/lib/edge/edge-router";
+import { rollbackToDeployment } from "@/lib/orchestrator/lifecycle";
 
 export interface InstantRollbackInput {
   deploymentId: string;
@@ -16,6 +17,7 @@ export async function executeInstantRollback(
   const target = await db.deployment.findUnique({
     where: { id: input.deploymentId },
     include: {
+      build: true,
       service: {
         include: {
           environment: {
@@ -72,7 +74,13 @@ export async function executeInstantRollback(
     });
   }
 
-  // Find currently active deployment for the service and mark it SUPERSEDED
+  if (!target.build || target.build.status !== "SUCCEEDED") {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "Target deployment has no successful build to roll back to.",
+    });
+  }
+
   const currentActive = await db.deployment.findFirst({
     where: {
       serviceId: target.serviceId,
@@ -81,21 +89,13 @@ export async function executeInstantRollback(
     },
   });
 
-  if (currentActive) {
-    await db.deployment.update({
-      where: { id: currentActive.id },
-      data: { status: "SUPERSEDED" },
-    });
-  }
+  // Restart the target's instance on its runner and move every route to it; when the instance
+  // is gone, redeploy its build (the current deployment serves until the new one supersedes it).
+  const outcome = await rollbackToDeployment(target, currentActive, userId, db);
+  const activeDeployment = { id: outcome.mode === "restart" ? target.id : outcome.deploymentId! };
 
-  // Mark target deployment ACTIVE
-  const activeDeployment = await db.deployment.update({
-    where: { id: target.id },
-    data: { status: "ACTIVE" },
-  });
-
-  // Purge edge cache across all 6 POPs
-  const purgeResult = purgeEdgeCache({ all: true });
+  // Purge the Cloudflare edge cache (reports "not configured" when Cloudflare is unset)
+  const purgeResult = await purgeEdgeCache({ all: true });
 
   // Record audit log entry
   try {
@@ -105,9 +105,10 @@ export async function executeInstantRollback(
         actorUserId: userId,
         action: "deployment.rollback",
         metadata: {
-          targetDeploymentId: activeDeployment.id,
+          targetDeploymentId: target.id,
           previousDeploymentId: currentActive?.id ?? null,
           serviceId: target.serviceId,
+          mode: outcome.mode,
         },
       },
     });
@@ -119,12 +120,17 @@ export async function executeInstantRollback(
 
   return {
     success: true,
-    targetDeploymentId: activeDeployment.id,
+    targetDeploymentId: target.id,
     activeDeploymentId: activeDeployment.id,
     previousDeploymentId: currentActive?.id ?? null,
+    mode: outcome.mode,
+    port: outcome.port,
     purgedPops: purgeResult.purgedPops,
     durationMs,
     latencyMs: durationMs,
-    message: `Traffic instantly shifted to deployment ${activeDeployment.id.slice(0, 8)} in ${durationMs}ms`,
+    message:
+      outcome.mode === "restart"
+        ? `Traffic shifted to restarted deployment ${target.id.slice(0, 8)} in ${durationMs}ms`
+        : `Instance of ${target.id.slice(0, 8)} is gone; redeploying its build as ${activeDeployment.id.slice(0, 8)}`,
   };
 }

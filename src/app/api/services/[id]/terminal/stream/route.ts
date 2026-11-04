@@ -1,11 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { resolveTerminalAccess } from "@/lib/shell/terminal-access";
-import {
-  getTerminalSession,
-  subscribeTerminal,
-  pipeRunnerTerminal,
-  type TerminalEvent,
-} from "@/lib/shell/terminal-sessions";
+import { resolveTerminalAccess, terminalContextFor } from "@/lib/shell/terminal-access";
+import { openTerminalSession, streamTerminal, type TerminalEvent } from "@/lib/shell/terminal-sessions";
+import { TerminalTokenConfigError } from "@/lib/shell/terminal-token";
 
 export const dynamic = "force-dynamic";
 
@@ -16,8 +12,14 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   if ("error" in access) return NextResponse.json({ error: access.error }, { status: access.status });
 
   const sessionId = req.nextUrl.searchParams.get("sessionId") || "";
-  const session = getTerminalSession(sessionId, access.userId, serviceId);
-  if (!session) return NextResponse.json({ error: "Terminal session not found or expired" }, { status: 404 });
+  let handle;
+  try {
+    handle = await openTerminalSession(sessionId, terminalContextFor(access));
+  } catch (err) {
+    if (err instanceof TerminalTokenConfigError) return NextResponse.json({ error: err.message }, { status: 503 });
+    throw err;
+  }
+  if (!handle) return NextResponse.json({ error: "Terminal session not found or expired" }, { status: 404 });
 
   const encoder = new TextEncoder();
   const upstream = new AbortController();
@@ -34,22 +36,18 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
           closed = true;
         }
       };
-      const send = (event: TerminalEvent) => write(`data: ${JSON.stringify(event)}\n\n`);
+      const send = (event: TerminalEvent) => {
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        if (event.type === "exit") cleanup();
+      };
 
       write(`: connected\n\n`);
-      send({ type: "meta", cwd: session.state.cwd, mode: session.mode });
-
-      const unsubscribe = subscribeTerminal(session, (event) => {
-        send(event);
-        if (event.type === "exit") cleanup();
-      });
       const heartbeat = setInterval(() => write(`: ping\n\n`), 15000);
 
       cleanup = () => {
         if (closed) return;
         closed = true;
         clearInterval(heartbeat);
-        unsubscribe();
         upstream.abort();
         try {
           controller.close();
@@ -57,15 +55,11 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       };
       req.signal.addEventListener("abort", () => cleanup(), { once: true });
 
-      if (session.mode === "runner") {
-        pipeRunnerTerminal(session, send, upstream.signal)
-          .catch((err) => {
-            if (!upstream.signal.aborted) send({ type: "output", data: `\r\n[syncbay] runner stream error: ${err.message}\r\n` });
-          })
-          .finally(() => cleanup());
-      } else if (session.buffer) {
-        send({ type: "output", data: session.buffer });
-      }
+      streamTerminal(handle, send, upstream.signal)
+        .catch((err) => {
+          if (!upstream.signal.aborted) send({ type: "output", data: `\r\n[syncbay] terminal stream error: ${err.message}\r\n` });
+        })
+        .finally(() => cleanup());
     },
     cancel() {
       cleanup();

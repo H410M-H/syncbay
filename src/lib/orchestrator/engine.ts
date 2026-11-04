@@ -7,6 +7,7 @@ import { generateDefaultSubdomain } from "@/lib/domain-service";
 import { runKnipAnalysis } from "@/lib/buildpack/knip-analyzer";
 import { registerServiceRouteAsync } from "@/lib/edge/service-registry";
 import { applyDatabaseEnv } from "@/lib/database-provider";
+import { requestTunnelReload } from "@/lib/tunnel/tunnel-sync";
 import {
   getRunnerDriver,
   RunnerDriverFactory,
@@ -15,6 +16,8 @@ import {
   type BuildDispatchResult,
   type BuildStatusResult,
 } from "@/lib/orchestrator/runner-driver";
+import { onDeploymentActive, onDeploymentFailed, resolveProbeTargets } from "@/lib/orchestrator/lifecycle";
+import { deployPollBudgetMs, markJobDispatched, releaseOrchestratorLease, renewOrchestratorLease } from "@/lib/orchestrator/job-queue";
 
 export interface TriggerOptions {
   serviceId: string;
@@ -23,6 +26,8 @@ export interface TriggerOptions {
   userId?: string;
   cleanBuild?: boolean;
   driverType?: "LOCAL" | "CLOUD" | "webhook" | "queue" | "ssh" | "local";
+  /** Recovery: resume polling a runner job that is already building this deployment. */
+  resume?: { runnerJobId: string; driverType: string };
 }
 
 /**
@@ -36,7 +41,7 @@ export async function executeDeployment(
   serviceId: string,
   options: TriggerOptions = { serviceId }
 ) {
-  const commit = options.commitSha || Math.random().toString(16).slice(2, 9);
+  const commit = options.commitSha || "branch HEAD";
   const message = options.commitMessage || "Deployment via console";
 
   const log = (message: string, stream: "stdout" | "stderr" | "system" = "system") => {
@@ -52,6 +57,7 @@ export async function executeDeployment(
   try {
     log(`[syncbay] Deployment initiated for service ${serviceId}`, "system");
     log(`[syncbay] Target commit: ${commit} — "${message}"`, "system");
+    await renewOrchestratorLease(deploymentId);
 
     // Phase 1: Update to BUILDING
     await db.build.update({
@@ -126,12 +132,6 @@ export async function executeDeployment(
           });
           githubToken = acc?.access_token;
         }
-        if (!githubToken) {
-          const anyAcc = await (db.account as any).findFirst({
-            where: { provider: "github", access_token: { not: null } },
-          });
-          githubToken = anyAcc?.access_token;
-        }
         if (githubToken) {
           resolvedRepoUrl = resolvedRepoUrl.replace(
             /https?:\/\/github\.com\//i,
@@ -203,7 +203,7 @@ export async function executeDeployment(
     }
 
     // Phase 2.5: Dispatch to Runner Driver Subsystem
-    let driver = getRunnerDriver(options.driverType);
+    let driver = getRunnerDriver((options.resume?.driverType as TriggerOptions["driverType"]) ?? options.driverType);
     log(`[runner] Executing deployment via ${driver.type.toUpperCase()} runner driver...`, "system");
 
     const dispatchOnLog = (line: string) => {
@@ -256,7 +256,9 @@ export async function executeDeployment(
 
     let dispatchRes: BuildDispatchResult;
     try {
-      dispatchRes = await driver.dispatchBuild(dispatchParams);
+      dispatchRes = options.resume
+        ? { jobId: options.resume.runnerJobId, driverType: driver.type, status: "BUILDING" }
+        : await driver.dispatchBuild(dispatchParams);
     } catch (dispatchErr: any) {
       // If remote runner dispatch failed (HTTP 530 Cloudflare tunnel error, 502/503/504, connection refused, or timeout),
       // fall back to the local runner driver. Authentication failures are never masked by a fallback, and the
@@ -278,6 +280,8 @@ export async function executeDeployment(
       }
     }
 
+    await markJobDispatched(deploymentId, driver.type, dispatchRes.jobId);
+    const runnerMeta: Record<string, any> = { ...(dispatchRes.metadata || {}) };
     let finalStatus = dispatchRes.status;
     let assignedPort = dispatchRes.assignedPort || service?.port || 3000;
     let containerId = dispatchRes.containerId;
@@ -289,11 +293,16 @@ export async function executeDeployment(
     if (finalStatus !== "ACTIVE" && finalStatus !== "FAILED" && finalStatus !== "CANCELLED") {
       log(`[runner] Build job ${dispatchRes.jobId} enqueued/running. Awaiting completion...`, "system");
       const pollStart = Date.now();
-      const timeoutMs = 360000;
+      const timeoutMs = deployPollBudgetMs();
+      let lastRenew = Date.now();
       let lastLogCount = 0;
       let consecutivePollErrors = 0;
       while (Date.now() - pollStart < timeoutMs) {
         await new Promise((r) => setTimeout(r, 1000));
+        if (Date.now() - lastRenew > 15000) {
+          lastRenew = Date.now();
+          await renewOrchestratorLease(deploymentId);
+        }
         let check: BuildStatusResult;
         try {
           check = await driver.checkStatus(dispatchRes.jobId);
@@ -311,6 +320,7 @@ export async function executeDeployment(
         if (check.containerId) containerId = check.containerId;
         if (check.errorMessage) lastErrorMessage = check.errorMessage;
         if (typeof check.exitCode === "number") lastExitCode = check.exitCode;
+        if (check.metadata) Object.assign(runnerMeta, check.metadata);
 
         // Relay remote runner daemon logs to event bus
         if (check.logs && Array.isArray(check.logs) && check.logs.length > lastLogCount) {
@@ -329,6 +339,13 @@ export async function executeDeployment(
       }
     }
 
+    if (finalStatus !== "ACTIVE" && finalStatus !== "FAILED" && finalStatus !== "CANCELLED") {
+      // Poll budget spent (serverless maxDuration): hand off to recoverStaleDeployments().
+      log(`[runner] Build job ${dispatchRes.jobId} still ${finalStatus}; handing off to the recovery sweep`, "system");
+      await releaseOrchestratorLease(deploymentId);
+      return { status: "PENDING", url: `https://${defaultUrl}`, port: undefined, containerId };
+    }
+
     if (finalStatus !== "ACTIVE") {
       const err = lastErrorMessage || logEventBus.getError(deploymentId) || `Runner build failed with status: ${finalStatus}`;
       throw new Error(withExitCode(err));
@@ -340,22 +357,18 @@ export async function executeDeployment(
     // Phase 3: Blue/Green Health Check Verification
     const healthPath = (service as any)?.healthCheckUrl || "/health";
     log(`[health] Running blue/green health probe on port ${targetPort}${healthPath}...`, "stdout");
-    const isRemoteRunnerActive = driver.type === "webhook" && Boolean(process.env.RUNNER_URL);
-    const runnerUrlStr = isRemoteRunnerActive ? process.env.RUNNER_URL!.replace(/\/$/, '') : `http://127.0.0.1:${targetPort}`;
-    const primaryProbeUrl = isRemoteRunnerActive ? `${runnerUrlStr}${healthPath}` : `http://127.0.0.1:${targetPort}${healthPath}`;
-    const rootProbeUrl = isRemoteRunnerActive ? `${runnerUrlStr}/` : `http://127.0.0.1:${targetPort}/`;
-    const probeHeaders = isRemoteRunnerActive ? { 'x-target-port': String(targetPort) } : undefined;
+    const { primaryProbeUrl, rootProbeUrl, probeHeaders } = resolveProbeTargets(driver, runnerMeta, targetPort, healthPath);
     let isHealthy = false;
 
-    const isSimulated = Boolean(
-      dispatchRes.metadata?.simulated ||
-      process.env.VERCEL === "1" ||
-      process.env.VERCEL_ENV
-    );
+    // Only the runner can say an instance is simulated (mock executor); a real runner is probed even on Vercel.
+    const isSimulated = Boolean(runnerMeta.simulated);
 
     if (isSimulated) {
       isHealthy = true;
-      log(`[health] Serverless/simulated environment verified — container instance ${containerId || "active"} on port ${targetPort}`, "stdout");
+      log(`[health] Runner reported a simulated instance ${containerId || "active"} on port ${targetPort}; skipping HTTP probe`, "stdout");
+    } else if (runnerMeta.healthVerifiedByRunner && !process.env.RUNNER_URL) {
+      isHealthy = true;
+      log(`[health] Health verified by the pull-mode runner (no RUNNER_URL route from the control plane)`, "stdout");
     } else {
       for (let i = 0; i < 25; i++) {
         try {
@@ -412,6 +425,7 @@ export async function executeDeployment(
         status: "ACTIVE",
         cfContainerId: containerId,
         completedAt: new Date(),
+        errorMessage: null,
       },
     }).catch(() => null);
 
@@ -421,6 +435,19 @@ export async function executeDeployment(
         data: { port: targetPort },
       }).catch(() => null);
     }
+
+    await onDeploymentActive({
+      deploymentId,
+      serviceId,
+      containerId,
+      port: targetPort,
+      driver,
+      hosts: [...targetHostnames],
+      isLocal: isLocalDriver,
+      simulated: isSimulated,
+      log: (line) => log(line, "system"),
+    });
+    await requestTunnelReload(`deploy:${deploymentId}:active`); // no-op unless a tunnel is configured; never throws
 
     log(`[syncbay] Deployment ${deploymentId} is ACTIVE and serving traffic 🚀`, "system");
 
@@ -440,9 +467,14 @@ export async function executeDeployment(
 
     await db.deployment.update({
       where: { id: deploymentId },
-      data: { status: "FAILED", completedAt: new Date() },
+      data: { status: "FAILED", completedAt: new Date(), errorMessage: String(error?.message || error).slice(0, 4000) },
     }).catch(() => null);
 
+    await onDeploymentFailed({ deploymentId, error: String(error?.message || error) });
+
     throw error;
+  } finally {
+    // Persist buffered log lines before a serverless invocation can be frozen.
+    await logEventBus.flush();
   }
 }

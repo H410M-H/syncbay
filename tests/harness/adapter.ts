@@ -25,11 +25,27 @@ import {
 } from "../../src/lib/buildpack/resolver";
 
 import {
-  provisionBucket as prodProvisionBucket,
+  describeBucket as prodDescribeBucket,
   generatePresignedUrl as prodGeneratePresignedUrl,
+  readStorageConfig,
   type BucketDetails,
   type PresignedUrlParams,
+  type StorageConfig,
 } from "../../src/lib/storage-provider";
+
+/**
+ * Storage config for offline e2e runs: real SigV4 maths with throwaway test-only
+ * keys (no network). Real R2_* / CLOUDFLARE_ACCOUNT_ID values win when present.
+ */
+function e2eStorageConfig(): StorageConfig {
+  const env = readStorageConfig();
+  return {
+    ...env,
+    accountId: env.accountId ?? "e2etestaccount",
+    accessKeyId: env.accessKeyId ?? "E2E_TEST_ONLY_ACCESS_KEY",
+    secretAccessKey: env.secretAccessKey ?? "e2e-test-only-secret-key",
+  };
+}
 
 import {
   generateDefaultSubdomain as prodGenerateDefaultSubdomain,
@@ -98,8 +114,10 @@ export const adapter = {
   },
 
   // Object Storage Provider (F17)
+  // Describes the bucket (deterministic R2 name + S3 endpoint) without creating it remotely;
+  // real create/list/delete is covered by tests/verify-r2.ts against a live S3 server.
   provisionBucket: async (params: { name: string; projectId: string }): Promise<BucketDetails> => {
-    return await prodProvisionBucket(params);
+    return prodDescribeBucket(params, e2eStorageConfig());
   },
   generatePresignedUrl: async (
     bucketNameOrParams: string | PresignedUrlParams,
@@ -107,7 +125,9 @@ export const adapter = {
     operationArg?: "get" | "put",
     expiresInSecondsArg?: number
   ): Promise<string> => {
-    return await prodGeneratePresignedUrl(bucketNameOrParams, keyArg, operationArg, expiresInSecondsArg);
+    return await prodGeneratePresignedUrl(bucketNameOrParams, keyArg, operationArg, expiresInSecondsArg, {
+      config: e2eStorageConfig(),
+    });
   },
 
   // Domain & SSL Service (F14, F15)

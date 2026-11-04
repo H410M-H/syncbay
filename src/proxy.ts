@@ -1,5 +1,6 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, type NextFetchEvent } from "next/server";
 import { resolveServiceRoute } from "@/lib/edge/service-registry";
+import { recordServiceRequest } from "@/lib/scale/activity";
 
 /**
  * Syncbay edge proxy (Next 16 `proxy.ts`, Node.js runtime).
@@ -74,7 +75,7 @@ function passThrough(req: NextRequest) {
   });
 }
 
-export async function proxy(req: NextRequest) {
+export async function proxy(req: NextRequest, event?: NextFetchEvent) {
   const host = extractHost(req.headers.get("x-forwarded-host") || req.headers.get("host") || "");
   const { pathname } = req.nextUrl;
 
@@ -159,6 +160,8 @@ export async function proxy(req: NextRequest) {
 
   // If active: transparently proxy/forward to upstream origin container
   if (route && route.status === "ACTIVE") {
+    const activity = recordServiceRequest(host); // scale-to-zero last-request (debounced 30 s, never throws)
+    if (activity) event?.waitUntil(activity);
     let upstreamBase = route.upstreamUrl || (route.targetPort ? `http://127.0.0.1:${route.targetPort}` : undefined);
     let targetPort = route.targetPort;
     const runnerUrl = process.env.RUNNER_URL;

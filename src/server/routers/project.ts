@@ -49,7 +49,7 @@ async function assertProjectAccess(
         ...svc,
         deployments: svc.deployments.map((dep) => ({
           ...dep,
-          errorMessage: logEventBus.getError(dep.id) || null,
+          errorMessage: dep.errorMessage || logEventBus.getError(dep.id) || null,
         })),
       })),
     })),

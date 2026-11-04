@@ -1,4 +1,5 @@
 import { NextAuthOptions, getServerSession } from "next-auth";
+import { buildAuthCookies } from "@/lib/auth-cookies";
 import GitHubProvider from "next-auth/providers/github";
 import GoogleProvider from "next-auth/providers/google";
 import CredentialsProvider from "next-auth/providers/credentials";
@@ -35,6 +36,8 @@ export const authOptions: NextAuthOptions = {
   session: {
     strategy: "jwt",
   },
+  // Production: session cookie scoped to AUTH_COOKIE_DOMAIN (.syncbay.app) so service hosts see it
+  cookies: buildAuthCookies(),
   providers: [
     GoogleProvider({
       clientId: serverEnv.GOOGLE_CLIENT_ID ?? "",

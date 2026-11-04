@@ -8,10 +8,12 @@ import { z } from "zod";
 import { domainToASCII } from "node:url";
 import { createTRPCRouter, protectedProcedure } from "@/server/trpc";
 import { TRPCError } from "@trpc/server";
-import { domainService, generateVerificationRecords, isValidHostname } from "@/lib/domain-service";
-import { cloudflareApiClient } from "@/lib/tunnel/cloudflare-api";
+import { generateVerificationRecords, isValidHostname, verifyDomainDetailed } from "@/lib/domain-service";
+import { cloudflareApiClient, CloudflareNotConfiguredError } from "@/lib/tunnel/cloudflare-api";
 import { getCustomDomainTlsStatus } from "@/lib/edge/edge-router";
 import { registerServiceRouteAsync, removeServiceRouteAsync } from "@/lib/edge/service-registry";
+import { resolveDomainUpstream } from "@/lib/edge/domain-upstream";
+import { requestTunnelReload } from "@/lib/tunnel/tunnel-sync";
 
 export const domainRouter = createTRPCRouter({
   /**
@@ -116,8 +118,16 @@ export const domainRouter = createTRPCRouter({
         });
       }
 
-      // Provision Custom Hostname with Cloudflare API
-      const cfRecord = await cloudflareApiClient.createCustomHostname({ hostname: cleanHostname });
+      // Provision the Custom Hostname with Cloudflare for SaaS when configured. Without it the
+      // domain is verified by DNS alone (no simulated Cloudflare record in production).
+      let cfRecord: Awaited<ReturnType<typeof cloudflareApiClient.createCustomHostname>> | null = null;
+      if (cloudflareApiClient.isLiveApiConfigured || process.env.NODE_ENV !== "production") {
+        try {
+          cfRecord = await cloudflareApiClient.createCustomHostname({ hostname: cleanHostname });
+        } catch (err: any) {
+          throw new TRPCError({ code: "BAD_GATEWAY", message: `Cloudflare custom hostname could not be created: ${err.message}` });
+        }
+      }
       const verification = generateVerificationRecords(cleanHostname);
 
       const domain = await ctx.db.domain.create({
@@ -127,8 +137,8 @@ export const domainRouter = createTRPCRouter({
           isGenerated: false,
           status: "PENDING",
           verificationTxt: verification.txtRecord,
-          cfRecordId: cfRecord.id,
-          cfZoneId: process.env.CLOUDFLARE_ZONE_ID || "cf_zone_managed",
+          cfRecordId: cfRecord?.id ?? null,
+          cfZoneId: cfRecord ? process.env.CLOUDFLARE_ZONE_ID || null : null,
         },
       });
 
@@ -161,6 +171,7 @@ export const domainRouter = createTRPCRouter({
           service: {
             include: {
               deployments: { orderBy: { createdAt: "desc" }, take: 1 },
+              environment: { select: { name: true } },
             },
           },
         },
@@ -168,33 +179,26 @@ export const domainRouter = createTRPCRouter({
 
       if (!domain) throw new TRPCError({ code: "NOT_FOUND", message: "Domain not found" });
 
-      // Verify with Cloudflare Custom Hostnames API
-      const cfResult = await cloudflareApiClient.verifyCustomHostname(domain.cfRecordId || domain.hostname);
-      const newStatus = cfResult.status === "ACTIVE" ? "ACTIVE" : cfResult.status === "FAILED" ? "FAILED" : "VERIFYING";
+      // Real DNS (TXT challenge + CNAME) and, when configured, Cloudflare custom-hostname status
+      const result = await verifyDomainDetailed(domain.id, { client: ctx.db });
+      const updated = (await ctx.db.domain.findUnique({ where: { id: domain.id } })) ?? domain;
 
-      const updated = await ctx.db.domain.update({
-        where: { id: input.domainId },
-        data: {
-          status: newStatus,
-          verifiedAt: newStatus === "ACTIVE" ? new Date() : undefined,
-        },
-      });
-
-      // If active, immediately register in Edge Service Registry for zero-latency ingress
-      if (newStatus === "ACTIVE" && domain.service) {
-        const port = domain.service.port || 3000;
-        const isPaused = (domain.service as any).isPaused;
-        const deployments = (domain.service as any).deployments;
-        const latestStatus = Array.isArray(deployments) && deployments.length > 0 ? deployments[0].status : "ACTIVE";
-        const routeStatus = isPaused ? "SLEEPING" : latestStatus || "ACTIVE";
-        await registerServiceRouteAsync(domain.hostname, port, routeStatus, `http://127.0.0.1:${port}`);
+      if (result.status === "ACTIVE" && domain.service) {
+        // Route the custom host exactly like the service's live platform route (same upstream,
+        // port and isLocal), not a guessed 127.0.0.1 upstream.
+        const upstream = await resolveDomainUpstream(domain.service);
+        await registerServiceRouteAsync(domain.hostname, upstream.targetPort, upstream.status, upstream.upstreamUrl, upstream.isLocal);
+        await requestTunnelReload(`domain:${domain.hostname}:active`);
       }
 
       return {
         ...updated,
-        status: newStatus,
-        sslStatus: cfResult.sslStatus,
-        sslIssuer: cfResult.sslIssuer,
+        status: result.status,
+        sslStatus: result.cloudflare.sslStatus ?? (result.cloudflare.configured ? "pending" : "not_managed"),
+        sslIssuer: result.cloudflare.configured ? "Cloudflare Managed CA" : null,
+        cloudflareConfigured: result.cloudflare.configured,
+        dns: result.dns,
+        errors: result.errors,
         verificationRecords: updated.isGenerated ? null : generateVerificationRecords(updated.hostname),
       };
     }),
@@ -250,7 +254,9 @@ export const domainRouter = createTRPCRouter({
 
       if (!domain) throw new TRPCError({ code: "NOT_FOUND", message: "Domain not found" });
 
-      const cfRecord = await cloudflareApiClient.getCustomHostname(domain.cfRecordId || domain.hostname);
+      const cfRecord = cloudflareApiClient.isLiveApiConfigured || process.env.NODE_ENV !== "production"
+        ? await cloudflareApiClient.getCustomHostname(domain.cfRecordId || domain.hostname).catch(() => null)
+        : null;
       const tls = getCustomDomainTlsStatus(domain.hostname);
 
       return {
@@ -300,6 +306,7 @@ export const domainRouter = createTRPCRouter({
       await ctx.db.domain.delete({
         where: { id: input.domainId },
       });
+      await requestTunnelReload(`domain:${domain.hostname}:deleted`);
 
       return { success: true };
     }),
@@ -331,7 +338,13 @@ export const domainRouter = createTRPCRouter({
 
       if (!service) throw new TRPCError({ code: "NOT_FOUND", message: "Service not found" });
 
-      const tunnel = await cloudflareApiClient.provisionTunnelToken(service.name);
-      return tunnel;
+      try {
+        return await cloudflareApiClient.provisionTunnelToken(service.name);
+      } catch (err: any) {
+        throw new TRPCError({
+          code: err instanceof CloudflareNotConfiguredError ? "PRECONDITION_FAILED" : "BAD_GATEWAY",
+          message: err.message,
+        });
+      }
     }),
 });

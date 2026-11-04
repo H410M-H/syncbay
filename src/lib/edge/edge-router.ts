@@ -1,6 +1,11 @@
 /**
  * Syncbay PaaS — Multi-Region Edge Networking & Cloud Container Proxy (M5 Core)
  * Coordinates geo-distributed routing across global edge POPs with instant health-gated failover.
+ *
+ * NOTE: the six regions below are an ILLUSTRATIVE static model (coordinates, latencies,
+ * container counts) used for routing demos and the dashboard globe. Syncbay does not run
+ * these POPs; real traffic enters through Cloudflare. API responses carry
+ * `illustrative: true`. Cache purge, by contrast, is a real Cloudflare call (see below).
  */
 
 export interface EdgeRegion {
@@ -15,6 +20,8 @@ export interface EdgeRegion {
   averageLatencyMs: number;
   tlsVersion: string;
   http3Enabled: boolean;
+  /** Always true: the region list is a static model, not live infrastructure. */
+  illustrative?: true;
 }
 
 export interface RoutingDecision {
@@ -199,6 +206,7 @@ export function getEdgeRegions(): EdgeRegion[] {
   return Object.values(EDGE_REGIONS).map((region) => ({
     ...region,
     status: regionOverrides.get(region.id) || region.status,
+    illustrative: true as const,
   }));
 }
 
@@ -325,8 +333,6 @@ export function getCustomDomainTlsStatus(domain: string): CustomDomainTlsStatus 
   };
 }
 
-export const EDGE_POPS = ["iad1", "sfo1", "fra1", "lhr1", "sin1", "syd1"];
-
 export interface PurgeCacheOptions {
   serviceId?: string;
   domain?: string;
@@ -337,35 +343,72 @@ export interface PurgeCacheOptions {
 
 export interface PurgeCacheResult {
   success: boolean;
+  /** False when CLOUDFLARE_ZONE_ID / CLOUDFLARE_API_TOKEN are unset: nothing was purged. */
+  configured: boolean;
+  provider: "cloudflare" | "none";
+  /** `["cloudflare:global"]` after a real purge (Cloudflare purges every edge); empty otherwise. */
   purgedPops: string[];
   scope: string;
   timestamp: string;
   durationMs: number;
+  message: string;
+  cloudflarePurgeId?: string;
+}
+
+/** Builds the Cloudflare `purge_cache` body for the requested scope, or an error message. */
+function purgeBody(options: PurgeCacheOptions): { scope: string; body?: Record<string, unknown>; error?: string } {
+  if (options.all) return { scope: "ALL", body: { purge_everything: true } };
+  if (options.tag) return { scope: `TAG:${options.tag}`, body: { tags: [options.tag] } };
+  if (options.path) {
+    if (!options.domain) return { scope: `PATH:${options.path}`, error: "A path purge needs a domain (purge by URL)" };
+    const path = options.path.startsWith("/") ? options.path : `/${options.path}`;
+    return { scope: `PATH:${options.path}`, body: { files: [`https://${options.domain}${path}`] } };
+  }
+  if (options.domain) return { scope: `DOMAIN:${options.domain}`, body: { hosts: [options.domain] } };
+  return { scope: "UNKNOWN", error: "Nothing to purge: pass all, tag, domain or domain + path" };
 }
 
 /**
- * Purge cache across all 6 global edge POPs
+ * Purges the Cloudflare edge cache (`POST /zones/{zone}/purge_cache`) when CLOUDFLARE_ZONE_ID
+ * and CLOUDFLARE_API_TOKEN are set. Otherwise it reports `configured: false` and
+ * `success: false` instead of pretending to purge.
  */
-export function purgeEdgeCache(options: PurgeCacheOptions = { all: true }): PurgeCacheResult {
+export async function purgeEdgeCache(
+  options: PurgeCacheOptions = { all: true },
+  deps: { fetchFn?: typeof fetch; zoneId?: string; apiToken?: string } = {}
+): Promise<PurgeCacheResult> {
   const startTime = Date.now();
-  const pops = EDGE_POPS;
-
-  let scope = "UNKNOWN";
-  if (options.all) {
-    scope = "ALL";
-  } else if (options.tag) {
-    scope = `TAG:${options.tag}`;
-  } else if (options.path) {
-    scope = `PATH:${options.path}`;
-  } else if (options.domain) {
-    scope = `DOMAIN:${options.domain}`;
-  }
-
-  return {
-    success: true,
-    purgedPops: [...pops],
+  const zoneId = deps.zoneId ?? process.env.CLOUDFLARE_ZONE_ID;
+  const apiToken = deps.apiToken ?? process.env.CLOUDFLARE_API_TOKEN;
+  const { scope, body, error } = purgeBody(options);
+  const result = (fields: Partial<PurgeCacheResult> & Pick<PurgeCacheResult, "success" | "message">): PurgeCacheResult => ({
+    configured: Boolean(zoneId && apiToken),
+    provider: zoneId && apiToken ? "cloudflare" : "none",
+    purgedPops: [],
     scope,
     timestamp: new Date().toISOString(),
-    durationMs: Math.max(1, Date.now() - startTime),
-  };
+    durationMs: Math.max(0, Date.now() - startTime),
+    ...fields,
+  });
+
+  if (!zoneId || !apiToken) {
+    return result({ success: false, message: "Edge cache purge is not configured (set CLOUDFLARE_ZONE_ID and CLOUDFLARE_API_TOKEN); nothing was purged" });
+  }
+  if (error || !body) return result({ success: false, message: error || "Invalid purge scope" });
+
+  try {
+    const res = await (deps.fetchFn ?? fetch)(`https://api.cloudflare.com/client/v4/zones/${encodeURIComponent(zoneId)}/purge_cache`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const json: any = await res.json().catch(() => ({}));
+    if (!res.ok || json?.success === false) {
+      const detail = Array.isArray(json?.errors) && json.errors.length ? json.errors.map((e: any) => e?.message || String(e)).join("; ") : `HTTP ${res.status}`;
+      return result({ success: false, message: `Cloudflare purge failed: ${detail}` });
+    }
+    return result({ success: true, purgedPops: ["cloudflare:global"], message: "Cloudflare cache purged", cloudflarePurgeId: json?.result?.id });
+  } catch (err: any) {
+    return result({ success: false, message: `Cloudflare purge failed: ${err?.message || err}` });
+  }
 }

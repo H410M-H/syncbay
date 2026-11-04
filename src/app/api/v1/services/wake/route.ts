@@ -12,8 +12,10 @@ import { authOptions } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { executeDeployment } from "@/lib/orchestrator/engine";
 import { hasValidRunnerSecret } from "@/lib/edge/runner-auth";
+import { isWorkspaceOverSpendingCap } from "@/lib/usage/metering";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
   let body: { serviceId?: unknown; deploymentId?: unknown } = {};
@@ -61,10 +63,19 @@ export async function POST(req: NextRequest) {
     },
     include: {
       deployments: { orderBy: { createdAt: "desc" }, take: 1, include: { build: true } },
+      environment: { select: { project: { select: { workspaceId: true } } } },
     },
   });
   if (!service) {
     return NextResponse.json({ error: "Service not found" }, { status: 404 });
+  }
+
+  const workspaceId = service.environment?.project?.workspaceId;
+  if (workspaceId && (await isWorkspaceOverSpendingCap(workspaceId))) {
+    return NextResponse.json(
+      { error: "Workspace spending cap reached; raise the cap to wake this service" },
+      { status: 402 }
+    );
   }
 
   const latest = service.deployments[0];

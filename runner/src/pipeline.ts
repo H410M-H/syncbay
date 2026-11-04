@@ -70,6 +70,23 @@ export interface PipelineResult {
   simulated?: boolean;
 }
 
+/** How an instance was started; lets the runner restart or revive it. */
+type LaunchSpec = {
+  kind: "process" | "docker";
+  jobId: string;
+  serviceId?: string;
+  port: number;
+  /** Shell command; for Docker it contains `{{PORT}}` in place of the host port. */
+  runCmd: string;
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  containerName?: string;
+  healthPath: string;
+};
+
+/** Launch specs kept for restart/rollback (oldest evicted first). */
+const MAX_LAUNCH_SPECS = 200;
+
 /** Number of trailing stderr lines kept to explain a startup crash. */
 const STARTUP_STDERR_LINES = 25;
 
@@ -326,6 +343,8 @@ export class BuildPipeline {
   private readonly portManager: PortManager;
   private activeProcesses: Map<string, ChildProcess> = new Map();
   private activeProcessPorts: Map<string, number> = new Map();
+  /** How each instance was launched, kept after a stop so restart/rollback can revive it. */
+  private launchSpecs: Map<string, LaunchSpec> = new Map();
 
   constructor(options: { executor?: PipelineExecutor; portManager?: PortManager } = {}) {
     this.executor = options.executor || createDefaultExecutor();
@@ -368,6 +387,139 @@ export class BuildPipeline {
 
     this.activeProcessPorts.delete(containerId);
     return { stopped, releasedPort };
+  }
+
+  private rememberLaunch(instanceId: string, spec: LaunchSpec): void {
+    this.launchSpecs.delete(instanceId);
+    this.launchSpecs.set(instanceId, spec);
+    while (this.launchSpecs.size > MAX_LAUNCH_SPECS) {
+      const oldest = this.launchSpecs.keys().next().value;
+      if (oldest === undefined) break;
+      this.launchSpecs.delete(oldest);
+    }
+  }
+
+  /** Kills a native process group and waits (up to `timeoutMs`) for it to exit. */
+  private async terminateProcess(child: ChildProcess, timeoutMs = 5000): Promise<void> {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+    const signal = (sig: NodeJS.Signals) => {
+      try {
+        process.kill(-child.pid!, sig);
+      } catch {
+        try {
+          child.kill(sig);
+        } catch {}
+      }
+    };
+    signal("SIGTERM");
+    const timer = new Promise<"timeout">((r) => setTimeout(() => r("timeout"), timeoutMs));
+    if ((await Promise.race([exited.then(() => "exited" as const), timer])) === "timeout") {
+      signal("SIGKILL");
+      await Promise.race([exited, new Promise((r) => setTimeout(r, 1000))]);
+    }
+  }
+
+  /**
+   * Stops an instance and starts it again from its launch spec on the same port when that port
+   * is still free (otherwise a new one). Works for running and for stopped instances (used by
+   * rollback). A native process gets a new `proc_<pid>` id; a Docker container is re-created.
+   */
+  public async restartContainer(
+    containerId: string,
+    onLog?: (line: string) => void
+  ): Promise<{ restarted: boolean; containerId: string; port?: number; error?: string; exitCode?: number }> {
+    const log = (msg: string) => onLog?.(`[pipeline] ${msg}`);
+    const spec = this.launchSpecs.get(containerId);
+    if (!spec) {
+      if (containerId.startsWith("proc_") || !/^[a-zA-Z0-9_.-]+$/.test(containerId)) {
+        return { restarted: false, containerId, error: `No launch record for instance ${containerId}` };
+      }
+      const res = await this.executor.execute(`docker restart ${containerId}`);
+      return res.exitCode === 0
+        ? { restarted: true, containerId, port: this.activeProcessPorts.get(containerId) }
+        : { restarted: false, containerId, error: res.stderr || res.stdout, exitCode: res.exitCode };
+    }
+
+    log(`Restarting instance ${containerId} (${spec.kind})`);
+    if (spec.kind === "process") {
+      const child = this.activeProcesses.get(containerId);
+      if (child) await this.terminateProcess(child);
+      this.activeProcesses.delete(containerId);
+    } else {
+      await this.executor.execute(`docker rm -f ${spec.containerName}`).catch(() => null);
+    }
+    this.activeProcessPorts.delete(containerId);
+
+    // Keep the port when it is still ours or free; otherwise allocate another one.
+    let port = spec.port;
+    const owner = this.portManager.getAllocations().find((a) => a.port === port);
+    if (owner && owner.jobId !== spec.jobId) {
+      port = await this.portManager.allocatePort(spec.serviceId, spec.jobId);
+    } else if (!owner) {
+      this.portManager.reservePortSync(port, spec.serviceId, spec.jobId);
+    }
+
+    let newId: string;
+    let exitCode: number | null = null;
+    const stderrTail: string[] = [];
+    if (spec.kind === "process") {
+      const spawnEnv = { ...spec.env, PORT: String(port), HTTP_PORT: String(port), SERVER_PORT: String(port) } as NodeJS.ProcessEnv;
+      const child: ChildProcess = spawn(spec.runCmd, {
+        cwd: spec.cwd || process.cwd(),
+        env: spawnEnv,
+        shell: true,
+        detached: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      newId = `proc_${child.pid}`;
+      this.activeProcesses.set(newId, child);
+      this.activeProcesses.set(spec.jobId, child);
+      child.stdout?.on("data", (c: Buffer) => splitLines(c).forEach((l) => log(`[app:stdout] ${l}`)));
+      child.stderr?.on("data", (c: Buffer) =>
+        splitLines(c).forEach((l) => {
+          stderrTail.push(l);
+          if (stderrTail.length > STARTUP_STDERR_LINES) stderrTail.shift();
+          log(`[app:stderr] ${l}`);
+        })
+      );
+      child.on("exit", (code: number | null, signal: string | null) => {
+        exitCode = code !== null ? code : signal ? 128 : 1;
+        if (this.activeProcesses.get(newId) === child) this.activeProcesses.delete(newId);
+        if (this.activeProcesses.get(spec.jobId) === child) this.activeProcesses.delete(spec.jobId);
+        this.activeProcessPorts.delete(newId);
+      });
+    } else {
+      const res = await this.executor.execute(spec.runCmd.replace("{{PORT}}", String(port)));
+      if (res.exitCode !== 0) {
+        this.portManager.releasePort(port);
+        return { restarted: false, containerId, error: `docker run failed: ${res.stderr || res.stdout}`, exitCode: res.exitCode };
+      }
+      newId = res.stdout.trim().split("\n").pop() || spec.containerName!;
+    }
+    this.activeProcessPorts.set(newId, port);
+    this.activeProcessPorts.set(spec.jobId, port);
+
+    const deadline = Date.now() + 10000;
+    let healthy = false;
+    while (Date.now() < deadline) {
+      if (exitCode !== null) break;
+      healthy =
+        (await this.executor.probeHealth(`http://127.0.0.1:${port}${spec.healthPath}`, 1000)) ||
+        (await this.executor.probeHealth(`http://127.0.0.1:${port}/`, 1000));
+      if (healthy) break;
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    this.launchSpecs.delete(containerId);
+    this.rememberLaunch(newId, { ...spec, port });
+    if (!healthy) {
+      const detail = stderrTail.join("\n") || (exitCode !== null ? `exited with code ${exitCode}` : "no HTTP response");
+      log(`[build:error] Restarted instance ${newId} is not healthy: ${detail}`);
+      await this.stopContainer(newId).catch(() => null);
+      return { restarted: false, containerId: newId, port, error: `Restarted instance is not healthy: ${detail}`, exitCode: exitCode ?? 1 };
+    }
+    log(`Instance restarted as ${newId} on port ${port}`);
+    return { restarted: true, containerId: newId, port };
   }
 
   /**
@@ -589,6 +741,15 @@ server.listen(port, "0.0.0.0", () => {
         }
 
         containerId = runRes.stdout.trim().split("\n").pop() || containerName;
+        this.rememberLaunch(containerId, {
+          kind: "docker",
+          jobId,
+          serviceId: options.serviceId,
+          containerName,
+          port: assignedPort!,
+          runCmd: runCmd.replace(`-p ${assignedPort}:`, "-p {{PORT}}:"),
+          healthPath: options.healthCheckPath || "/health",
+        });
         this.activeProcessPorts.set(containerId, assignedPort!);
         this.activeProcessPorts.set(jobId, assignedPort!);
         log(`Container launched successfully with ID: ${containerId}`);
@@ -639,6 +800,15 @@ server.listen(port, "0.0.0.0", () => {
         }
 
         containerId = runRes.stdout.trim().split("\n").pop() || containerName;
+        this.rememberLaunch(containerId, {
+          kind: "docker",
+          jobId,
+          serviceId: options.serviceId,
+          containerName,
+          port: assignedPort!,
+          runCmd: runCmd.replace(`-p ${assignedPort}:`, "-p {{PORT}}:"),
+          healthPath: options.healthCheckPath || "/health",
+        });
         this.activeProcessPorts.set(containerId, assignedPort!);
         this.activeProcessPorts.set(jobId, assignedPort!);
         log(`Container launched successfully with ID: ${containerId}`);
@@ -928,6 +1098,16 @@ server.listen(port, "0.0.0.0");
           this.activeProcessPorts.delete(jobId);
         });
 
+        this.rememberLaunch(activeContainerId, {
+          kind: "process",
+          jobId,
+          serviceId: options.serviceId,
+          port: assignedPort!,
+          runCmd,
+          cwd: sourceDir,
+          env: childEnv,
+          healthPath: options.healthCheckPath || "/health",
+        });
         log(`Application process launched with PID ${child.pid} (Instance: ${containerId})`);
       }
 
@@ -971,7 +1151,8 @@ server.listen(port, "0.0.0.0");
         }
 
         // If app bound to options.targetPort instead of dynamic port, detect it
-        if (options.targetPort && options.targetPort !== assignedPort) {
+        // (never when that port belongs to another instance, e.g. the previous deployment)
+        if (options.targetPort && options.targetPort !== assignedPort && !this.portManager.isPortAllocated(options.targetPort)) {
           const altProbeUrl = `http://127.0.0.1:${options.targetPort}${probePath}`;
           if (await this.executor.probeHealth(altProbeUrl, 500)) {
             isHealthy = true;
@@ -996,7 +1177,8 @@ server.listen(port, "0.0.0.0");
       const durationMs = Date.now() - startTime;
       log(`Pipeline execution finished successfully in ${(durationMs / 1000).toFixed(2)}s`);
 
-      const isSimulated = !(this.executor instanceof DefaultPipelineExecutor) || process.env.VERCEL === "1" || Boolean(process.env.VERCEL_ENV);
+      // Simulated means "no real process was started" — decided by the executor, not by the host env.
+      const isSimulated = !(this.executor instanceof DefaultPipelineExecutor);
 
       return {
         success: true,

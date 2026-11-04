@@ -107,6 +107,8 @@ export interface BuildStatusResult {
   completedAt?: Date | string;
   errorMessage?: string;
   logs?: string[];
+  /** Runner-reported flags, e.g. `simulated` (no real process) or `healthVerifiedByRunner`. */
+  metadata?: Record<string, any>;
 }
 
 export interface StopContainerParams {
@@ -122,6 +124,17 @@ export interface StopContainerResult {
   releasedPort?: number;
   durationMs?: number;
   message?: string;
+  /** Pull mode: the stop was queued for the hosting runner rather than executed synchronously. */
+  queued?: boolean;
+}
+
+export interface RestartContainerResult {
+  restarted: boolean;
+  /** The instance id after the restart (a native process gets a new `proc_<pid>`). */
+  containerId: string;
+  port?: number;
+  queued?: boolean;
+  message?: string;
 }
 
 export interface RunnerDriver {
@@ -129,6 +142,8 @@ export interface RunnerDriver {
   dispatchBuild(params: BuildDispatchParams): Promise<BuildDispatchResult>;
   checkStatus(jobId: string): Promise<BuildStatusResult>;
   stopContainer(containerId: string, options?: Partial<StopContainerParams>): Promise<StopContainerResult>;
+  /** Stops then starts the same image/process (also revives a stopped instance when the runner kept its launch spec). */
+  restartContainer?(containerId: string): Promise<RestartContainerResult>;
 }
 
 // ─── HMAC CRYPTOGRAPHIC UTILITIES ───────────────────────────────────────────
@@ -274,32 +289,43 @@ export function resolveRunnerSecret(): string {
   return DEV_RUNNER_SECRET;
 }
 
+/** Generates a fresh request nonce: 16 random bytes, hex-encoded (32 chars). */
+export function generateRequestNonce(): string {
+  return crypto.randomBytes(16).toString("hex");
+}
+
 /**
- * Signs a runner request over the canonical string `${ts}.${METHOD}.${path}.${body}`.
+ * Signs a runner request over the canonical string `${ts}.${nonce}.${METHOD}.${path}.${body}`.
  * `path` is the URL pathname (no query, no runner base path). For GET requests the
- * body is the canonical job id. Call it once per attempt so every retry carries a fresh timestamp.
+ * body is the canonical job id. `nonce` is 16 random bytes (hex) sent as `X-Syncbay-Nonce`;
+ * the runner remembers every accepted nonce for the timestamp window, so a signed request
+ * (any method) is single-use. Call it once per attempt so every retry carries a fresh
+ * timestamp and nonce.
  */
 export function signRequest(
   secret: string,
   method: string,
   path: string,
   body: string = "",
-  timestampInput?: string | number
-): HmacSignatureResult & { headers: Record<string, string> } {
+  timestampInput?: string | number,
+  nonceInput?: string
+): HmacSignatureResult & { nonce: string; headers: Record<string, string> } {
   if (!secret) {
     throw new RunnerDriverError("HMAC secret must not be empty", "INVALID_CONFIG");
   }
   const timestamp = timestampInput !== undefined ? String(timestampInput) : Date.now().toString();
+  const nonce = nonceInput ?? generateRequestNonce();
   const signature = crypto
     .createHmac("sha256", secret)
-    .update(`${timestamp}.${method.toUpperCase()}.${path}.${body}`)
+    .update(`${timestamp}.${nonce}.${method.toUpperCase()}.${path}.${body}`)
     .digest("hex");
   const headerValue = `sha256=${signature}`;
   return {
     signature,
     timestamp,
+    nonce,
     headerValue,
-    headers: { "X-Syncbay-Signature": headerValue, "X-Syncbay-Timestamp": timestamp },
+    headers: { "X-Syncbay-Signature": headerValue, "X-Syncbay-Timestamp": timestamp, "X-Syncbay-Nonce": nonce },
   };
 }
 
@@ -331,7 +357,7 @@ const TRANSIENT_STATUS_CODES = new Set([408, 429, 502, 503, 504, 520, 521, 522, 
 
 // ─── DRIVER LOG FAN-OUT ──────────────────────────────────────────────────────
 
-function classifyLogLine(line: string): "stdout" | "stderr" | "system" {
+export function classifyLogLine(line: string): "stdout" | "stderr" | "system" {
   const t = line.trim();
   if (/\[(build|app):error\]|\[app:stderr\]|\[error\]|^Error:/i.test(t)) return "stderr";
   if (t.startsWith("[")) return "system";
@@ -678,7 +704,34 @@ export class WebhookRunnerDriver implements RunnerDriver {
       completedAt: data.completedAt,
       errorMessage: data.errorMessage || data.error,
       logs: data.logs,
+      metadata: { ...(data.metadata || {}), ...(data.simulated !== undefined ? { simulated: Boolean(data.simulated) } : {}) },
     };
+  }
+
+  public async restartContainer(containerId: string): Promise<RestartContainerResult> {
+    try {
+      const response = await this.signedRequest({
+        method: "POST",
+        path: `/api/containers/${encodeURIComponent(containerId)}/restart`,
+        body: JSON.stringify({ containerId }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        return {
+          restarted: false,
+          containerId,
+          message: `Restart failed (HTTP ${response.status}): ${sanitizeErrorText(data.error || "", response.status)}`,
+        };
+      }
+      return {
+        restarted: data.restarted !== false,
+        containerId: data.containerId || containerId,
+        port: data.port,
+        message: data.error || data.message,
+      };
+    } catch (err: any) {
+      return { restarted: false, containerId, message: err?.message };
+    }
   }
 
   public async stopContainer(
@@ -730,6 +783,13 @@ export interface QueueRunnerDriverConfig {
   pollIntervalMs?: number;
 }
 
+/**
+ * Pull-mode driver (`RUNNER_QUEUE_MODE=pull`). With a Prisma client that has the
+ * `DeploymentJob` model, `dispatchBuild` queues the job in Postgres and a runner daemon claims
+ * it over HMAC (`POST /api/v1/runner/jobs/claim`), reporting progress to
+ * `/api/v1/runner/jobs/:id/events`. Stop/restart become control jobs routed to the runner
+ * that hosts the container. Without such a client it keeps an in-memory queue (tests/harness).
+ */
 export class QueueRunnerDriver implements RunnerDriver {
   public readonly type: RunnerDriverType = "queue";
   private readonly dbClient: any;
@@ -740,43 +800,35 @@ export class QueueRunnerDriver implements RunnerDriver {
     this.inMemoryQueue = new Map();
   }
 
+  private get durable(): boolean {
+    try {
+      return typeof this.dbClient?.deploymentJob?.upsert === "function";
+    } catch {
+      return false;
+    }
+  }
+
   public async dispatchBuild(params: BuildDispatchParams): Promise<BuildDispatchResult> {
-    const jobId = params.buildId || params.deploymentId;
-
-    // Persist to database if dbClient is provided
-    if (this.dbClient) {
+    if (this.durable) {
+      const { enqueuePullJob } = await import("./job-queue");
+      let jobId: string | null;
       try {
-        if (this.dbClient.build?.update) {
-          await this.dbClient.build.update({
-            where: { id: params.buildId },
-            data: {
-              status: "QUEUED",
-              startedAt: null,
-              completedAt: null,
-            },
-          }).catch(() => null);
-        }
-
-        if (this.dbClient.deployment?.update) {
-          await this.dbClient.deployment.update({
-            where: { id: params.deploymentId },
-            data: {
-              status: "QUEUED",
-            },
-          }).catch(() => null);
-        }
+        jobId = await enqueuePullJob(params, this.dbClient);
       } catch (err: any) {
         throw new RunnerDriverError(`Queue dispatch DB error: ${err.message}`, "DB_ERROR", "queue");
       }
+      if (!jobId) throw new RunnerDriverError("Queue dispatch failed: job not created", "DB_ERROR", "queue");
+      emitLog(params, `[runner] Build queued as job ${jobId}; waiting for a pull-mode runner to claim it`);
+      return {
+        jobId,
+        driverType: "queue",
+        status: "QUEUED",
+        metadata: { enqueuedAt: new Date().toISOString(), deploymentId: params.deploymentId, serviceId: params.serviceId },
+      };
     }
 
-    // Always maintain state in inMemoryQueue for deterministic queries
-    this.inMemoryQueue.set(jobId, {
-      params,
-      status: "QUEUED",
-      updatedAt: new Date(),
-    });
-
+    const jobId = params.buildId || params.deploymentId;
+    this.inMemoryQueue.set(jobId, { params, status: "QUEUED", updatedAt: new Date() });
     return {
       jobId,
       driverType: "queue",
@@ -790,51 +842,17 @@ export class QueueRunnerDriver implements RunnerDriver {
   }
 
   public async checkStatus(jobId: string): Promise<BuildStatusResult> {
-    if (this.dbClient) {
+    if (this.durable) {
+      const { getQueueJobStatus } = await import("./job-queue");
+      let res: BuildStatusResult | null;
       try {
-        let buildRecord: any = null;
-        if (this.dbClient.build?.findUnique) {
-          buildRecord = await this.dbClient.build.findUnique({
-            where: { id: jobId },
-            include: { deployments: true },
-          }).catch(() => null);
-        }
-
-        if (buildRecord) {
-          const status = mapPrismaBuildStatus(buildRecord.status);
-          const activeDep = buildRecord.deployments?.[0];
-          return {
-            jobId,
-            status,
-            containerId: activeDep?.cfContainerId,
-            startedAt: buildRecord.startedAt,
-            completedAt: buildRecord.completedAt,
-          };
-        }
-
-        let depRecord: any = null;
-        if (this.dbClient.deployment?.findUnique) {
-          depRecord = await this.dbClient.deployment.findUnique({
-            where: { id: jobId },
-          }).catch(() => null);
-        }
-
-        if (depRecord) {
-          const status = mapPrismaBuildStatus(depRecord.status);
-          return {
-            jobId,
-            status,
-            containerId: depRecord.cfContainerId,
-            startedAt: depRecord.startedAt,
-            completedAt: depRecord.completedAt,
-          };
-        }
+        res = await getQueueJobStatus(jobId, this.dbClient);
       } catch (err: any) {
         throw new RunnerDriverError(`Queue checkStatus DB error: ${err.message}`, "DB_ERROR", "queue");
       }
+      return res || { jobId, status: "FAILED", errorMessage: `Job ${jobId} not found in build queue` };
     }
 
-    // Fallback to in-memory queue state
     const entry = this.inMemoryQueue.get(jobId);
     if (!entry) {
       return {
@@ -843,12 +861,7 @@ export class QueueRunnerDriver implements RunnerDriver {
         errorMessage: `Job ${jobId} not found in build queue`,
       };
     }
-
-    return {
-      jobId,
-      status: entry.status,
-      startedAt: entry.updatedAt,
-    };
+    return { jobId, status: entry.status, startedAt: entry.updatedAt };
   }
 
   public updateJobStatus(jobId: string, status: RunnerBuildStatus): void {
@@ -863,33 +876,40 @@ export class QueueRunnerDriver implements RunnerDriver {
     containerId: string,
     _options: Partial<StopContainerParams> = {}
   ): Promise<StopContainerResult> {
-    // In queue driver, cancellation halts pending and running jobs
-    if (this.dbClient) {
-      try {
-        if (this.dbClient.deployment?.updateMany) {
-          await this.dbClient.deployment.updateMany({
-            where: {
-              OR: [{ id: containerId }, { cfContainerId: containerId }],
-            },
-            data: { status: "CANCELLED" },
-          }).catch(() => null);
-        }
-      } catch {
-        // ignore
-      }
+    if (this.durable) {
+      const { enqueueControlJob, findRunnerForContainer } = await import("./job-queue");
+      const targetRunnerId = await findRunnerForContainer(containerId, this.dbClient);
+      const id = await enqueueControlJob("stop", containerId, { targetRunnerId }, this.dbClient);
+      return {
+        containerId,
+        stopped: false,
+        queued: Boolean(id),
+        message: id ? `Stop queued as job ${id} for runner ${targetRunnerId || "(any)"}` : "Failed to queue stop job",
+      };
     }
 
-    // Update in-memory queue
     for (const [id, item] of this.inMemoryQueue.entries()) {
       if (id === containerId || item.params.deploymentId === containerId) {
         item.status = "CANCELLED";
       }
     }
-
     return {
       containerId,
       stopped: true,
       message: `Job ${containerId} cancelled in queue`,
+    };
+  }
+
+  public async restartContainer(containerId: string): Promise<RestartContainerResult> {
+    if (!this.durable) return { restarted: false, containerId, message: "Queue driver has no durable store" };
+    const { enqueueControlJob, findRunnerForContainer } = await import("./job-queue");
+    const targetRunnerId = await findRunnerForContainer(containerId, this.dbClient);
+    const id = await enqueueControlJob("restart", containerId, { targetRunnerId }, this.dbClient);
+    return {
+      restarted: false,
+      queued: Boolean(id),
+      containerId,
+      message: id ? `Restart queued as job ${id}` : "Failed to queue restart job",
     };
   }
 }
@@ -1333,6 +1353,14 @@ export class SshRunnerDriver implements RunnerDriver {
         : `Failed to stop container: ${stopRes.stderr}`,
     };
   }
+  public async restartContainer(containerId: string): Promise<RestartContainerResult> {
+    const safeId = containerId.replace(/[^a-zA-Z0-9_.-]/g, "");
+    if (!safeId) return { restarted: false, containerId, message: "Invalid container identifier provided" };
+    const res = await this.executeWithRetry(`docker restart -t 10 ${safeId}`);
+    if (res.exitCode !== 0) return { restarted: false, containerId, message: `docker restart failed: ${res.stderr}` };
+    const status = await this.checkStatus(safeId).catch(() => null);
+    return { restarted: true, containerId, port: status?.port, message: "Container restarted via SSH" };
+  }
 }
 
 // ─── 4. LOCAL SIMULATED RUNNER DRIVER ────────────────────────────────────────
@@ -1348,9 +1376,18 @@ export class LocalRunnerDriver implements RunnerDriver {
 
   private async getPipeline(): Promise<any> {
     if (this.pipeline === undefined) {
+      // One pipeline per process (and executor kind): it owns the spawned processes, so a later
+      // driver instance (supersede, pause, restart) can stop or restart what an earlier one started.
+      const key = `${(process.env.RUNNER_DRIVER || "").toLowerCase() === "mock" ? "mock" : "default"}:${process.env.VERCEL ? "serverless" : "host"}`;
+      const shared = ((globalThis as any).__syncbay_local_pipelines ??= new Map<string, any>());
+      if (shared.has(key)) {
+        this.pipeline = shared.get(key);
+        return this.pipeline;
+      }
       try {
         const pipelineModule = await import("../../../runner/src/pipeline");
         this.pipeline = new pipelineModule.BuildPipeline();
+        shared.set(key, this.pipeline);
       } catch (err1: any) {
         try {
           const path = await import("node:path");
@@ -1500,6 +1537,18 @@ export class LocalRunnerDriver implements RunnerDriver {
       message: "Local container stopped",
     };
   }
+  public async restartContainer(containerId: string): Promise<RestartContainerResult> {
+    const pipeline = await this.getPipeline();
+    if (!pipeline || typeof pipeline.restartContainer !== "function") {
+      return { restarted: false, containerId, message: "Local pipeline cannot restart instances" };
+    }
+    const res = await pipeline.restartContainer(containerId).catch((err: any) => ({ restarted: false, error: err?.message }));
+    if (res.restarted && res.containerId) {
+      const port = res.port ?? this.containers.get(containerId)?.port ?? 0;
+      this.containers.set(res.containerId, { status: "ACTIVE", port, containerId: res.containerId });
+    }
+    return { restarted: Boolean(res.restarted), containerId: res.containerId || containerId, port: res.port, message: res.error };
+  }
 }
 
 // ─── 5. RUNNER DRIVER FACTORY ────────────────────────────────────────────────
@@ -1538,7 +1587,7 @@ export class RunnerDriverFactory {
  * Resolves appropriate runner driver instance based on deployment options and environment.
  *
  * Precedence: explicit `driverType` → `RUNNER_DRIVER` env (webhook | ssh | queue | local | mock)
- * → `RUNNER_URL` (webhook) → `RUNNER_QUEUE_MODE` → local. `mock` is the local driver whose
+ * → `RUNNER_URL` (webhook) → `RUNNER_QUEUE_MODE=pull` (queue) → local. `mock` is the local driver whose
  * pipeline uses MockPipelineExecutor (the runner reads `RUNNER_DRIVER=mock` itself).
  * Webhook/SSH drivers require a runner secret; in production a missing one throws AuthenticationError.
  */
@@ -1550,14 +1599,16 @@ export function getRunnerDriver(
   if (normalized === "local" || normalized === "mock" || process.env.RUNNER_FORCE_LOCAL === "true") {
     return RunnerDriverFactory.createDriver("local", options);
   }
-  if (normalized === "webhook" || (process.env.RUNNER_URL && normalized !== "queue" && normalized !== "ssh")) {
+  const queueMode = (process.env.RUNNER_QUEUE_MODE || "").toLowerCase();
+  const pullMode = queueMode === "pull" || queueMode === "true";
+  if (normalized === "webhook" || (process.env.RUNNER_URL && !pullMode && normalized !== "queue" && normalized !== "ssh")) {
     return RunnerDriverFactory.createDriver("webhook", {
       runnerUrl: process.env.RUNNER_URL || "http://localhost:8080",
       webhookSecret: options?.webhookSecret || resolveRunnerSecret(),
       ...options,
     });
   }
-  if (normalized === "queue" || (process.env.RUNNER_QUEUE_MODE === "true" && normalized !== "local")) {
+  if (normalized === "queue" || (pullMode && normalized !== "ssh")) {
     const { db } = require("@/lib/db");
     return RunnerDriverFactory.createDriver("queue", { ...options, dbClient: db });
   }

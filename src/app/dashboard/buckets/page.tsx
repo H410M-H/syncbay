@@ -6,6 +6,26 @@ import { trpc } from "@/lib/trpc-client";
 import { useDashboard } from "../dashboard-shell";
 import { BackButton } from "@/components/ui/back-button";
 
+function BucketObjects({ bucketId }: { bucketId: string }) {
+  const { data, isLoading, error } = trpc.bucket.listObjects.useQuery({ bucketId, limit: 50 });
+  if (isLoading) return <div style={{ fontSize: "0.8125rem", color: "var(--text-muted)" }}>Listing objects from R2...</div>;
+  if (error) return <div style={{ fontSize: "0.8125rem", color: "var(--status-crashed)" }}>{error.message}</div>;
+  if (!data || data.objects.length === 0) {
+    return <div style={{ fontSize: "0.8125rem", color: "var(--text-muted)" }}>This bucket is empty.</div>;
+  }
+  return (
+    <div style={{ fontSize: "0.8125rem", fontFamily: "var(--font-mono, monospace)" }}>
+      {data.objects.map((o) => (
+        <div key={o.key} style={{ display: "flex", justifyContent: "space-between", gap: "12px", padding: "2px 0" }}>
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{o.key}</span>
+          <span style={{ color: "var(--text-muted)", whiteSpace: "nowrap" }}>{o.size.toLocaleString()} B</span>
+        </div>
+      ))}
+      {data.isTruncated && <div style={{ color: "var(--text-muted)" }}>… more objects not shown</div>}
+    </div>
+  );
+}
+
 export default function BucketsPage() {
   const dashboard = useDashboard();
   const { data: workspaces, isLoading: wsLoading } = trpc.workspace.list.useQuery();
@@ -36,6 +56,8 @@ export default function BucketsPage() {
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
+  const { data: storageStatus } = trpc.bucket.status.useQuery();
+  const [openObjectsFor, setOpenObjectsFor] = useState<string | null>(null);
   const generateUrlMutation = trpc.bucket.generatePresignedUrl.useMutation();
   const deleteMutation = trpc.bucket.delete.useMutation();
 
@@ -96,6 +118,16 @@ export default function BucketsPage() {
           ＋ New Bucket
         </Link>
       </div>
+
+      {storageStatus && !storageStatus.configured && (
+        <div className="card" role="status" style={{ marginBottom: "20px", border: "1px dashed var(--border-emphasis)", fontSize: "0.875rem" }}>
+          <strong>R2 not configured.</strong>{" "}
+          <span style={{ color: "var(--text-secondary)" }}>
+            Set CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY to create buckets,
+            list objects and generate presigned URLs.
+          </span>
+        </div>
+      )}
 
       {/* Workspace Switcher */}
       <div
@@ -194,11 +226,8 @@ export default function BucketsPage() {
                         <span className="badge badge-secondary" style={{ fontSize: "0.7rem" }}>
                           Cloudflare R2
                         </span>
-                        <span
-                          className="badge badge-queued"
-                          style={{ fontSize: "0.7rem", color: "#38bdf8" }}
-                        >
-                          🌐 Public CDN
+                        <span className="badge badge-queued" style={{ fontSize: "0.7rem" }}>
+                          🔒 Private
                         </span>
                       </div>
                       <div
@@ -214,7 +243,7 @@ export default function BucketsPage() {
                         <span>•</span>
                         <span>R2 Bucket: {b.r2BucketRef}</span>
                         <span>•</span>
-                        <span>Endpoint: {b.endpoint}</span>
+                        <span>Endpoint: {b.endpoint ?? "R2 not configured"}</span>
                       </div>
                     </div>
                   </div>
@@ -261,16 +290,22 @@ export default function BucketsPage() {
                   </div>
 
                   <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                    <span style={{ color: "var(--text-muted)" }}>PUBLIC_URL: </span>
-                    <a
-                      href={b.publicUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      style={{ color: "var(--brand-accent)", textDecoration: "underline" }}
+                    <span style={{ color: "var(--text-muted)" }}>ACCESS: </span>
+                    <span>private · share objects with presigned URLs</span>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      style={{ fontSize: "0.75rem", marginLeft: "auto" }}
+                      onClick={() => setOpenObjectsFor(openObjectsFor === b.id ? null : b.id)}
                     >
-                      {b.publicUrl}
-                    </a>
+                      {openObjectsFor === b.id ? "Hide objects" : "Browse objects"}
+                    </button>
                   </div>
+                  {openObjectsFor === b.id && (
+                    <div style={{ gridColumn: "1 / -1" }}>
+                      <BucketObjects bucketId={b.id} />
+                    </div>
+                  )}
                 </div>
               </div>
             );

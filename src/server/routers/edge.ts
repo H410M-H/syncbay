@@ -93,6 +93,8 @@ export const edgeRouter = createTRPCRouter({
           distanceKm: dist,
           latencyMs: latency,
           http3: region.http3Enabled,
+          // Static model, not a live measurement (see edge-router.ts)
+          illustrative: true,
         };
       });
     }),
@@ -122,7 +124,7 @@ export const edgeRouter = createTRPCRouter({
       return getCustomDomainTlsStatus(input.domain);
     }),
 
-  /** Invalidate edge cache across 6 global POPs — M5 F16 */
+  /** Invalidate the Cloudflare edge cache (real purge_cache call; "not configured" otherwise) — M5 F16 */
   purgeCache: protectedProcedure
     .input(
       z

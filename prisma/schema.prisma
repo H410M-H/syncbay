@@ -159,8 +159,11 @@ model Workspace {
   slug             String   @unique
   isPersonal       Boolean  @default(false)
   spendingCapCents   Int?
-  stripeCustomerId   String?
+  stripeCustomerId   String?  @unique // Team D: lets Stripe webhooks map customer → workspace
   creditBalanceCents Int      @default(0)
+  // Team B — spending-cap notification state (once per calendar month)
+  usageWarnedAt      DateTime?
+  spendCapReachedAt  DateTime?
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 
@@ -261,6 +264,8 @@ model Service {
   idleTimeoutSecs Int       @default(300)
   isPaused        Boolean   @default(false)
   deletedAt       DateTime?
+  // Team B — scale-to-zero activity tracking (DB fallback when Upstash is unset)
+  lastRequestAt   DateTime?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
@@ -310,6 +315,12 @@ model Deployment {
   buildDurationMs  Int?
   deployDurationMs Int?
   createdAt        DateTime         @default(now())
+  // Team B — persisted failure reason (written by the engine)
+  errorMessage     String?
+  // Team A: where the running instance lives, so lifecycle ops (stop/restart/rollback) reach it
+  assignedPort     Int?
+  runnerDriver     String? // webhook | ssh | queue | local
+  job              DeploymentJob?
 
   service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
   build   Build   @relation(fields: [buildId], references: [id])
@@ -456,6 +467,8 @@ model UsageRecord {
   workspace Workspace @relation(fields: [workspaceId], references: [id])
 
   @@index([serviceId, periodStart])
+  // Team B — one row per service, resource and hour (idempotent hourly writer)
+  @@unique([serviceId, resourceType, periodStart])
   @@map("usage_records")
 }
 
@@ -473,8 +486,18 @@ model Invoice {
   paidAt          DateTime?
   createdAt       DateTime      @default(now())
 
+  // Team D: Stripe-backed invoicing (top-ups via PaymentIntents, monthly usage via Stripe Invoices)
+  kind                  InvoiceKind @default(USAGE)
+  stripePaymentIntentId String?     @unique
+  periodKey             String? // e.g. "usage:2026-10"; unique per workspace so monthly builds are idempotent
+  description           String?
+  lineItems             Json?
+  creditAppliedCents    Int         @default(0)
+  failureMessage        String?
+
   workspace Workspace @relation(fields: [workspaceId], references: [id])
 
+  @@unique([workspaceId, periodKey]) // Team D
   @@map("invoices")
 }
 
@@ -487,7 +510,7 @@ model PaymentMethod {
   expYear               Int       // e.g. 2028
   cardholderName        String?
   isDefault             Boolean   @default(false)
-  stripePaymentMethodId String?
+  stripePaymentMethodId String?   @unique // Team D: always a real Stripe pm_… id
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
 
@@ -511,4 +534,131 @@ model AuditLogEntry {
   actor     User?     @relation(fields: [actorUserId], references: [id])
 
   @@map("audit_log_entries")
+}
+
+// ── Team C ── Edge, tunnel, domains, terminal ─────────────────────────────────
+
+/// Simulated web-shell state shared by every control-plane instance (the runner-backed
+/// shell needs no row: its signed session token carries everything). Output is stored
+/// masked; env holds only the user's own `export`/`unset` overrides, never service secrets.
+model TerminalSession {
+  id             String    @id
+  serviceId      String
+  userId         String
+  cwd            String    @default("/app")
+  envOverrides   Json      @default("{}")
+  history        Json      @default("[]")
+  buffer         String    @default("")
+  outputSeq      Int       @default(0)
+  version        Int       @default(0)
+  lastActivityAt DateTime  @default(now())
+  createdAt      DateTime  @default(now())
+
+  @@index([serviceId])
+  @@index([lastActivityAt])
+  @@map("terminal_sessions")
+}
+
+// ── Team B ── Observability, usage metering and scale-to-zero ─────────────────
+
+/// One persisted log line of a deployment. `id` is the LogEntry id published on
+/// the in-process event bus, so live and replayed lines can be de-duplicated.
+model DeploymentLog {
+  id           String   @id
+  deploymentId String
+  seq          Int
+  stream       String // "stdout" | "stderr" | "system"
+  line         String
+  ts           DateTime
+
+  @@index([deploymentId, seq])
+  @@index([ts])
+  @@map("deployment_logs")
+}
+
+/// A resource sample of a running deployment, taken from the runner's
+/// `GET /api/metrics/:containerId` (docker stats or /proc).
+model MetricSample {
+  id            String   @id @default(cuid())
+  serviceId     String
+  deploymentId  String?
+  containerId   String
+  source        String // "docker" | "proc"
+  cpuPercent    Float
+  memoryMb      Float
+  memoryLimitMb Float?
+  netRxBytes    Float?
+  netTxBytes    Float?
+  sampledAt     DateTime @default(now())
+
+  @@index([serviceId, sampledAt])
+  @@index([deploymentId, sampledAt])
+  @@index([sampledAt])
+  @@map("metric_samples")
+}
+
+// ── Team A ── durable deployment queue, leases and runner pull consumer
+
+enum DeploymentJobStatus {
+  PENDING // created by scheduleDeployment, orchestrator not started yet
+  QUEUED // pull mode: waiting for a runner to claim it
+  RUNNING // dispatched to a runner (push) or claimed by one (pull)
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+model DeploymentJob {
+  id                     String              @id @default(cuid())
+  kind                   String              @default("deploy") // deploy | stop | restart
+  mode                   String              @default("push") // push: control plane dispatches · pull: runner claims
+  deploymentId           String?             @unique
+  buildId                String?
+  serviceId              String?
+  status                 DeploymentJobStatus @default(PENDING)
+  driverType             String?
+  runnerJobId            String?
+  options                Json? // TriggerOptions (no secrets)
+  payload                Json? // pull-mode dispatch params (env included); cleared once terminal
+  targetContainerId      String?
+  targetRunnerId         String?
+  runnerId               String?
+  leaseOwner             String?
+  leaseExpiresAt         DateTime?
+  heartbeatAt            DateTime?
+  orchestratorLeaseUntil DateTime?
+  attempts               Int                 @default(0)
+  maxAttempts            Int                 @default(3)
+  result                 Json?
+  exitCode               Int?
+  errorMessage           String?
+  startedAt              DateTime?
+  completedAt            DateTime?
+  createdAt              DateTime            @default(now())
+  updatedAt              DateTime            @updatedAt
+
+  deployment Deployment? @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+
+  @@index([status, mode, createdAt])
+  @@index([status, leaseExpiresAt])
+  @@map("deployment_jobs")
+}
+
+// ── Team D ── Stripe billing & R2 storage ───────────────────────────────────────
+
+enum InvoiceKind {
+  USAGE
+  TOP_UP
+}
+
+/// Processed Stripe webhook events, keyed by Stripe event id (evt_…) for idempotency.
+model StripeEvent {
+  id          String    @id
+  type        String
+  status      String    @default("PROCESSING") // PROCESSING | PROCESSED
+  receivedAt  DateTime  @default(now())
+  processedAt DateTime?
+
+  @@index([type])
+  @@map("stripe_events")
 }

@@ -750,7 +750,7 @@ registerTest("F17-T1-01", "F17", 1, "S3/R2 storage bucket provisioning and refer
   const bucket = await adapter.provisionBucket({ name: "User Avatars", projectId: "proj_abc123" });
   assertEqual(bucket.name, "User Avatars");
   assertIncludes(bucket.r2BucketRef, "user-avatars");
-  assertIncludes(bucket.endpoint, ".r2.cloudflarestorage.com");
+  assertIncludes(bucket.endpoint ?? "", ".r2.cloudflarestorage.com");
 });
 
 registerTest("F17-T1-02", "F17", 1, "SigV4 presigned PUT URL generation for object upload", async () => {
@@ -780,10 +780,10 @@ registerTest("F17-T1-04", "F17", 1, "Presigned URL query parameter structure val
   assertTrue(Boolean(parsed.searchParams.get("X-Amz-Signature")));
 });
 
-registerTest("F17-T1-05", "F17", 1, "Storage bucket public access URL formatting", async () => {
+registerTest("F17-T1-05", "F17", 1, "Storage buckets are private by default (no fabricated public URL)", async () => {
   const bucket = await adapter.provisionBucket({ name: "public-assets", projectId: "proj_999999" });
-  assertTrue(bucket.publicUrl.startsWith("https://"));
-  assertIncludes(bucket.publicUrl, ".r2.dev");
+  assertEqual(bucket.publicUrl, null, "R2 buckets are private; access is via presigned URLs");
+  assertFalse(Object.prototype.hasOwnProperty.call(bucket, "secretAccessKey"), "No per-bucket secret may be invented");
 });
 
 // =========================================================================

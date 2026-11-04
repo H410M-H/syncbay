@@ -115,9 +115,12 @@ export class PortManager {
 
   private async doAllocatePort(serviceId?: string, jobId?: string): Promise<number> {
     // Re-check under the mutex if service already has an allocated port
+    // A different job of the same service (blue/green redeploy) needs its own port: the old
+    // instance keeps serving on its port until the new one is healthy and supersedes it.
     if (serviceId && this.serviceToPort.has(serviceId)) {
       const existing = this.serviceToPort.get(serviceId)!;
-      if (this.allocatedPorts.has(existing)) {
+      const alloc = this.allocatedPorts.get(existing);
+      if (alloc && (!jobId || !alloc.jobId || alloc.jobId === jobId)) {
         return existing;
       }
     }

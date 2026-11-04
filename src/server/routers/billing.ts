@@ -1,290 +1,230 @@
 /**
- * Syncbay PaaS — Billing & Payment Methods tRPC Router
- * Manages credit/debit card registration, default card selection,
- * invoice payments, and prepaid cloud compute credits top-up.
+ * Syncbay — Billing tRPC router (Stripe).
+ *
+ * No procedure accepts card data. Every input schema is strict, so a request
+ * carrying unexpected keys (e.g. a card number or CVC) is rejected outright
+ * instead of being silently stripped. Cards are added through a SetupIntent
+ * confirmed by Stripe Elements in the browser.
  */
 
 import { z } from "zod";
-import { createTRPCRouter, protectedProcedure } from "@/server/trpc";
 import { TRPCError } from "@trpc/server";
+import type { PrismaClient } from "@prisma/client";
+import { createTRPCRouter, protectedProcedure } from "@/server/trpc";
 import {
-  addPaymentMethod,
-  listPaymentMethods,
-  setDefaultPaymentMethod,
+  BillingError,
+  MAX_TOP_UP_CENTS,
+  MIN_TOP_UP_CENTS,
+  completeSetupIntent,
+  createSetupIntent,
+  createTopUp,
   deletePaymentMethod,
-  executeCardCharge,
-  addPrepaidCredits,
-  validateCard,
+  listPaymentMethods,
+  payInvoice,
+  setDefaultPaymentMethod,
+  syncTopUp,
 } from "@/lib/billing/payment-engine";
+import { StripeNotConfiguredError, getPublicStripeConfig, getStripe, requireStripe } from "@/lib/billing/stripe-client";
 
-/**
- * Asserts caller is an OWNER or ADMIN of the workspace
- */
-async function assertBillingAccess(db: any, userId: string, workspaceId: string) {
-  const membership = await db.workspaceMember.findUnique({
-    where: {
-      workspaceId_userId: {
-        workspaceId,
-        userId,
-      },
-    },
+async function assertMember(db: PrismaClient, userId: string, workspaceId: string) {
+  const member = await db.workspaceMember.findUnique({
+    where: { workspaceId_userId: { workspaceId, userId } },
   });
+  if (!member) throw new TRPCError({ code: "FORBIDDEN", message: "Not a member of this workspace" });
+  return member;
+}
 
-  if (!membership || (membership.role !== "OWNER" && membership.role !== "ADMIN")) {
+/** Asserts the caller is an OWNER or ADMIN of the workspace. */
+async function assertBillingAccess(db: PrismaClient, userId: string, workspaceId: string) {
+  const member = await assertMember(db, userId, workspaceId);
+  if (member.role !== "OWNER" && member.role !== "ADMIN") {
     throw new TRPCError({
       code: "FORBIDDEN",
       message: "Only workspace owners and admins can manage payment methods and billing",
     });
   }
-
-  return membership;
+  return member;
 }
 
+/** Maps engine / Stripe errors to tRPC errors without leaking provider internals. */
+function toTrpcError(err: unknown): TRPCError {
+  if (err instanceof TRPCError) return err;
+  if (err instanceof StripeNotConfiguredError) {
+    return new TRPCError({ code: "PRECONDITION_FAILED", message: err.message });
+  }
+  if (err instanceof BillingError) {
+    return new TRPCError({ code: err.code, message: err.message });
+  }
+  const e = err as { type?: string; message?: string; code?: string };
+  if (e?.type === "StripeCardError") {
+    return new TRPCError({ code: "BAD_REQUEST", message: e.message || "Your card was declined." });
+  }
+  if (e?.type === "StripeInvalidRequestError" && e.code === "resource_missing") {
+    return new TRPCError({ code: "NOT_FOUND", message: "Payment object not found in Stripe" });
+  }
+  console.error("[billing] provider error:", e?.type, e?.code, e?.message);
+  return new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Payment provider error. Please try again." });
+}
+
+async function guard<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    throw toTrpcError(err);
+  }
+}
+
+const workspaceInput = z.object({ workspaceId: z.string().min(1) }).strict();
+
 export const billingRouter = createTRPCRouter({
-  /**
-   * List all saved payment cards for a workspace
-   */
-  listPaymentMethods: protectedProcedure
-    .input(z.object({ workspaceId: z.string() }))
-    .query(async ({ ctx, input }) => {
-      // Any workspace member can view payment cards summary (masked)
-      const member = await ctx.db.workspaceMember.findUnique({
-        where: {
-          workspaceId_userId: {
-            workspaceId: input.workspaceId,
-            userId: ctx.session.user.id,
-          },
-        },
-      });
-      if (!member) throw new TRPCError({ code: "FORBIDDEN" });
+  /** Whether Stripe is configured, and the publishable key for Stripe Elements. */
+  getConfig: protectedProcedure.input(workspaceInput).query(async ({ ctx, input }) => {
+    await assertMember(ctx.db, ctx.session.user.id, input.workspaceId);
+    return getPublicStripeConfig();
+  }),
 
-      return listPaymentMethods(ctx.db, input.workspaceId);
-    }),
+  /** Saved cards, listed from Stripe (empty when Stripe is not configured). */
+  listPaymentMethods: protectedProcedure.input(workspaceInput).query(async ({ ctx, input }) => {
+    await assertMember(ctx.db, ctx.session.user.id, input.workspaceId);
+    const stripe = getStripe();
+    if (!stripe) return [];
+    return guard(() => listPaymentMethods(ctx.db, stripe, input.workspaceId));
+  }),
 
-  /**
-   * Register a new credit or debit card
-   */
-  addCard: protectedProcedure
+  /** Step 1 of adding a card: a SetupIntent whose client secret feeds Stripe Elements. */
+  createSetupIntent: protectedProcedure.input(workspaceInput).mutation(async ({ ctx, input }) => {
+    await assertBillingAccess(ctx.db, ctx.session.user.id, input.workspaceId);
+    return guard(() => createSetupIntent(ctx.db, requireStripe(), input.workspaceId, ctx.session.user.id));
+  }),
+
+  /** Step 2: after `stripe.confirmSetup()` succeeds in the browser, record the card Stripe saved. */
+  confirmSetupIntent: protectedProcedure
     .input(
-      z.object({
-        workspaceId: z.string(),
-        cardNumber: z.string(),
-        expMonth: z.number().int().min(1).max(12),
-        expYear: z.number().int(),
-        cvc: z.string(),
-        cardholderName: z.string(),
-        billingZip: z.string().optional(),
-        billingCountry: z.string().optional(),
-        setAsDefault: z.boolean().default(false),
-      })
+      z
+        .object({
+          workspaceId: z.string().min(1),
+          setupIntentId: z.string().regex(/^seti_[A-Za-z0-9]+$/, "Invalid SetupIntent id"),
+          setAsDefault: z.boolean().default(false),
+        })
+        .strict()
     )
     .mutation(async ({ ctx, input }) => {
       await assertBillingAccess(ctx.db, ctx.session.user.id, input.workspaceId);
-
-      try {
-        return await addPaymentMethod(
-          ctx.db,
-          input.workspaceId,
-          ctx.session.user.id,
-          {
-            cardNumber: input.cardNumber,
-            expMonth: input.expMonth,
-            expYear: input.expYear,
-            cvc: input.cvc,
-            cardholderName: input.cardholderName,
-            billingZip: input.billingZip,
-            billingCountry: input.billingCountry,
-          },
-          input.setAsDefault
-        );
-      } catch (err: any) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: err.message || "Failed to add payment card",
-        });
-      }
+      return guard(() =>
+        completeSetupIntent(ctx.db, requireStripe(), {
+          workspaceId: input.workspaceId,
+          userId: ctx.session.user.id,
+          setupIntentId: input.setupIntentId,
+          setAsDefault: input.setAsDefault,
+        })
+      );
     }),
 
-  /**
-   * Set a saved card as the default payment method
-   */
   setDefaultCard: protectedProcedure
-    .input(
-      z.object({
-        workspaceId: z.string(),
-        paymentMethodId: z.string(),
-      })
-    )
+    .input(z.object({ workspaceId: z.string().min(1), paymentMethodId: z.string().min(1) }).strict())
     .mutation(async ({ ctx, input }) => {
       await assertBillingAccess(ctx.db, ctx.session.user.id, input.workspaceId);
-
-      try {
-        return await setDefaultPaymentMethod(
-          ctx.db,
-          input.workspaceId,
-          ctx.session.user.id,
-          input.paymentMethodId
-        );
-      } catch (err: any) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: err.message || "Failed to update default card",
-        });
-      }
+      return guard(() =>
+        setDefaultPaymentMethod(ctx.db, requireStripe(), input.workspaceId, ctx.session.user.id, input.paymentMethodId)
+      );
     }),
 
-  /**
-   * Remove a saved card
-   */
   removeCard: protectedProcedure
+    .input(z.object({ workspaceId: z.string().min(1), paymentMethodId: z.string().min(1) }).strict())
+    .mutation(async ({ ctx, input }) => {
+      await assertBillingAccess(ctx.db, ctx.session.user.id, input.workspaceId);
+      return guard(() =>
+        deletePaymentMethod(ctx.db, requireStripe(), input.workspaceId, ctx.session.user.id, input.paymentMethodId)
+      );
+    }),
+
+  /** Starts a prepaid credit top-up (PaymentIntent). Credits are granted once Stripe reports success. */
+  createTopUp: protectedProcedure
     .input(
-      z.object({
-        workspaceId: z.string(),
-        paymentMethodId: z.string(),
-      })
+      z
+        .object({
+          workspaceId: z.string().min(1),
+          amountCents: z.number().int().min(MIN_TOP_UP_CENTS).max(MAX_TOP_UP_CENTS),
+          paymentMethodId: z.string().min(1).optional(),
+        })
+        .strict()
     )
     .mutation(async ({ ctx, input }) => {
       await assertBillingAccess(ctx.db, ctx.session.user.id, input.workspaceId);
-
-      try {
-        return await deletePaymentMethod(
-          ctx.db,
-          input.workspaceId,
-          ctx.session.user.id,
-          input.paymentMethodId
-        );
-      } catch (err: any) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: err.message || "Failed to remove card",
-        });
-      }
+      return guard(() =>
+        createTopUp(ctx.db, requireStripe(), {
+          workspaceId: input.workspaceId,
+          userId: ctx.session.user.id,
+          amountCents: input.amountCents,
+          paymentMethodId: input.paymentMethodId,
+        })
+      );
     }),
 
-  /**
-   * Purchase prepaid cloud compute credits using saved card
-   */
-  addCredits: protectedProcedure
-    .input(
-      z.object({
-        workspaceId: z.string(),
-        amountCents: z.number().int().min(500), // Min $5.00
-        paymentMethodId: z.string().optional(),
-      })
-    )
+  /** Re-reads a top-up's PaymentIntent from Stripe (after client-side confirmation). */
+  syncTopUp: protectedProcedure
+    .input(z.object({ workspaceId: z.string().min(1), invoiceId: z.string().min(1) }).strict())
     .mutation(async ({ ctx, input }) => {
       await assertBillingAccess(ctx.db, ctx.session.user.id, input.workspaceId);
-
-      try {
-        return await addPrepaidCredits(
-          ctx.db,
-          input.workspaceId,
-          ctx.session.user.id,
-          input.amountCents,
-          input.paymentMethodId
-        );
-      } catch (err: any) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: err.message || "Failed to purchase cloud credits",
-        });
-      }
+      return guard(() => syncTopUp(ctx.db, requireStripe(), input.workspaceId, input.invoiceId));
     }),
 
-  /**
-   * Pay an open invoice with a card
-   */
+  /** Pays an issued monthly usage invoice through Stripe. */
   payInvoice: protectedProcedure
     .input(
-      z.object({
-        workspaceId: z.string(),
-        invoiceId: z.string(),
-        paymentMethodId: z.string().optional(),
-      })
+      z
+        .object({
+          workspaceId: z.string().min(1),
+          invoiceId: z.string().min(1),
+          paymentMethodId: z.string().min(1).optional(),
+        })
+        .strict()
     )
     .mutation(async ({ ctx, input }) => {
       await assertBillingAccess(ctx.db, ctx.session.user.id, input.workspaceId);
-
-      const invoice = await ctx.db.invoice.findFirst({
-        where: { id: input.invoiceId, workspaceId: input.workspaceId },
-      });
-
-      if (!invoice) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Invoice not found" });
-      }
-
-      if (invoice.status === "PAID") {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "This invoice is already paid" });
-      }
-
-      try {
-        return await executeCardCharge(ctx.db, input.workspaceId, ctx.session.user.id, {
-          amountCents: invoice.amountCents,
-          description: `Invoice settlement #${invoice.id.slice(0, 8)}`,
+      return guard(() =>
+        payInvoice(ctx.db, requireStripe(), {
+          workspaceId: input.workspaceId,
+          userId: ctx.session.user.id,
+          invoiceId: input.invoiceId,
           paymentMethodId: input.paymentMethodId,
-          invoiceId: invoice.id,
-        });
-      } catch (err: any) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: err.message || "Failed to charge card for invoice",
-        });
-      }
+        })
+      );
     }),
 
-  /**
-   * List invoices for a workspace
-   */
-  listInvoices: protectedProcedure
-    .input(z.object({ workspaceId: z.string() }))
-    .query(async ({ ctx, input }) => {
-      const member = await ctx.db.workspaceMember.findUnique({
-        where: {
-          workspaceId_userId: {
-            workspaceId: input.workspaceId,
-            userId: ctx.session.user.id,
-          },
-        },
-      });
-      if (!member) throw new TRPCError({ code: "FORBIDDEN" });
+  listInvoices: protectedProcedure.input(workspaceInput).query(async ({ ctx, input }) => {
+    await assertMember(ctx.db, ctx.session.user.id, input.workspaceId);
+    return ctx.db.invoice.findMany({
+      where: { workspaceId: input.workspaceId },
+      orderBy: { createdAt: "desc" },
+    });
+  }),
 
-      return ctx.db.invoice.findMany({
-        where: { workspaceId: input.workspaceId },
-        orderBy: { createdAt: "desc" },
-      });
-    }),
+  /** Billing overview (balance, default card, recent invoices). Members only. */
+  getBillingSummary: protectedProcedure.input(workspaceInput).query(async ({ ctx, input }) => {
+    await assertMember(ctx.db, ctx.session.user.id, input.workspaceId);
+    const workspace = await ctx.db.workspace.findUnique({
+      where: { id: input.workspaceId },
+      include: {
+        paymentMethods: { orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }] },
+        invoices: { orderBy: { createdAt: "desc" }, take: 5 },
+      },
+    });
+    if (!workspace) throw new TRPCError({ code: "NOT_FOUND" });
 
-  /**
-   * Get billing overview summary (balance, cards, recent invoice)
-   */
-  getBillingSummary: protectedProcedure
-    .input(z.object({ workspaceId: z.string() }))
-    .query(async ({ ctx, input }) => {
-      const workspace = await ctx.db.workspace.findUnique({
-        where: { id: input.workspaceId },
-        include: {
-          paymentMethods: {
-            orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }],
-          },
-          invoices: {
-            orderBy: { createdAt: "desc" },
-            take: 5,
-          },
-        },
-      });
+    const stripe = getPublicStripeConfig();
+    // Without Stripe there are no real saved cards; never surface legacy local rows.
+    const cards = stripe.mode === "unconfigured" ? [] : workspace.paymentMethods.filter((pm) => !!pm.stripePaymentMethodId);
+    const defaultCard = cards.find((pm) => pm.isDefault) || cards[0] || null;
 
-      if (!workspace) throw new TRPCError({ code: "NOT_FOUND" });
-
-      const defaultCard = workspace.paymentMethods.find((pm: any) => pm.isDefault) || workspace.paymentMethods[0] || null;
-      const unpaidInvoices = workspace.invoices.filter((inv: any) => inv.status === "OPEN");
-
-      return {
-        creditBalanceCents: workspace.creditBalanceCents,
-        spendingCapCents: workspace.spendingCapCents,
-        cardsCount: workspace.paymentMethods.length,
-        defaultCard,
-        recentInvoices: workspace.invoices,
-        unpaidInvoicesCount: unpaidInvoices.length,
-      };
-    }),
+    return {
+      stripe,
+      creditBalanceCents: workspace.creditBalanceCents,
+      spendingCapCents: workspace.spendingCapCents,
+      cardsCount: cards.length,
+      defaultCard,
+      recentInvoices: workspace.invoices,
+      unpaidInvoicesCount: workspace.invoices.filter((inv) => inv.status === "OPEN" || inv.status === "PAST_DUE").length,
+    };
+  }),
 });

@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server";
 import crypto from "crypto";
 import { db } from "@/lib/db";
-import { executeDeployment } from "@/lib/orchestrator/engine";
+import { scheduleDeployment } from "@/lib/orchestrator/schedule";
 import { handlePullRequestWebhook } from "@/lib/orchestrator/pr-manager";
+
+// Deployments run in after(); give them the full serverless budget.
+export const maxDuration = 300;
 
 // You will need to add GITHUB_WEBHOOK_SECRET to your .env.local
 const WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET;
@@ -25,9 +28,10 @@ export async function POST(req: Request) {
 
   // Verify HMAC signature
   const hmac = crypto.createHmac("sha256", WEBHOOK_SECRET);
-  const digest = "sha256=" + hmac.update(payloadText).digest("hex");
+  const digest = Buffer.from("sha256=" + hmac.update(payloadText).digest("hex"));
+  const provided = Buffer.from(signature);
 
-  if (signature !== digest) {
+  if (provided.length !== digest.length || !crypto.timingSafeEqual(provided, digest)) {
     return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
   }
 
@@ -112,12 +116,12 @@ export async function POST(req: Request) {
         },
       });
 
-      // Execute asynchronously via dual-driver orchestrator
-      executeDeployment(deployment.id, build.id, service.id, {
+      // Durable job row now; the build runs after the response (recovered by the cron if it dies)
+      await scheduleDeployment(deployment.id, build.id, service.id, {
         serviceId: service.id,
         commitSha,
         commitMessage,
-      }).catch((e) => console.error("Webhook auto-deployment error:", e));
+      });
 
       results.push({ serviceId: service.id, buildId: build.id, deploymentId: deployment.id });
     }

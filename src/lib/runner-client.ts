@@ -1,7 +1,8 @@
 /**
  * Syncbay PaaS — Signed runner HTTP client for managed databases & terminals.
- * Uses the driver's canonical `${ts}.${METHOD}.${path}.${payload}` signature: POST payload is
- * the raw body, GET/DELETE payload is the request pathname (matches runner/src/services.ts).
+ * Uses the driver's canonical `${ts}.${nonce}.${METHOD}.${path}.${payload}` signature: POST payload
+ * is the raw body, GET/DELETE payload is the request pathname (matches runner/src/services.ts).
+ * Every call gets a fresh `X-Syncbay-Nonce`, which the runner accepts only once.
  */
 
 import { resolveRunnerSecret, signRequest } from "@/lib/orchestrator/runner-driver";
@@ -26,7 +27,7 @@ export async function runnerFetch(
 
   const method = init.method || (init.body !== undefined ? "POST" : "GET");
   const bodyStr = method === "POST" ? JSON.stringify(init.body ?? {}) : undefined;
-  const { headerValue, timestamp } = signRequest(resolveRunnerSecret(), method, pathname, bodyStr ?? pathname);
+  const { headers: signedHeaders } = signRequest(resolveRunnerSecret(), method, pathname, bodyStr ?? pathname);
 
   const controller = new AbortController();
   const timer = init.timeoutMs ? setTimeout(() => controller.abort(), init.timeoutMs) : null;
@@ -37,8 +38,7 @@ export async function runnerFetch(
       method,
       headers: {
         "Content-Type": "application/json",
-        "X-Syncbay-Signature": headerValue,
-        "X-Syncbay-Timestamp": timestamp,
+        ...signedHeaders,
       },
       body: bodyStr,
       signal: controller.signal,
