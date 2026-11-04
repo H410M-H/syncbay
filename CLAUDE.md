@@ -15,7 +15,7 @@ Syncbay (`syncbay.app`) is a hybrid-compute PaaS. The **control plane** is a Nex
 | Lint | `npm run lint` |
 | Production build | `npm run build` (prisma generate + `next build --webpack`) |
 | Runner build / test | `cd runner && npm install && npm run build && npm test` |
-| Focused verifications | `npm run test:fallback`, `test:tunnel`, `test:edge`, `test:email`, `test:db`, `test:terminal` (tsx scripts under `tests/`, mocked DB); `test:terminal-stateless`, `test:domains` (need `DATABASE_URL`; real Postgres, Docker, DNS stub); `test:observe` (real Postgres + runner) |
+| Focused verifications | `npm run test:fallback`, `test:tunnel`, `test:edge`, `test:email`, `test:db`, `test:terminal` (tsx scripts under `tests/`, mocked DB); `test:terminal-stateless`, `test:domains` (need `DATABASE_URL`; real Postgres, Docker, DNS stub); `test:observe` (real Postgres + runner); `test:deploy` needs a real `DATABASE_URL` and starts runner daemons on 41100/41101 |
 
 All five gates (prisma generate, typecheck, knip, lint, build) must pass before a change is merged. CI enforces them in `.github/workflows/ci.yml`.
 
@@ -25,7 +25,10 @@ All five gates (prisma generate, typecheck, knip, lint, build) must pass before 
 - **`engine.ts` → `executeDeployment()`.**
   - Loads service, variables and environment databases, resolves `${{ ref }}` variables (`src/lib/buildpack/resolver.ts`), registers the route as `BUILDING` → `DEPLOYING` → `ACTIVE`/`FAILED`, and dispatches the job to a runner driver.
   - Runtime detection (`src/lib/buildpack/detector.ts`, nixpacks plans) happens on the runner. The engine relays every log line to `logEventBus` (`src/lib/telemetry/event-bus.ts`) and classifies it as `stderr` (`[build:error]`, `[app:error]`, `Error:` …), `system` (`[pipeline]`, `[runner]`, `[health]` … prefixes) or `stdout`.
-  - After an `ACTIVE` result it probes `/health`, then `/`, on the allocated port.
+  - After an `ACTIVE` result it probes `/health`, then `/`, on the allocated port (through `RUNNER_URL` + `x-target-port` for webhook runners). The probe is skipped only when the runner reports `metadata.simulated`, or for a pull-mode runner without `RUNNER_URL` (it probed itself).
+  - Call sites never fire-and-forget: they call `scheduleDeployment()` (`schedule.ts`), which writes a `DeploymentJob` row and runs the engine in `after()` (routes export `maxDuration = 300`). Polling stops after `DEPLOY_POLL_BUDGET_MS` (240 s) and hands off; `recoverStaleDeployments()` (`recovery.ts`, called from the cron) resumes lapsed orchestrator leases (`options.resume`), requeues expired runner leases and fails legacy stuck deployments.
+  - On ACTIVE, `onDeploymentActive()` (`lifecycle.ts`) records `assignedPort`/`runnerDriver`, marks older live deployments `SUPERSEDED` and stops their instances, and reports the PR preview status. `lifecycle.ts` also implements real pause / delete / restart / rollback (`stopServiceInstances`, `restartServiceInstance`, `rollbackToDeployment`).
+  - No invented commit SHAs: HEAD is resolved through Octokit (`resolveHeadCommitSha`) or left null.
   - Failed remote dispatches (for example Cloudflare HTTP 530) fall back to the local driver. `RUNNER_FALLBACK_LOCAL=false` (default `true`) or `RUNNER_FORCE_REMOTE=true` disables this. An `AuthenticationError` never falls back.
   - When status polling reports `exitCode`, the engine appends it to the recorded error (`… (exit code N)`).
   - A failure is persisted in `Deployment.errorMessage` (cleared on ACTIVE); routers prefer it over the in-process `logEventBus.getError()`. The engine awaits `logEventBus.flush()` before returning.
@@ -37,7 +40,7 @@ All five gates (prisma generate, typecheck, knip, lint, build) must pass before 
   - Drivers log through `emitLog()`. It passes lines to `params.onLog` when one is given (the engine's handler publishes to `logEventBus`); otherwise it publishes to `logEventBus` directly.
   - `WebhookRunnerDriver`: HTTP to the runner daemon.
   - `SshRunnerDriver`: runs containers on a remote host over SSH (`RUNNER_SSH_*`), with `RUNNER_SECRET` exported in the remote command environment.
-  - `QueueRunnerDriver`: a DB-backed job queue for long builds.
+  - `QueueRunnerDriver` (`RUNNER_QUEUE_MODE=pull`): queues the job in `DeploymentJob` (`job-queue.ts`). Runners claim it with HMAC `POST /api/v1/runner/jobs/claim` (`FOR UPDATE SKIP LOCKED`) and report logs, heartbeats and the result to `POST /api/v1/runner/jobs/:id/events`. Stop and restart become control jobs routed to the hosting runner.
   - `LocalRunnerDriver`: imports `runner/src/pipeline.ts` in-process (local dev / single host). `RUNNER_DRIVER=mock` uses it with `MockPipelineExecutor`.
 - **`src/lib/tunnel/tunnel-config.ts`.**
   - `generateTunnelConfig()` produces YAML and `generateTunnelConfigJson()` produces the Cloudflare `PUT /accounts/{acct}/cfd_tunnel/{id}/configurations` body (`{ config: { ingress } }`). `writeTunnelConfig()` writes atomically (temp file + rename).
@@ -45,7 +48,7 @@ All five gates (prisma generate, typecheck, knip, lint, build) must pass before 
   - `src/lib/tunnel/tunnel-sync.ts` → `requestTunnelReload(reason)` rebuilds the full ingress table from the DB (non-paused services with an ACTIVE deployment + port, default host and ACTIVE domains → `http://127.0.0.1:<port>`, catch-all `TUNNEL_FALLBACK_SERVICE`), debounced (`TUNNEL_RELOAD_DEBOUNCE_MS`, 300 ms), serialised with `pg_advisory_xact_lock`, never throws, and is a no-op without a tunnel (`CLOUDFLARE_TUNNEL_ID` + API creds, or + `TUNNEL_CONFIG_FILE`). Called after deploy ACTIVE (engine), deployment delete, and domain verify/delete; call it from any new stop/pause/delete path.
 - **`pr-manager.ts`.** Handles GitHub `pull_request` webhooks:
   - Creates an ephemeral `pr-<n>` environment, service and `<svc>-pr-<n>.syncbay.app` domain, with scale-to-zero (`idleTimeoutSecs: 1800`).
-  - Posts `syncbay/preview` commit statuses and a preview comment.
+  - Posts a `pending` `syncbay/preview` commit status and comment; the engine updates both to success/failure (`reportPreviewDeploymentStatus`). Tokens come from env, the triggering user or a workspace member, never an unrelated account.
   - Sleeps or destroys the environment when the PR is closed.
 
 ### API — `src/server/`
@@ -58,11 +61,13 @@ All five gates (prisma generate, typecheck, knip, lint, build) must pass before 
 ### Runner daemon — `runner/`
 - `src/index.ts` (`RunnerDaemon`):
   - Unauthenticated: `/health` and `/api/tunnel/status`.
-  - HMAC-protected: `POST /api/builds`, `GET /api/builds/:id[/logs]` (JSON or SSE), `POST /api/containers/:id/stop` and `GET /api/metrics/:containerId`.
+  - HMAC-protected: `POST /api/builds`, `GET /api/builds/:id[/logs]` (JSON or SSE), `POST /api/containers/:id/stop`, `POST /api/containers/:id/restart` (re-launches from the kept launch spec on the same port; also revives a stopped instance for rollback) and `GET /api/metrics/:containerId`.
+  - Any request with `x-target-port` is proxied to the app before the daemon's own routes.
+  - `RUNNER_QUEUE_MODE=pull` + `SYNCBAY_API_URL` starts `JobPullConsumer` (`src/job-consumer.ts`, `RUNNER_ID`, `RUNNER_POLL_INTERVAL_MS`); its claim/events calls are signed with the same nonce scheme.
   - Signatures must match `signRequest()`'s canonical string (`runner/src/request-auth.ts`). Every signed request, of any method, is single-use: accepted nonces are cached for the ±5 min window, so a replay gets 401. New routes must verify through `verifySignedHeaders()` / `verifySignedRequest()` (which consume the nonce), not the pure `verifySignature()`.
   - Query-string `sig`/`ts`/`nonce` is accepted only on the SSE route `GET /api/builds/:id/logs` with `Accept: text/event-stream`, and it is bound to that path.
   - `src/metrics.ts` serves `/api/metrics/:id` (verified by `verifySignedRequest()`, GET payload = pathname, like `services.ts`): `docker stats --no-stream` for containers, `/proc/<pid>/stat` + `status` summed over the process group for `proc_<pid>` native apps (no network counters for those).
-  - `GET /api/builds/:id` returns `exitCode`.
+  - `GET /api/builds/:id` returns `exitCode` and `simulated`.
   - The secret comes from `RUNNER_SECRET`. In production the daemon refuses to start without one.
   - Any other request is reverse-proxied to the service port in `x-target-port`.
   - After a deploy it registers routes back to the control plane (`/api/v1/services/edge-register`) and adds `<host> → http://127.0.0.1:<port>` tunnel ingress. A stop removes it.

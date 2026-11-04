@@ -15,15 +15,11 @@
  * Prisma in tests) and never throws for bookkeeping failures.
  */
 
-import crypto from "node:crypto";
 import { db } from "@/lib/db";
 import { logEventBus } from "@/lib/telemetry/event-bus";
 import { classifyLogLine, type BuildDispatchParams, type BuildStatusResult, type RunnerBuildStatus } from "./runner-driver";
 
 type Client = any;
-
-/** Identifies this control-plane process as an orchestrator lease holder. */
-export const ORCHESTRATOR_ID = `cp_${process.pid}_${crypto.randomBytes(4).toString("hex")}`;
 
 const envMs = (name: string, fallback: number) => {
   const n = Number(process.env[name]);
