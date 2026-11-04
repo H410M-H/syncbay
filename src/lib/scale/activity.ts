@@ -109,8 +109,3 @@ export async function readUpstashActivity(hosts: string[]): Promise<number | nul
   }
   return latest;
 }
-
-/** Test hook: forget debounce state. */
-export function resetActivityDebounce(): void {
-  lastWrite.clear();
-}

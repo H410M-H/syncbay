@@ -15,7 +15,7 @@ Syncbay (`syncbay.app`) is a hybrid-compute PaaS. The **control plane** is a Nex
 | Lint | `npm run lint` |
 | Production build | `npm run build` (prisma generate + `next build --webpack`) |
 | Runner build / test | `cd runner && npm install && npm run build && npm test` |
-| Focused verifications | `npm run test:fallback`, `test:tunnel`, `test:edge`, `test:email`, `test:db`, `test:terminal` (tsx scripts under `tests/`, mocked DB); `test:terminal-stateless`, `test:domains` (need `DATABASE_URL`; real Postgres, Docker, DNS stub) |
+| Focused verifications | `npm run test:fallback`, `test:tunnel`, `test:edge`, `test:email`, `test:db`, `test:terminal` (tsx scripts under `tests/`, mocked DB); `test:terminal-stateless`, `test:domains` (need `DATABASE_URL`; real Postgres, Docker, DNS stub); `test:observe` (real Postgres + runner) |
 
 All five gates (prisma generate, typecheck, knip, lint, build) must pass before a change is merged. CI enforces them in `.github/workflows/ci.yml`.
 
@@ -28,6 +28,7 @@ All five gates (prisma generate, typecheck, knip, lint, build) must pass before 
   - After an `ACTIVE` result it probes `/health`, then `/`, on the allocated port.
   - Failed remote dispatches (for example Cloudflare HTTP 530) fall back to the local driver. `RUNNER_FALLBACK_LOCAL=false` (default `true`) or `RUNNER_FORCE_REMOTE=true` disables this. An `AuthenticationError` never falls back.
   - When status polling reports `exitCode`, the engine appends it to the recorded error (`… (exit code N)`).
+  - A failure is persisted in `Deployment.errorMessage` (cleared on ACTIVE); routers prefer it over the in-process `logEventBus.getError()`. The engine awaits `logEventBus.flush()` before returning.
   - `src/lib/buildpack/knip-analyzer.ts` is Syncbay's built-in static analysis of customer repos. It is separate from the repo's own `knip` gate.
 - **`runner-driver.ts` (`getRunnerDriver()`).** Picks a driver from the explicit type, then `RUNNER_DRIVER` (`webhook` | `ssh` | `queue` | `local` | `mock`), then `RUNNER_URL`:
   - `signRequest()` signs `${ts}.${nonce}.${METHOD}.${path}.${body}` with HMAC-SHA256 into `X-Syncbay-Signature: sha256=<hex>`, `X-Syncbay-Timestamp` and `X-Syncbay-Nonce` (16 random bytes, hex). `path` is the API pathname, and GET requests sign the job id as the body. Every retry is re-signed with a fresh timestamp and nonce.
@@ -57,9 +58,10 @@ All five gates (prisma generate, typecheck, knip, lint, build) must pass before 
 ### Runner daemon — `runner/`
 - `src/index.ts` (`RunnerDaemon`):
   - Unauthenticated: `/health` and `/api/tunnel/status`.
-  - HMAC-protected: `POST /api/builds`, `GET /api/builds/:id[/logs]` (JSON or SSE) and `POST /api/containers/:id/stop`.
+  - HMAC-protected: `POST /api/builds`, `GET /api/builds/:id[/logs]` (JSON or SSE), `POST /api/containers/:id/stop` and `GET /api/metrics/:containerId`.
   - Signatures must match `signRequest()`'s canonical string (`runner/src/request-auth.ts`). Every signed request, of any method, is single-use: accepted nonces are cached for the ±5 min window, so a replay gets 401. New routes must verify through `verifySignedHeaders()` / `verifySignedRequest()` (which consume the nonce), not the pure `verifySignature()`.
   - Query-string `sig`/`ts`/`nonce` is accepted only on the SSE route `GET /api/builds/:id/logs` with `Accept: text/event-stream`, and it is bound to that path.
+  - `src/metrics.ts` serves `/api/metrics/:id` (verified by `verifySignedRequest()`, GET payload = pathname, like `services.ts`): `docker stats --no-stream` for containers, `/proc/<pid>/stat` + `status` summed over the process group for `proc_<pid>` native apps (no network counters for those).
   - `GET /api/builds/:id` returns `exitCode`.
   - The secret comes from `RUNNER_SECRET`. In production the daemon refuses to start without one.
   - Any other request is reverse-proxied to the service port in `x-target-port`.
@@ -90,14 +92,25 @@ All five gates (prisma generate, typecheck, knip, lint, build) must pass before 
   - **Control-plane hosts pass through:** `syncbay.app`, `www.`, `cname.`, `localhost`, any IP, `*.vercel.app`, and the `NEXTAUTH_URL` / `VERCEL_*` hosts.
   - **Service hosts:** `*.syncbay.app`, `*.localhost`, and any other host only if it resolves as a registered route (a custom domain).
   - It rewrites `ACTIVE` services to their upstream, or to `RUNNER_URL` with `x-target-port` unless `isLocal`. It answers `/health` with 200/503/502 and sends non-active services to the splash page.
+  - For `ACTIVE` routes it calls `recordServiceRequest(host)` (`src/lib/scale/activity.ts`, via `event.waitUntil`): debounced 30 s per host, written to Upstash `syncbay:edge:last:<host>` when configured, else `Service.lastRequestAt`.
 - `/api/v1/services/edge-register` (POST/DELETE) accepts `{ hostname, targetPort, status, upstreamUrl, isLocal }`.
   - Auth is Bearer `RUNNER_SECRET` / `SYNCBAY_WEBHOOK_SECRET`.
   - In production it returns 401 when neither secret is set.
 - `src/app/service-preview/[subdomain]/page.tsx` is the cold-start splash.
   - An unknown status renders as `BUILDING`.
-  - It streams build logs over SSE from `/api/deployments/:id/logs/stream`. That route also polls the DB every 2 s and emits an `event: status` when the deployment status changes.
+  - It streams build logs over SSE from `/api/deployments/:id/logs/stream` (session + workspace membership required; anonymous visitors get 401 and no logs). The route (`src/lib/telemetry/log-stream.ts`) replays `DeploymentLog` rows, then follows the in-process bus plus a DB tail every 2 s (cross-instance), and proxies the runner's signed `GET /api/builds/:id/logs` SSE when neither has lines. It never synthesises history. It also emits `event: status` when the deployment status changes.
   - It polls `/health` every 1.5 s, stops probing on success, and reloads into the live app.
   - The wake button POSTs to `/api/v1/services/wake`. The caller must be a workspace member session or send Bearer `RUNNER_SECRET`. The endpoint re-runs the sleeping service's latest deployment through `executeDeployment` (via `after()`) and returns 202.
+
+### Observability, usage and scale-to-zero (crons)
+- `logEventBus` (`src/lib/telemetry/event-bus.ts`) keeps a 1000-line ring buffer per deployment as a cache and batches every line into `DeploymentLog` (`src/lib/telemetry/log-store.ts`; flush at 250 ms or 200 lines, retried with backoff, only when `DATABASE_URL` is set). No `.runner_logs` files.
+- `/api/deployments/:id/metrics/stream` (session + membership) and `metrics.live` read the runner live (`fetchContainerMetrics()`; in-process collector when there is no `RUNNER_URL` and not serverless), else the newest `MetricSample`. `metrics.historical` buckets stored samples (`date_bin`). No random or sine data.
+- `vercel.json` crons, both `GET` with `Authorization: Bearer $CRON_SECRET` (`src/lib/crons/cron-auth.ts`, timing-safe; unset secret is allowed only outside production):
+  - `/api/cron/tick` (every minute): `recoverStaleDeployments()` from `src/lib/orchestrator/recovery.ts` through a webpack `require.context` hook (`src/lib/crons/recovery-hook.ts`), plus `sampleActiveServices()` → `MetricSample`.
+  - `/api/cron/sweep` (every 15 min): `sleepIdleServices()` (`src/lib/scale/idle-sleeper.ts`), `writeUsageRecords()` and `enforceSpendingCaps()` (`src/lib/usage/metering.ts`), and retention (logs 30 d, samples 35 d).
+- Idle sleep: services with `scaleToZero` whose latest deployment is ACTIVE and whose last activity (last request, deploy completion, docker inbound traffic) is older than `idleTimeoutSecs` are stopped via the runner driver, marked SLEEPING and routed to the splash (`src/lib/scale/service-control.ts`).
+- Usage: one `UsageRecord` per service, resource and completed hour (`CPU_ACTIVE_SECONDS` = vCPU-seconds, `MEMORY_GIB_HOURS`, `EGRESS_GB`; upsert on the new unique key). `workspaceUsage` is month-to-date (UTC). At 80 % of `spendingCapCents` owners/admins get the usage-warning email, at 100 % every running service is paused and they get the billing alert (once per month each, `Workspace.usageWarnedAt` / `spendCapReachedAt`). The wake endpoint answers 402 while the cap is reached.
+- `npm run test:observe` (`tests/verify-observability.ts`) needs a migrated Postgres (`TEST_DATABASE_URL` or `DATABASE_URL`) and starts a real runner daemon on port 42110.
 
 ### Other modules
 - Auth: `src/lib/auth.ts` (Google, GitHub with `repo` scope, credentials/bcrypt; JWT sessions with the Prisma adapter). In production `src/lib/auth-cookies.ts` scopes the session cookie to `AUTH_COOKIE_DOMAIN` (default `.syncbay.app` when `NEXTAUTH_URL` is on syncbay.app; `none` disables) so service hosts send it to the wake endpoint.
