@@ -10,8 +10,10 @@
  *   GET    /api/terminals/:id/stream      SSE output stream
  *   DELETE /api/terminals/:id             kill the session
  *
- * Signing: canonical `${ts}.${METHOD}.${path}.${payload}` (see signRequest in runner-driver.ts);
- * POST payload is the raw body, GET/DELETE payload is the request pathname.
+ * Signing: canonical `${ts}.${nonce}.${METHOD}.${path}.${payload}` (see signRequest in
+ * runner-driver.ts and runner/src/request-auth.ts); POST payload is the raw body, GET/DELETE
+ * payload is the request pathname. The daemon's verifier consumes the `X-Syncbay-Nonce`, so
+ * every signed request is single-use.
  * When Docker is unavailable (or RUNNER_DRIVER=mock) databases are simulated: a fake
  * container id is returned and health always reports healthy.
  */

@@ -274,32 +274,43 @@ export function resolveRunnerSecret(): string {
   return DEV_RUNNER_SECRET;
 }
 
+/** Generates a fresh request nonce: 16 random bytes, hex-encoded (32 chars). */
+export function generateRequestNonce(): string {
+  return crypto.randomBytes(16).toString("hex");
+}
+
 /**
- * Signs a runner request over the canonical string `${ts}.${METHOD}.${path}.${body}`.
+ * Signs a runner request over the canonical string `${ts}.${nonce}.${METHOD}.${path}.${body}`.
  * `path` is the URL pathname (no query, no runner base path). For GET requests the
- * body is the canonical job id. Call it once per attempt so every retry carries a fresh timestamp.
+ * body is the canonical job id. `nonce` is 16 random bytes (hex) sent as `X-Syncbay-Nonce`;
+ * the runner remembers every accepted nonce for the timestamp window, so a signed request
+ * (any method) is single-use. Call it once per attempt so every retry carries a fresh
+ * timestamp and nonce.
  */
 export function signRequest(
   secret: string,
   method: string,
   path: string,
   body: string = "",
-  timestampInput?: string | number
-): HmacSignatureResult & { headers: Record<string, string> } {
+  timestampInput?: string | number,
+  nonceInput?: string
+): HmacSignatureResult & { nonce: string; headers: Record<string, string> } {
   if (!secret) {
     throw new RunnerDriverError("HMAC secret must not be empty", "INVALID_CONFIG");
   }
   const timestamp = timestampInput !== undefined ? String(timestampInput) : Date.now().toString();
+  const nonce = nonceInput ?? generateRequestNonce();
   const signature = crypto
     .createHmac("sha256", secret)
-    .update(`${timestamp}.${method.toUpperCase()}.${path}.${body}`)
+    .update(`${timestamp}.${nonce}.${method.toUpperCase()}.${path}.${body}`)
     .digest("hex");
   const headerValue = `sha256=${signature}`;
   return {
     signature,
     timestamp,
+    nonce,
     headerValue,
-    headers: { "X-Syncbay-Signature": headerValue, "X-Syncbay-Timestamp": timestamp },
+    headers: { "X-Syncbay-Signature": headerValue, "X-Syncbay-Timestamp": timestamp, "X-Syncbay-Nonce": nonce },
   };
 }
 

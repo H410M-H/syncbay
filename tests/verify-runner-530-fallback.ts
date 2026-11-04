@@ -152,9 +152,18 @@ async function runTests() {
     const [h1, h2] = seenHeaders;
     assert.notStrictEqual(h1["X-Syncbay-Timestamp"], h2["X-Syncbay-Timestamp"], "Retry must carry a fresh timestamp");
     assert.notStrictEqual(h1["X-Syncbay-Signature"], h2["X-Syncbay-Signature"], "Retry must be re-signed");
+    assert.notStrictEqual(h1["X-Syncbay-Nonce"], h2["X-Syncbay-Nonce"], "Retry must carry a fresh nonce");
     for (let i = 0; i < 2; i++) {
-      const expected = signRequest("test-secret", "POST", "/api/builds", seenBodies[i], seenHeaders[i]["X-Syncbay-Timestamp"]);
-      assert.strictEqual(seenHeaders[i]["X-Syncbay-Signature"], expected.headerValue, "Signature covers ts.METHOD.path.body");
+      assert.match(seenHeaders[i]["X-Syncbay-Nonce"] || "", /^[a-f0-9]{32}$/, "Nonce is 16 random bytes (hex)");
+      const expected = signRequest(
+        "test-secret",
+        "POST",
+        "/api/builds",
+        seenBodies[i],
+        seenHeaders[i]["X-Syncbay-Timestamp"],
+        seenHeaders[i]["X-Syncbay-Nonce"]
+      );
+      assert.strictEqual(seenHeaders[i]["X-Syncbay-Signature"], expected.headerValue, "Signature covers ts.nonce.METHOD.path.body");
     }
     console.log("  ✔ WebhookRunnerDriver recovered after transient 530 and re-signed the retry with a fresh timestamp");
   }

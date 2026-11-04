@@ -17,9 +17,9 @@ import { BuildPipeline, type PipelineResult } from "./pipeline.ts";
 import { PortManager, defaultPortManager } from "./port-manager.ts";
 import { createTunnelDriver, type TunnelDriver, type TunnelDriverConfig } from "./tunnel-driver.ts";
 import { isValidIngressHostname } from "./tunnel-config.ts";
+import { NonceCache, verifyAndConsume, verifyCanonicalSignature } from "./request-auth.ts";
 
 /** Max clock skew / replay window for signed requests. */
-const SIGNATURE_TOLERANCE_MS = 300000;
 /** Dev-only fallback secret; the daemon refuses to start without RUNNER_SECRET in production. */
 const DEV_RUNNER_SECRET = "syncbay-runner-secret";
 
@@ -77,8 +77,8 @@ export class RunnerDaemon {
   private jobs: Map<string, JobState> = new Map();
   private pollTimer: NodeJS.Timeout | null = null;
   private isShuttingDown: boolean = false;
-  /** Header signatures already accepted for state-changing POSTs (sig → expiry). */
-  private seenSignatures: Map<string, number> = new Map();
+  /** Nonces of accepted signed requests (all methods); see runner/src/request-auth.ts. */
+  private readonly nonces = new NonceCache();
   /** Tunnel ingress: hostname → { port, jobId, containerId }. */
   private ingressRoutes: Map<string, { port: number; jobId: string; containerId?: string }> = new Map();
 
@@ -98,59 +98,55 @@ export class RunnerDaemon {
 
   /**
    * Timing-safe HMAC SHA-256 verification of the canonical request string
-   * `${ts}.${METHOD}.${path}.${body}` (must match `signRequest()` in the control plane's
+   * `${ts}.${nonce}.${METHOD}.${path}.${body}` (must match `signRequest()` in the control plane's
    * runner-driver.ts). `path` is the request pathname; for GET routes `body` is the job id.
+   * Pure check: it does not consume the nonce (see `verifySignedRequest`).
    */
   public verifySignature(
     method: string,
     pathname: string,
     body: string,
     signatureHeader: string | undefined,
-    timestampHeader: string | undefined
+    timestampHeader: string | undefined,
+    nonce: string | undefined
   ): boolean {
-    if (!signatureHeader || !this.webhookSecret) {
-      return false;
-    }
-
-    if (!timestampHeader || !/^\d+$/.test(timestampHeader)) {
-      return false;
-    }
-
-    const timestamp = Number(timestampHeader);
-    if (!Number.isSafeInteger(timestamp) || Math.abs(Date.now() - timestamp) > SIGNATURE_TOLERANCE_MS) {
-      return false;
-    }
-
-    const expected = crypto
-      .createHmac("sha256", this.webhookSecret)
-      .update(`${timestampHeader}.${method.toUpperCase()}.${pathname}.${body}`)
-      .digest("hex");
-    const provided = signatureHeader.replace(/^sha256=/, "").trim();
-
-    if (!/^[a-f0-9]{64}$/i.test(provided)) {
-      return false;
-    }
-
-    return crypto.timingSafeEqual(Buffer.from(provided, "hex"), Buffer.from(expected, "hex"));
+    return verifyCanonicalSignature(this.webhookSecret, {
+      method,
+      pathname,
+      body,
+      signature: signatureHeader,
+      timestamp: timestampHeader,
+      nonce,
+    });
   }
 
-  /** Verifies a header-signed POST and rejects a replay of an already-accepted signature. */
+  /** Verifies a signed request and consumes its nonce, so any replay (any method) gets 401. */
+  private verifySignedRequest(
+    method: string,
+    pathname: string,
+    body: string,
+    signature: string | undefined,
+    timestamp: string | undefined,
+    nonce: string | undefined
+  ): boolean {
+    return verifyAndConsume(this.webhookSecret, this.nonces, { method, pathname, body, signature, timestamp, nonce });
+  }
+
+  /** Header-signed request (`X-Syncbay-Signature` / `-Timestamp` / `-Nonce`), single-use. */
+  private verifySignedHeaders(req: http.IncomingMessage, method: string, pathname: string, body: string): boolean {
+    return this.verifySignedRequest(
+      method,
+      pathname,
+      body,
+      req.headers["x-syncbay-signature"] as string | undefined,
+      req.headers["x-syncbay-timestamp"] as string | undefined,
+      req.headers["x-syncbay-nonce"] as string | undefined
+    );
+  }
+
+  /** Verifies a header-signed POST and rejects a replay. */
   private verifySignedPost(req: http.IncomingMessage, pathname: string, body: string): boolean {
-    const signature = req.headers["x-syncbay-signature"] as string | undefined;
-    const timestamp = req.headers["x-syncbay-timestamp"] as string | undefined;
-    if (!this.verifySignature("POST", pathname, body, signature, timestamp)) {
-      return false;
-    }
-    const now = Date.now();
-    for (const [sig, expiry] of this.seenSignatures) {
-      if (expiry <= now) this.seenSignatures.delete(sig);
-    }
-    const key = signature!.replace(/^sha256=/, "").trim().toLowerCase();
-    if (this.seenSignatures.has(key)) {
-      return false;
-    }
-    this.seenSignatures.set(key, Number(timestamp) + SIGNATURE_TOLERANCE_MS);
-    return true;
+    return this.verifySignedHeaders(req, "POST", pathname, body);
   }
 
   /**
@@ -232,7 +228,7 @@ export class RunnerDaemon {
     // CORS & Common Headers
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Syncbay-Signature, X-Syncbay-Timestamp");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Syncbay-Signature, X-Syncbay-Timestamp, X-Syncbay-Nonce");
 
     if (method === "OPTIONS") {
       res.writeHead(204);
@@ -275,7 +271,7 @@ export class RunnerDaemon {
     const body = await this.readBody(req);
 
     // Managed databases & web terminals (runner/src/services.ts)
-    if (await this.services.handle(req, res, pathname, body, (p, s, t) => this.verifySignature((req.method || "GET").toUpperCase(), pathname, p, s, t))) {
+    if (await this.services.handle(req, res, pathname, body, (p, s, t) => this.verifySignedRequest(method, pathname, p, s, t, req.headers["x-syncbay-nonce"] as string | undefined))) {
       return;
     }
 
@@ -290,13 +286,7 @@ export class RunnerDaemon {
     if (buildMatch && method === "GET") {
       const jobId = decodeURIComponent(buildMatch[1]);
       // Header-only: query-string credentials are accepted solely on the SSE log route.
-      const isAuthed = this.verifySignature(
-        "GET",
-        pathname,
-        jobId,
-        req.headers["x-syncbay-signature"] as string | undefined,
-        req.headers["x-syncbay-timestamp"] as string | undefined
-      );
+      const isAuthed = this.verifySignedHeaders(req, "GET", pathname, jobId);
 
       if (!isAuthed) {
         res.writeHead(401, { "Content-Type": "application/json" });
@@ -313,16 +303,20 @@ export class RunnerDaemon {
     if (logsMatch && method === "GET") {
       const jobId = decodeURIComponent(logsMatch[1]);
       const headerSig = req.headers["x-syncbay-signature"] as string | undefined;
-      // EventSource cannot set headers, so an SSE request may carry `sig`/`ts` in the query
-      // string. The signature is still bound to GET + this exact pathname + job id.
+      // EventSource cannot set headers, so an SSE request may carry `sig`/`ts`/`nonce` in the
+      // query string. The signature is still bound to GET + this exact pathname + job id, and
+      // the nonce is single-use like every other signed request.
       const isEventStream = String(req.headers["accept"] || "").includes("text/event-stream");
       const useQuery = !headerSig && isEventStream;
       const signature = useQuery ? url.searchParams.get("sig") || undefined : headerSig;
       const timestamp = useQuery
         ? url.searchParams.get("ts") || undefined
         : (req.headers["x-syncbay-timestamp"] as string | undefined);
+      const nonce = useQuery
+        ? url.searchParams.get("nonce") || undefined
+        : (req.headers["x-syncbay-nonce"] as string | undefined);
 
-      const isAuthed = this.verifySignature("GET", pathname, jobId, signature, timestamp);
+      const isAuthed = this.verifySignedRequest("GET", pathname, jobId, signature, timestamp, nonce);
 
       if (!isAuthed) {
         res.writeHead(401, { "Content-Type": "application/json" });
