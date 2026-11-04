@@ -15,7 +15,7 @@ Syncbay (`syncbay.app`) is a hybrid-compute PaaS. The **control plane** is a Nex
 | Lint | `npm run lint` |
 | Production build | `npm run build` (prisma generate + `next build --webpack`) |
 | Runner build / test | `cd runner && npm install && npm run build && npm test` |
-| Focused verifications | `npm run test:fallback`, `test:tunnel`, `test:edge`, `test:email`, `test:db`, `test:terminal` (tsx scripts under `tests/`, mocked DB) |
+| Focused verifications | `npm run test:fallback`, `test:tunnel`, `test:edge`, `test:email`, `test:db`, `test:terminal` (tsx scripts under `tests/`, mocked DB); `test:terminal-stateless`, `test:domains` (need `DATABASE_URL`; real Postgres, Docker, DNS stub) |
 
 All five gates (prisma generate, typecheck, knip, lint, build) must pass before a change is merged. CI enforces them in `.github/workflows/ci.yml`.
 
@@ -30,7 +30,7 @@ All five gates (prisma generate, typecheck, knip, lint, build) must pass before 
   - When status polling reports `exitCode`, the engine appends it to the recorded error (`… (exit code N)`).
   - `src/lib/buildpack/knip-analyzer.ts` is Syncbay's built-in static analysis of customer repos. It is separate from the repo's own `knip` gate.
 - **`runner-driver.ts` (`getRunnerDriver()`).** Picks a driver from the explicit type, then `RUNNER_DRIVER` (`webhook` | `ssh` | `queue` | `local` | `mock`), then `RUNNER_URL`:
-  - `signRequest()` signs `${ts}.${METHOD}.${path}.${body}` with HMAC-SHA256 into `X-Syncbay-Signature: sha256=<hex>` and `X-Syncbay-Timestamp`. `path` is the API pathname, and GET requests sign the job id as the body. Every retry is re-signed with a fresh timestamp.
+  - `signRequest()` signs `${ts}.${nonce}.${METHOD}.${path}.${body}` with HMAC-SHA256 into `X-Syncbay-Signature: sha256=<hex>`, `X-Syncbay-Timestamp` and `X-Syncbay-Nonce` (16 random bytes, hex). `path` is the API pathname, and GET requests sign the job id as the body. Every retry is re-signed with a fresh timestamp and nonce.
   - `resolveRunnerSecret()` reads `RUNNER_WEBHOOK_SECRET` → `RUNNER_SECRET` → `SYNCBAY_WEBHOOK_SECRET`. With `NODE_ENV=production` and no secret it throws `AuthenticationError`; only dev falls back to a default secret.
   - Webhook and SSH requests retry with exponential backoff and jitter (500 ms·2^n, capped at 8 s, 4 attempts). Webhook retries on transient Cloudflare/gateway statuses and network errors; SSH retries on exit 255 (connection failure).
   - Drivers log through `emitLog()`. It passes lines to `params.onLog` when one is given (the engine's handler publishes to `logEventBus`); otherwise it publishes to `logEventBus` directly.
@@ -41,6 +41,7 @@ All five gates (prisma generate, typecheck, knip, lint, build) must pass before 
 - **`src/lib/tunnel/tunnel-config.ts`.**
   - `generateTunnelConfig()` produces YAML and `generateTunnelConfigJson()` produces the Cloudflare `PUT /accounts/{acct}/cfd_tunnel/{id}/configurations` body (`{ config: { ingress } }`). `writeTunnelConfig()` writes atomically (temp file + rename).
   - `reloadTunnel()` PUTs the config through `CloudflareApiClient.updateTunnelConfiguration()` when `CLOUDFLARE_TUNNEL_ID`, `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` are all set. Otherwise it writes `TUNNEL_CONFIG_FILE` and runs `TUNNEL_RESTART_COMMAND` (default `systemctl restart cloudflared`), because cloudflared has no SIGHUP reload.
+  - `src/lib/tunnel/tunnel-sync.ts` → `requestTunnelReload(reason)` rebuilds the full ingress table from the DB (non-paused services with an ACTIVE deployment + port, default host and ACTIVE domains → `http://127.0.0.1:<port>`, catch-all `TUNNEL_FALLBACK_SERVICE`), debounced (`TUNNEL_RELOAD_DEBOUNCE_MS`, 300 ms), serialised with `pg_advisory_xact_lock`, never throws, and is a no-op without a tunnel (`CLOUDFLARE_TUNNEL_ID` + API creds, or + `TUNNEL_CONFIG_FILE`). Called after deploy ACTIVE (engine), deployment delete, and domain verify/delete; call it from any new stop/pause/delete path.
 - **`pr-manager.ts`.** Handles GitHub `pull_request` webhooks:
   - Creates an ephemeral `pr-<n>` environment, service and `<svc>-pr-<n>.syncbay.app` domain, with scale-to-zero (`idleTimeoutSecs: 1800`).
   - Posts `syncbay/preview` commit statuses and a preview comment.
@@ -57,8 +58,8 @@ All five gates (prisma generate, typecheck, knip, lint, build) must pass before 
 - `src/index.ts` (`RunnerDaemon`):
   - Unauthenticated: `/health` and `/api/tunnel/status`.
   - HMAC-protected: `POST /api/builds`, `GET /api/builds/:id[/logs]` (JSON or SSE) and `POST /api/containers/:id/stop`.
-  - Signatures must match `signRequest()`'s canonical string. Header-signed POSTs are single-use, so a replay gets 401.
-  - Query-string `sig`/`ts` is accepted only on the SSE route `GET /api/builds/:id/logs` with `Accept: text/event-stream`, and it is bound to that path.
+  - Signatures must match `signRequest()`'s canonical string (`runner/src/request-auth.ts`). Every signed request, of any method, is single-use: accepted nonces are cached for the ±5 min window, so a replay gets 401. New routes must verify through `verifySignedHeaders()` / `verifySignedRequest()` (which consume the nonce), not the pure `verifySignature()`.
+  - Query-string `sig`/`ts`/`nonce` is accepted only on the SSE route `GET /api/builds/:id/logs` with `Accept: text/event-stream`, and it is bound to that path.
   - `GET /api/builds/:id` returns `exitCode`.
   - The secret comes from `RUNNER_SECRET`. In production the daemon refuses to start without one.
   - Any other request is reverse-proxied to the service port in `x-target-port`.
@@ -99,13 +100,15 @@ All five gates (prisma generate, typecheck, knip, lint, build) must pass before 
   - The wake button POSTs to `/api/v1/services/wake`. The caller must be a workspace member session or send Bearer `RUNNER_SECRET`. The endpoint re-runs the sleeping service's latest deployment through `executeDeployment` (via `after()`) and returns 202.
 
 ### Other modules
-- Auth: `src/lib/auth.ts` (Google, GitHub with `repo` scope, credentials/bcrypt; JWT sessions with the Prisma adapter).
+- Auth: `src/lib/auth.ts` (Google, GitHub with `repo` scope, credentials/bcrypt; JWT sessions with the Prisma adapter). In production `src/lib/auth-cookies.ts` scopes the session cookie to `AUTH_COOKIE_DOMAIN` (default `.syncbay.app` when `NEXTAUTH_URL` is on syncbay.app; `none` disables) so service hosts send it to the wake endpoint.
 - Email: `src/lib/email/` (Resend + React Email templates; it logs instead of sending when `RESEND_API_KEY` is unset).
 - Domains and Cloudflare: `src/lib/domain-service.ts`, `src/lib/tunnel/cloudflare-api.ts`.
+  - `verifyDomainDetailed()` resolves `TXT _syncbay-challenge.<host>` and the CNAME to `CLOUDFLARE_CNAME_TARGET` (or flattened A records) with `node:dns/promises`; missing records keep `VERIFYING`. With `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ZONE_ID` the custom hostname and certificate must also be `active`. Nothing is simulated in production (`CloudflareNotConfiguredError`), and live API errors are thrown, not simulated.
+  - A verified domain copies the service's live route (`src/lib/edge/domain-upstream.ts`). `purgeEdgeCache()` calls Cloudflare `purge_cache` when zone + token are set, else returns `configured: false`. The static POP list is illustrative (`illustrative: true`).
 - Managed DBs and buckets: `src/lib/database-provider.ts`, `src/lib/storage-provider.ts`.
   - With `RUNNER_URL` set, Postgres and Redis are provisioned as `postgres:16-alpine`/`redis:7-alpine` containers on the runner (`runner/src/services.ts`: `/api/databases`, health via `pg_isready`/`redis-cli ping`). Without it, and for MySQL, a mock `sb-db-*` instance is created. `DatabaseInstance.status` tracks PROVISIONING → ACTIVE/UNHEALTHY/FAILED/DELETING.
   - `<NAME>_URL` and `DATABASE_URL` (Postgres) or `REDIS_URL` (Redis) are persisted on existing services when the DB is created. `engine.ts` also merges them in at deploy time (`applyDatabaseEnv`) without overriding user keys. Delete removes rows still pointing at the DB. Signed runner calls go through `src/lib/runner-client.ts`.
-- Web shell: `src/components/dashboard/web-shell.tsx` → `POST /api/services/:id/terminal` (create, or `{sessionId,input}`) + SSE `/api/services/:id/terminal/stream`, with session auth and workspace membership. Sessions (`src/lib/shell/terminal-sessions.ts`, in-memory, 10 min idle) proxy to runner `/api/terminals` (`docker exec -i <container> sh` or `sh` in the job workspace, under `script -qfc`). Without a runner they fall back to the simulated `src/lib/shell/web-shell.ts` with a per-session cwd, env and history. Output masks `isSecret` values and URL credentials.
+- Web shell: `src/components/dashboard/web-shell.tsx` → `POST /api/services/:id/terminal` (create, or `{sessionId,input}`) + SSE `/api/services/:id/terminal/stream`, with session auth and workspace membership. The control plane is stateless: `sessionId` is a token signed with `TERMINAL_TOKEN_SECRET` (`src/lib/shell/terminal-token.ts`, `{sid, mode, runnerSessionId, serviceId, userId, exp}`; production returns 503 without the secret). Runner sessions proxy to runner `/api/terminals` (`docker exec -i <container> sh` or `sh` in the job workspace, under `script -qfc`). Without a runner the simulated `src/lib/shell/web-shell.ts` keeps cwd, env overrides, history and the masked buffer in a `TerminalSession` row (optimistic `version` writes; the SSE stream polls it; 10 min idle). Output masks `isSecret` values and URL credentials.
 
 ## Conventions
 - Next.js 16 differs from older versions. Read `node_modules/next/dist/docs/` before using framework APIs.

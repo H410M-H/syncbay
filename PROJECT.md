@@ -1,162 +1,232 @@
-# Project: Syncbay PaaS Platform — Hybrid Compute & Edge Routing
+# Syncbay — Project Architecture
 
-## Architecture
-The Syncbay PaaS Platform provides a hybrid compute execution layer and an automated global edge routing fabric:
-1. **Control Plane & Orchestration**:
-   - Next.js Web Application & API layer (`src/app/`, `src/lib/orchestrator/`).
-   - GitHub webhook processing and ephemeral preview environment management (`src/lib/orchestrator/pr-manager.ts`).
-   - Multi-driver execution dispatcher (`src/lib/orchestrator/runner-driver.ts`).
-   - Deployment build pipeline with code quality scanning (`src/lib/orchestrator/engine.ts`, `src/lib/buildpack/knip-analyzer.ts`).
-2. **Execution Drivers & Runner Fabric**:
-   - `WebhookRunnerDriver`: Synchronous HTTP/SSE with HMAC SHA-256 verification for fast builds.
-   - `QueueRunnerDriver`: Asynchronous DB-backed polling queue for long-running builds without serverless timeouts.
-   - `SshRunnerDriver`: Remote command execution and container process management on custom Linux nodes.
-   - Containerized Runner Agent (`runner/`): Standalone daemon supporting Docker, Nixpacks, dynamic port binding, and git cloning.
-3. **Global Edge Ingress & Tunnel Routing**:
-   - Cloudflare Tunnel ingress configuration generator (`src/lib/tunnel/tunnel-config.ts`).
-   - Edge Service Registry (`src/lib/edge/service-registry.ts`) for zero-latency, edge-safe route resolution.
-   - Next.js Edge Middleware (`src/middleware.ts`) transparently proxying active services to upstream ports and routing booting/waking services to preview splash.
-4. **Cold-Start UX**:
-   - Service Preview Splash Screen (`src/app/service-preview/[subdomain]/page.tsx`) with pulsing status badges, real-time log streaming, and client-side `/health` auto-redirection.
+Syncbay (`syncbay.app`) is a hybrid-compute PaaS. This document describes the system as it
+is built today: the moving parts, how a request travels through them, the security model
+and the contracts between modules. `CLAUDE.md` is the shorter agent guide; `ROADMAP.md`
+tracks what is still open.
 
----
-
-## Feature Inventory
-
-| # | Feature | Description | Milestone | Source |
-|---|---------|-------------|-----------|--------|
-| 1 | Prisma Relation Query Fix | Fix query in `service-preview` to use `environment.project` instead of `service.project` | M1 | Survey (R5) |
-| 2 | Ephemeral PR Domain Registration | Automatically generate and persist `Domain` record `${service.name}-pr-${prNumber}.syncbay.app` in `pr-manager.ts` | M1 | Survey (R3) |
-| 3 | PR Lifecycle Auto-Sleep & Teardown | Configure 15–30 min idle timeout (`idleTimeoutSecs: 1800`), scale-to-zero, and cleanup hooks in `pr-manager.ts` | M1 | Survey (R3) |
-| 4 | GitHub Octokit Commit Status & Comments | Post `syncbay/preview` commit status check and markdown preview comment with live badges | M1 | Survey (R3) |
-| 5 | Unified `RunnerDriver` Interface | Declare `RunnerDriver` interface with `dispatchBuild()`, `checkStatus()`, and `stopContainer()` in `runner-driver.ts` | M2 | Survey (R1) |
-| 6 | REST Webhook Runner Driver | Implement `WebhookRunnerDriver` with HMAC SHA-256 signature verification and SSE streaming log URL | M2 | Survey (R1) |
-| 7 | Queue/DB Polling Runner Driver | Implement `QueueRunnerDriver` mapping Prisma `Build`/`Deployment` records for long-running builds | M2 | Survey (R1) |
-| 8 | SSH Remote Runner Driver | Implement `SshRunnerDriver` for remote Linux provisioning, health checking, and container management | M2 | Survey (R1) |
-| 9 | Containerized Runner Agent Daemon | Standalone runner in `runner/` with `package.json`, `Dockerfile`, daemon `src/index.ts` | M2 | Survey (R1) |
-| 10 | Runner Build Pipeline & Port Allocator | Automated build pipeline (`pipeline.ts`) supporting Docker and Nixpacks, with dynamic port pool (`port-manager.ts`) | M2 | Survey (R1) |
-| 11 | Cloudflare Tunnel Ingress Generator | Generate valid `cloudflared` YAML configuration mapping subdomains to internal container ports | M3 | Survey (R2) |
-| 12 | Edge Service Registry | Edge-safe in-memory/cache store (`service-registry.ts`) for zero-latency subdomain and status lookup | M3 | Survey (R2) |
-| 13 | Edge Middleware Transparent Routing | Update `src/middleware.ts` to transparently route active services to origin and waking/building to splash | M3 | Survey (R2) |
-| 14 | Knip Code Quality Analyzer Module | Module in `src/lib/buildpack/knip-analyzer.ts` scanning file trees and `package.json` for unused deps/files/exports | M4 | Survey (R4) |
-| 15 | Non-Blocking Knip Engine Integration | Integrate Knip scan into build phase in `src/lib/orchestrator/engine.ts` streaming `[knip]` logs non-blockingly | M4 | Survey (R4) |
-| 16 | Cold-Start Live Splash Screen | Render multi-state pulsing indicators for `BUILDING` and `DEPLOYING` states in `service-preview` | M5 | Survey (R5) |
-| 17 | Real-Time SSE Log Streaming Console | Display live deployment logs via `/api/deployments/${id}/logs/stream` in `service-preview` | M5 | Survey (R5) |
-| 18 | Client-Side Health Probe & Redirect | Client-side probe checking `/health` every 1.5s, auto-redirecting to live application upon `200 OK` | M5 | Survey (R5) |
-| 19 | E2E Test Suite (Tiers 1-4) | Comprehensive opaque-box test runner and test cases covering all R1-R5 acceptance criteria | M6 | Plan (Dual Track) |
-| 20 | Adversarial Coverage Hardening (Tier 5) | White-box adversarial testing and edge case verification | M6 | Plan (Dual Track) |
-
----
-
-## Milestones
-
-| # | Name | Scope | Dependencies | Status |
-|---|------|-------|-------------|--------|
-| M1 | Core Platform Bug Fixes & PR Pipeline | Features 1, 2, 3, 4: Prisma relation bug fix, PR domain registration, PR lifecycle & Octokit checks in `pr-manager.ts` | None | DONE (worker_m1) |
-| M2 | Hybrid Runner Driver Subsystem & Agent | Features 5, 6, 7, 8, 9, 10: `runner-driver.ts` (Webhook, Queue, SSH), and `runner/` containerized agent | None | DONE (worker_m2) |
-| M3 | Global Edge Ingress & Tunnel Routing | Features 11, 12, 13: `tunnel-config.ts`, `service-registry.ts`, and `src/middleware.ts` | M1 | DONE (worker_m3) |
-| M4 | Knip Code Quality & Dead-Code Analyzer | Features 14, 15: `knip-analyzer.ts` and non-blocking integration in `engine.ts` | None | DONE (worker_m4) |
-| M5 | Cold-Start UX & Health Probe Splash Screen | Features 16, 17, 18: Live pulsing splash screen, SSE log console, `/health` auto-redirection in `service-preview` | M1 | DONE (worker_m5) |
-| M6 | Final Verification: 100% E2E Test Pass | M6 | Final Verification: 100% E2E Test Pass & Adversarial Hardening | Features 19, 20: Tiers 1-4 test suite pass + Tier 5 adversarial hardening | M1, M2, M3, M4, M5 | DONE (PASS) | Adversarial Hardening | Features 19, 20: Tiers 1-4 test suite pass + Tier 5 adversarial hardening | M1, M2, M3, M4, M5 | DONE (PASS) |
-| M7 | Live Runner Orchestrator Wiring | Connect `engine.ts` to `RunnerDriver`, execute real Git clones, native build pipelines, strict health checks, and register live Edge proxying in `service-registry.ts` | M2, M3, M5 | DONE (RESOLVED) |
-| M8 | Deployment Sync, Actions Menu & UX Ergonomics | Live & historical logs sync across daemon/event-bus, deployment action dropdown menu, cascade deletion mutation & UI button, `<BackButton />` navigation, subtle 3D background & settings theme toggle, dead component cleanup (`a8b4562`) | M6, M7 | DONE (PASS) |
-
----
-
-## Interface Contracts
-
-### 1. `RunnerDriver` ↔ `Orchestrator Engine`
-- **Location**: `src/lib/orchestrator/runner-driver.ts`
-- **Signatures**:
-  ```typescript
-  export interface RunnerDriver {
-    readonly type: RunnerDriverType;
-    dispatchBuild(params: BuildDispatchParams): Promise<BuildDispatchResult>;
-    checkStatus(jobId: string): Promise<BuildStatusResult>;
-    stopContainer(containerId: string, options?: Partial<StopContainerParams>): Promise<StopContainerResult>;
-  }
-  ```
-- **Error Handling**: Custom error types `RunnerDriverError`, `AuthenticationError`, `TimeoutError`. Driver methods must reject or return structured error results without throwing uncaught process exceptions.
-
-### 2. `Cloudflare Tunnel Config Generator` ↔ `Edge Ingress`
-- **Location**: `src/lib/tunnel/tunnel-config.ts`
-- **Signatures**:
-  ```typescript
-  export interface RouteMapping {
-    hostname: string;
-    targetPort: number;
-    path?: string;
-  }
-  export function generateTunnelConfig(params: {
-    tunnelId: string;
-    credentialsFile?: string;
-    routes: RouteMapping[];
-    controlPlaneFallback?: string;
-    catchAllService?: string;
-  }): string;
-  ```
-- **Guarantees**: Valid YAML, hostname validation, port bounds (1..65535), specific rules precedes wildcard `*.syncbay.app`, always ends with `service: http_status:404`.
-
-### 3. `Edge Service Registry` ↔ `Next.js Edge Middleware`
-- **Location**: `src/lib/edge/service-registry.ts`
-- **Signatures**:
-  ```typescript
-  export function registerServiceRoute(hostname: string, targetPort: number, status: string, upstreamUrl?: string): void;
-  export function getServiceRoute(hostname: string): { status: string; targetPort?: number; upstreamUrl?: string } | null;
-  export function clearServiceRoutes(): void;
-  ```
-- **Edge Runtime Compatibility**: Zero Node.js native dependencies (`fs`, `child_process`, `net`, `@prisma/client`). 100% web-standard runtime compatible.
-
-### 4. `Knip Analyzer` ↔ `Engine Build Pipeline`
-- **Location**: `src/lib/buildpack/knip-analyzer.ts`
-- **Signatures**:
-  ```typescript
-  export interface KnipScanOptions {
-    rootDir?: string;
-    files: string[];
-    packageJsonContent?: string | object;
-  }
-  export interface KnipAnalysisResult {
-    unusedDependencies: string[];
-    unreferencedFiles: string[];
-    unusedExports: { file: string; exportName: string }[];
-    recommendations: string[];
-    formattedLogs: string[];
-  }
-  export function runKnipAnalysis(options: KnipScanOptions): Promise<KnipAnalysisResult>;
-  ```
-- **Guarantees**: Non-blocking. In `src/lib/orchestrator/engine.ts`, errors during Knip execution are caught and logged; builds never fail due to code quality warnings.
-
----
-
-## Code Layout
+## 1. System overview
 
 ```
-C:\dev\syncbay\
-├── src\
-│   ├── app\
-│   │   ├── service-preview\
-│   │   │   └── [subdomain]\
-│   │   │       └── page.tsx            (M1 & M5: Prisma relation fix & Cold-Start splash UI)
-│   ├── lib\
-│   │   ├── orchestrator\
-│   │   │   ├── pr-manager.ts           (M1: Domain registration, lifecycle, Octokit checks)
-│   │   │   ├── runner-driver.ts        (M2: Unified RunnerDriver & Webhook/Queue/SSH drivers)
-│   │   │   └── engine.ts               (M4: Knip integration in build phase)
-│   │   ├── tunnel\
-│   │   │   └── tunnel-config.ts        (M3: Cloudflare Tunnel ingress YAML generator)
-│   │   ├── edge\
-│   │   │   └── service-registry.ts     (M3: Edge-safe route & status store)
-│   │   └── buildpack\
-│   │       └── knip-analyzer.ts        (M4: Repository dead code & dependency analyzer)
-│   └── middleware.ts                   (M3: Next.js Edge Middleware active pass-through)
-├── runner\                             (M2: Standalone containerized runner agent)
-│   ├── package.json
-│   ├── Dockerfile
-│   └── src\
-│       ├── index.ts                    (Daemon entrypoint)
-│       ├── pipeline.ts                 (Build pipeline: Docker & Nixpacks)
-│       └── port-manager.ts             (Dynamic port allocation)
-└── tests\
-    └── e2e\                            (M6: End-to-end tests across Tiers 1-5)
+             browser / git push / API token
+                         │
+   ┌─────────────────────▼──────────────────────────┐
+   │ Control plane — Next.js 16 on Vercel            │
+   │  dashboard (App Router) · tRPC 11 · REST /v1    │
+   │  src/proxy.ts (edge routing) · NextAuth v4      │
+   │  orchestrator (engine.ts, runner-driver.ts)     │
+   └──────┬───────────────┬──────────────┬──────────┘
+          │ Prisma 5       │ HMAC-signed  │ Cloudflare API
+          ▼                ▼ HTTP / SSH   ▼ (tunnels, custom hostnames, purge)
+     PostgreSQL     ┌──────────────────────────────┐
+     (+ optional    │ Data plane — runner daemon   │
+     Upstash L2)    │ runner/ on any Linux host:   │
+                    │ clone → build → run, ports,  │
+                    │ managed DBs, terminals       │
+                    └──────────────┬───────────────┘
+                                   │ cloudflared (Cloudflare Tunnel)
+                                   ▼
+                    <svc>-<env>.syncbay.app / custom domains
 ```
+
+- **Control plane** (`src/`): stateless Next.js app. Every piece of state that must be
+  shared between serverless instances lives in Postgres, in the optional Upstash L2 store,
+  or inside a signed token. No correctness depends on process memory.
+- **Data plane** (`runner/`): a standalone Node daemon (`RunnerDaemon`) that builds and runs
+  customer services, provisions Postgres/Redis containers and serves web-terminal shells.
+- **Edge**: Cloudflare in front. Traffic for a service host either reaches the Vercel proxy
+  (which rewrites to the runner) or goes straight down the tunnel to the service port.
+
+## 2. Deploy flow
+
+1. A deploy starts from the dashboard (`deployment.redeploy`), the REST API, a GitHub push
+   webhook or a PR webhook (`pr-manager.ts`).
+2. `executeDeployment()` (`src/lib/orchestrator/engine.ts`) loads the service, resolves
+   `${{ ref }}` variables, merges managed-database env (`applyDatabaseEnv`) and registers
+   every hostname of the service as `BUILDING` in the edge registry.
+3. `getRunnerDriver()` picks a driver: `webhook` (HTTP to the daemon), `ssh`, `queue`,
+   `local` (in-process `runner/src/pipeline.ts`) or `mock`. Failed remote dispatches fall back
+   to local unless `RUNNER_FALLBACK_LOCAL=false` / `RUNNER_FORCE_REMOTE=true`.
+4. The runner's `BuildPipeline` clones (or `git fetch` for a fast redeploy), detects Docker →
+   Nixpacks → native, builds (`--no-cache` on a clean rebuild), and starts the app on a port
+   from `PortManager` (10000–60000).
+5. The engine polls status, probes `/health` then `/`, registers the routes `ACTIVE`, records
+   the deployment and service port, and calls `requestTunnelReload()` (section 4).
+
+## 3. Edge routing
+
+- **Registry** (`src/lib/edge/service-registry.ts`): hostname → `{ targetPort, status,
+  upstreamUrl, isLocal }`. L1 is a per-process map (ACTIVE 15 s, other states 2 s, misses 5 s);
+  L2 is Upstash REST (`syncbay:edge:route:<host>`), else a read-only DB resolver
+  (`src/lib/edge/resolve.ts`), else memory.
+- **Proxy** (`src/proxy.ts`, Node runtime): control-plane hosts pass through; service hosts
+  (`*.syncbay.app`, `*.localhost`, verified custom domains) are rewritten to their upstream, or
+  to `RUNNER_URL` with `x-target-port`. Non-active services get the cold-start splash
+  (`src/app/service-preview/[subdomain]`), which streams build logs, polls `/health` and offers
+  a wake button (`/api/v1/services/wake`).
+- **Custom domains** route exactly like the service's platform host: on verification the
+  domain router copies the live registry entry (`src/lib/edge/domain-upstream.ts`), falling
+  back to the DB resolver.
+- **POP list**: `src/lib/edge/edge-router.ts` holds a static six-region model used for routing
+  demos and the globe. It is illustrative (`illustrative: true` in API responses); Syncbay does
+  not operate those POPs.
+- **Cache purge**: `purgeEdgeCache()` calls Cloudflare `POST /zones/{zone}/purge_cache`
+  (`purge_everything`, `tags`, `hosts`, or `files` for domain + path) when
+  `CLOUDFLARE_ZONE_ID` and `CLOUDFLARE_API_TOKEN` are set; otherwise it returns
+  `configured: false, success: false` and purges nothing.
+
+## 4. Tunnel ingress
+
+- `src/lib/tunnel/tunnel-config.ts` generates cloudflared YAML and the Cloudflare
+  `PUT /accounts/{acct}/cfd_tunnel/{id}/configurations` body, and `reloadTunnel()` applies it
+  (API mode, or write `TUNNEL_CONFIG_FILE` atomically + run `TUNNEL_RESTART_COMMAND`).
+- `src/lib/tunnel/tunnel-sync.ts` is what keeps it current:
+  - `buildIngressRoutesFromDb()` builds the **full** table: every non-deleted, non-paused
+    service with an ACTIVE deployment and a port, under its default host and each ACTIVE
+    domain, → `http://127.0.0.1:<port>`; the catch-all is `TUNNEL_FALLBACK_SERVICE`
+    (default `http_status:404`).
+  - `requestTunnelReload(reason)` debounces bursts (`TUNNEL_RELOAD_DEBOUNCE_MS`, 300 ms),
+    serialises runs across instances with `pg_advisory_xact_lock`, rebuilds the table after
+    taking the lock, never throws, and is a no-op when no tunnel is configured
+    (API mode needs `CLOUDFLARE_TUNNEL_ID` + `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN`;
+    local mode `CLOUDFLARE_TUNNEL_ID` + `TUNNEL_CONFIG_FILE`).
+  - Called after a deploy goes ACTIVE (engine), a deployment is deleted, and a custom domain
+    is verified or deleted.
+- The runner also keeps its own config-file ingress in step for the hosts it serves
+  (`runner/src/tunnel-driver.ts`, `runner/src/tunnel-config.ts`).
+
+## 5. Custom domains
+
+`src/lib/domain-service.ts` + `src/server/routers/domain.ts`:
+
+1. `domain.create` validates and normalises the host (IDNA), rejects platform hosts, and
+   registers a Cloudflare for SaaS custom hostname when `CLOUDFLARE_API_TOKEN` +
+   `CLOUDFLARE_ZONE_ID` are set.
+2. The user publishes `TXT _syncbay-challenge.<host> = syncbay-verification=<token>` and
+   `CNAME <host> → CLOUDFLARE_CNAME_TARGET` (default `cname.syncbay.app`).
+3. `domain.verify` → `verifyDomainDetailed()` resolves both with `node:dns/promises` (apex
+   domains may use CNAME flattening: matching A records). Until both resolve the domain stays
+   `VERIFYING` with the exact DNS errors. With Cloudflare configured the custom hostname and
+   its certificate must also be `active` (`failed` → `FAILED`). Without Cloudflare, proven
+   DNS → `ACTIVE`.
+4. Nothing is simulated in production: `CloudflareApiClient` throws
+   `CloudflareNotConfiguredError` instead of fabricating hostnames or tunnel tokens, and live
+   API errors are thrown rather than replaced by simulated success. Outside production the
+   client still has a labelled (`simulated: true`) offline mode for local work.
+
+## 6. Web terminal
+
+- UI `src/components/dashboard/web-shell.tsx` → `POST /api/services/:id/terminal`
+  (create, or `{ sessionId, input }`), `GET …/terminal/stream` (SSE), `DELETE …?sessionId=`.
+  Every call requires a session and OWNER/ADMIN/MEMBER membership.
+- **Stateless**: `sessionId` is a signed token (`src/lib/shell/terminal-token.ts`,
+  `sbt1.<claims>.<hmac>` with `TERMINAL_TOKEN_SECRET`; claims `{ sid, mode, runnerSessionId,
+  serviceId, userId, exp }`, 8 h). Any instance verifies it and proxies to the runner.
+- **Runner mode**: the daemon spawns `docker exec -i <container> sh` (or `sh` in a native job
+  workspace) under `script -qfc`; input and SSE output go through signed runner requests.
+- **Simulated mode** (no runner): cwd, the user's `export`/`unset` overrides, history and the
+  masked output buffer live in a `TerminalSession` row, updated with optimistic `version`
+  checks; the SSE stream polls the row, so input on one instance appears on a stream held by
+  another. Idle sessions close after 10 min.
+- Output always masks `isSecret` values and URL credentials; secret values are never stored.
+
+## 7. Security model
+
+| Boundary | Mechanism |
+| --- | --- |
+| Browser → control plane | NextAuth JWT session (Google, GitHub, credentials). In production the session cookie is scoped to `AUTH_COOKIE_DOMAIN` (default `.syncbay.app` when `NEXTAUTH_URL` is on syncbay.app), `Secure`, `SameSite=Lax`, so service hosts (wake button) see it. |
+| API clients → `/api/v1` | Bearer API tokens (`src/lib/api/auth-token.ts`). |
+| Control plane → runner | HMAC-SHA256 over `${ts}.${nonce}.${METHOD}.${path}.${body}` in `X-Syncbay-Signature`, with `X-Syncbay-Timestamp` (±5 min) and `X-Syncbay-Nonce` (16 random bytes). The daemon (`runner/src/request-auth.ts`) remembers accepted nonces for the window, so every signed request of any method is single-use; the SSE log route accepts `sig`/`ts`/`nonce` in the query string. Secret: `RUNNER_SECRET` (control plane also reads `RUNNER_WEBHOOK_SECRET` / `SYNCBAY_WEBHOOK_SECRET`); production refuses to run without it. |
+| Runner → control plane | Bearer `RUNNER_SECRET` on `/api/v1/services/edge-register`. |
+| Terminal sessions | `TERMINAL_TOKEN_SECRET` signed tokens bound to user + service; production answers 503 without the secret. |
+
+## 8. Data model highlights
+
+`Workspace → Project → Environment → Service → (Build, Deployment, Domain,
+EnvironmentVariable, Volume)`; `DatabaseInstance` per environment (status
+PROVISIONING → ACTIVE/UNHEALTHY/FAILED/DELETING); `TerminalSession` for simulated shells.
+Migrations are hand-written folders under `prisma/migrations/`.
+
+## 9. Interface contracts
+
+```typescript
+// src/lib/orchestrator/runner-driver.ts
+export interface RunnerDriver {
+  readonly type: RunnerDriverType;
+  dispatchBuild(params: BuildDispatchParams): Promise<BuildDispatchResult>;
+  checkStatus(jobId: string): Promise<BuildStatusResult>;
+  stopContainer(containerId: string, options?: Partial<StopContainerParams>): Promise<StopContainerResult>;
+}
+export function signRequest(secret, method, path, body?, ts?, nonce?): { headers; signature; timestamp; nonce; headerValue };
+
+// src/lib/edge/service-registry.ts
+export function registerServiceRouteAsync(host, targetPort?, status?, upstreamUrl?, isLocal?): Promise<ServiceRouteEntry | null>;
+export function resolveServiceRoute(host): Promise<ServiceRouteEntry | null>;
+
+// src/lib/tunnel/tunnel-sync.ts
+export function requestTunnelReload(reason: string): Promise<TunnelSyncResult>; // never throws
+
+// src/lib/domain-service.ts
+export function generateDefaultSubdomain(serviceName: string, envName: string): string;
+export function generateVerificationRecords(domain: string): { cnameTarget; txtRecord; txtHost; cnameHost };
+export function verifyDomain(domainId: string): Promise<DomainStatus>;
+export function verifyDomainDetailed(domainId: string): Promise<DomainVerificationResult>;
+
+// src/lib/edge/edge-router.ts
+export function purgeEdgeCache(options?: PurgeCacheOptions): Promise<PurgeCacheResult>;
+
+// src/lib/buildpack/knip-analyzer.ts — non-blocking static analysis of customer repos
+export function runKnipAnalysis(options: KnipScanOptions): Promise<KnipAnalysisResult>;
+```
+
+## 10. Code layout
+
+```
+src/
+  proxy.ts                     Next 16 Proxy: service-host routing, splash, /health
+  app/
+    api/services/[id]/terminal web terminal create/input/close + SSE stream
+    api/v1/                    REST API (tokens), edge-register, wake, OpenAPI
+    service-preview/           cold-start splash
+  server/routers/              tRPC routers (deployment, domain, edge, service, …)
+  lib/
+    orchestrator/              engine.ts, runner-driver.ts, pr-manager.ts
+    edge/                      service-registry.ts, resolve.ts, domain-upstream.ts, edge-router.ts
+    tunnel/                    tunnel-config.ts, tunnel-sync.ts, cloudflare-api.ts
+    shell/                     terminal-token.ts, terminal-sessions.ts, terminal-access.ts, web-shell.ts
+    domain-service.ts          DNS verification
+    auth.ts, auth-cookies.ts   NextAuth options and cookie scoping
+    runner-client.ts           signed runner calls (managed DBs, terminals)
+runner/src/
+  index.ts                     RunnerDaemon (HTTP API, reverse proxy, ingress)
+  request-auth.ts              canonical signature + nonce cache
+  pipeline.ts, port-manager.ts build/run, port pool
+  services.ts                  managed databases, terminal sessions
+  tunnel-driver.ts, tunnel-config.ts  cloudflared supervision and config mirror
+tests/                         tsx verifications (verify-*.ts) and e2e/
+```
+
+## 11. Testing
+
+- Gates: `prisma generate`, `tsc --noEmit`, `knip`, `lint`, `next build` (CI), plus
+  `cd runner && npm run build && npm test`.
+- Focused verifications (`npm run test:*`): `fallback`, `tunnel`, `edge`, `db`, `terminal`,
+  `email` (mocked DB); `terminal-stateless` (real Postgres, a runner daemon process, a Docker
+  container, separate instance processes) and `domains` (real Postgres, real DNS lookups
+  against a local authoritative server, Cloudflare API mocked).
+- `npm test` runs the e2e tiers.
+
+## 12. Environment variables (edge, tunnel, domains, terminal)
+
+| Variable | Meaning | Default |
+| --- | --- | --- |
+| `RUNNER_URL`, `RUNNER_SECRET` | runner endpoint and shared HMAC secret | none (secret required in production) |
+| `TERMINAL_TOKEN_SECRET` | signs web-terminal session tokens | required in production; dev derives one |
+| `AUTH_COOKIE_DOMAIN` | production session-cookie domain (`none` disables) | `.syncbay.app` when `NEXTAUTH_URL` is on syncbay.app |
+| `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ZONE_ID` | custom hostnames, cache purge | unset → DNS-only verification, purge "not configured" |
+| `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_TUNNEL_ID` | remotely-managed tunnel config / token provisioning | unset → tunnel reload no-op |
+| `CLOUDFLARE_CNAME_TARGET` | CNAME target for custom domains | `cname.syncbay.app` |
+| `TUNNEL_CONFIG_FILE`, `TUNNEL_RESTART_COMMAND` | local-mode tunnel config and restart | unset / `systemctl restart cloudflared` |
+| `TUNNEL_FALLBACK_SERVICE` | ingress catch-all | `http_status:404` |
+| `TUNNEL_RELOAD_DEBOUNCE_MS` | debounce for tunnel reloads | `300` |
+| `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | L2 route store | unset → DB resolver / memory |
