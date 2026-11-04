@@ -18,10 +18,8 @@ import {
   isIpInList,
   evaluateRateLimit,
   cleanupExpiredRateLimits,
-  getDefaultWafConfig,
-  updateWafConfig,
   inspectRequest,
-  type WafConfig,
+  type WafRuleLike,
 } from "../../src/lib/devops/waf-engine";
 
 interface RegisteredStressTest {
@@ -407,22 +405,13 @@ test(
   "WAF-POLICY-01",
   "Policy Precedence",
   "Allowlist takes absolute precedence over Blocklist and Geo-block",
-  () => {
-    const serviceId = "svc_precedence_test";
-    updateWafConfig(serviceId, {
-      enabled: true,
-      ipAllowlist: ["198.51.100.50"],
-      ipBlocklist: ["198.51.100.0/24"], // Subnet contains 198.51.100.50
-      geoBlockCountries: ["RU"],
-    });
-
-    // Request from allowlisted IP with blocked geo-country
-    const result = inspectRequest(serviceId, {
-      ip: "198.51.100.50",
-      path: "/admin",
-      countryCode: "RU",
-    });
-
+  async () => {
+    const rules: WafRuleLike[] = [
+      { id: "a", type: "IP_ALLOW", value: "198.51.100.50", enabled: true },
+      { id: "b", type: "IP_BLOCK", value: "198.51.100.0/24", enabled: true },
+      { id: "g", type: "GEO_BLOCK", value: "RU", enabled: true },
+    ];
+    const result = await inspectRequest(rules, { ip: "198.51.100.50", path: "/admin", countryCode: "RU" });
     assert.strictEqual(result.allowed, true, "Allowlist must bypass blocklist and geo-block");
     assert.strictEqual(result.status, 200);
   }
@@ -432,22 +421,13 @@ test(
   "WAF-POLICY-02",
   "Policy Precedence",
   "Blocklist takes precedence over Geo-block and Rate Limiter",
-  () => {
-    const serviceId = "svc_block_precedence";
-    updateWafConfig(serviceId, {
-      enabled: true,
-      ipAllowlist: [],
-      ipBlocklist: ["203.0.113.10"],
-      geoBlockCountries: ["CN"],
-      rateLimitRpm: 10,
-    });
-
-    const result = inspectRequest(serviceId, {
-      ip: "203.0.113.10",
-      path: "/api/pay",
-      countryCode: "CN",
-    });
-
+  async () => {
+    const rules: WafRuleLike[] = [
+      { id: "b", type: "IP_BLOCK", value: "203.0.113.10", enabled: true },
+      { id: "g", type: "GEO_BLOCK", value: "CN", enabled: true },
+      { id: "r", type: "RATE_LIMIT", value: "/*", rateLimitRpm: 10, enabled: true },
+    ];
+    const result = await inspectRequest(rules, { ip: "203.0.113.10", path: "/api/pay", countryCode: "CN" });
     assert.strictEqual(result.allowed, false);
     assert.strictEqual(result.status, 403);
     assert.strictEqual(result.reason, "Access Denied by Syncbay Edge Firewall");
@@ -457,15 +437,10 @@ test(
 test(
   "WAF-POLICY-03",
   "Policy Precedence",
-  "Disabled WAF allows all traffic immediately",
-  () => {
-    const serviceId = "svc_disabled_test";
-    updateWafConfig(serviceId, {
-      enabled: false,
-      ipBlocklist: ["1.2.3.4"],
-    });
-
-    const result = inspectRequest(serviceId, { ip: "1.2.3.4", path: "/" });
+  "Disabled rules allow all traffic immediately",
+  async () => {
+    const rules: WafRuleLike[] = [{ id: "b", type: "IP_BLOCK", value: "1.2.3.4", enabled: false }];
+    const result = await inspectRequest(rules, { ip: "1.2.3.4", path: "/" });
     assert.strictEqual(result.allowed, true);
     assert.strictEqual(result.status, 200);
   }

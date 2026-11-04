@@ -13,37 +13,26 @@ import {
   assertThrows,
 } from "../harness";
 
-import {
-  isValidCronExpression,
-  calculateNextRun,
-  createCronJob,
-  toggleCronJob,
-  executeCronJob,
-  deleteCronJob,
-  listCronsForService,
-} from "../../src/lib/devops/cron-engine";
+import { isValidCronExpression, calculateNextRun, assertValidCronPath } from "../../src/lib/devops/cron-engine";
 
 import {
   isIpInList,
   evaluateRateLimit,
-  getDefaultWafConfig,
-  updateWafConfig,
   inspectRequest,
   cleanupExpiredRateLimits,
+  matchPathPattern,
+  type WafRuleLike,
 } from "../../src/lib/devops/waf-engine";
 
 import {
-  getCanaryConfig,
-  updateCanaryWeight,
   routeTraffic,
-  evaluateCanaryHealth,
-  promoteCanary,
-  rollbackCanary,
+  pickVariant,
+  evaluateCanaryCounts,
+  type CanaryConfig,
 } from "../../src/lib/devops/canary-engine";
 
 import { autoTuneFramework } from "../../src/lib/devops/auto-tuner";
 import { diagnoseBuildLogs } from "../../src/lib/devops/ai-diagnostics";
-import { parseVercelConfig, applyVercelMigration } from "../../src/lib/devops/vercel-migrator";
 import { adapter } from "../harness/adapter";
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -71,32 +60,15 @@ registerTest("DEVOPS-CRON-02", "DevOps", 6, "Calculates accurate next execution 
   assertEqual(nextRun.getUTCMinutes(), 0, "Scheduled minute must be 0");
 });
 
-registerTest("DEVOPS-CRON-03", "DevOps", 6, "Full Cron Job CRUD, Execution simulation, and status update", async () => {
-  const serviceId = "svc_test_cron_123";
-  const job = createCronJob({
-    serviceId,
-    name: "Cache Invalidation Trigger",
-    schedule: "*/10 * * * *",
-    path: "/api/cron/purge",
-    method: "POST",
-  });
-
-  assertEqual(job.serviceId, serviceId);
-  assertTrue(job.enabled, "Job must be enabled by default");
-  assertIncludes(job.path, "/api/cron/purge");
-
-  // Execution
-  const runLog = await executeCronJob(job.id);
-  assertEqual(runLog.cronId, job.id);
-  assertEqual(runLog.status, "SUCCESS");
-  assertEqual(runLog.statusCode, 200);
-
-  // Toggle & Delete
-  const toggled = toggleCronJob(job.id, false);
-  assertFalse(toggled.enabled, "Job must now be disabled");
-
-  const deleted = deleteCronJob(job.id);
-  assertTrue(deleted, "Job must be deleted successfully");
+registerTest("DEVOPS-CRON-03", "DevOps", 6, "Next-run calculation honours steps, ranges, weekdays and month rollover", () => {
+  const base = new Date("2026-09-19T10:07:30Z"); // Saturday
+  assertEqual(calculateNextRun("*/10 * * * *", base).toISOString(), "2026-09-19T10:10:00.000Z");
+  assertEqual(calculateNextRun("15 * * * *", base).toISOString(), "2026-09-19T10:15:00.000Z");
+  assertEqual(calculateNextRun("0 9 * * 1", base).toISOString(), "2026-09-21T09:00:00.000Z", "Next Monday 09:00");
+  assertEqual(calculateNextRun("0 0 1 * *", base).toISOString(), "2026-10-01T00:00:00.000Z", "First of next month");
+  assertEqual(calculateNextRun("30 8-10/2 * * *", base).toISOString(), "2026-09-19T10:30:00.000Z");
+  assertThrows(() => assertValidCronPath("//evil.example/x"), "single leading slash");
+  assertThrows(() => calculateNextRun("bad expr"), "Invalid cron expression");
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -132,27 +104,26 @@ registerTest("DEVOPS-WAF-02", "DevOps", 6, "CIDR subnet parsing and exact IP blo
   assertFalse(isIpInList("192.168.1.1", blocklist), "Unlisted private IP must be false");
 });
 
-registerTest("DEVOPS-WAF-03", "DevOps", 6, "Edge Request Inspection intercepts malicious and blacklisted requests", () => {
-  const serviceId = "svc_waf_test_99";
-  updateWafConfig(serviceId, {
-    ipBlocklist: ["198.51.100.99"],
-    geoBlockCountries: ["ZZ"],
-  });
-
-  // Allowed request
-  const allowed = inspectRequest(serviceId, { ip: "192.0.2.1", path: "/api/data" });
+registerTest("DEVOPS-WAF-03", "DevOps", 6, "Rule inspection blocks blocklisted IPs, geo, paths and honours allowlist precedence", async () => {
+  const rules: WafRuleLike[] = [
+    { id: "r1", type: "IP_BLOCK", value: "198.51.100.0/24", enabled: true },
+    { id: "r2", type: "IP_ALLOW", value: "198.51.100.7", enabled: true },
+    { id: "r3", type: "GEO_BLOCK", value: "ZZ", enabled: true },
+    { id: "r4", type: "PATH_BLOCK", value: "/wp-admin/*", enabled: true },
+    { id: "r5", type: "IP_BLOCK", value: "192.0.2.9", enabled: false },
+  ];
+  const allowed = await inspectRequest(rules, { ip: "192.0.2.1", path: "/api/data" });
   assertTrue(allowed.allowed, "Clean IP must be allowed");
-  assertEqual(allowed.status, 200);
 
-  // Blacklisted IP
-  const blockedIp = inspectRequest(serviceId, { ip: "198.51.100.99", path: "/api/data" });
-  assertFalse(blockedIp.allowed, "Blacklisted IP must be blocked");
+  const blockedIp = await inspectRequest(rules, { ip: "198.51.100.99", path: "/api/data" });
   assertEqual(blockedIp.status, 403);
+  assertEqual(blockedIp.ruleId, "r1");
 
-  // Geo-blocked country
-  const blockedGeo = inspectRequest(serviceId, { ip: "192.0.2.200", path: "/api/data", countryCode: "ZZ" });
-  assertFalse(blockedGeo.allowed, "Geo-blocked country must be blocked");
-  assertEqual(blockedGeo.status, 403);
+  assertTrue((await inspectRequest(rules, { ip: "198.51.100.7", path: "/wp-admin/x", countryCode: "ZZ" })).allowed, "Allowlist wins");
+  assertEqual((await inspectRequest(rules, { ip: "192.0.2.200", path: "/", countryCode: "zz" })).ruleType, "GEO_BLOCK");
+  assertEqual((await inspectRequest(rules, { ip: "192.0.2.200", path: "/WP-ADMIN/setup.php" })).ruleType, "PATH_BLOCK");
+  assertTrue((await inspectRequest(rules, { ip: "192.0.2.9", path: "/" })).allowed, "Disabled rules are ignored");
+  assertTrue(matchPathPattern("/a//b%2Fc", "/a/b/c"), "Paths are normalised before matching");
 });
 
 registerTest("DEVOPS-WAF-04", "DevOps", 6, "Arbitrary IPv4 CIDR matching (/28, /12, /32) and boundary checks", () => {
@@ -206,42 +177,43 @@ registerTest("DEVOPS-WAF-06", "DevOps", 6, "Sliding-window memory cleanup prunes
 // 3. CANARY & ROLLING RELEASE ENGINE TESTS
 // ══════════════════════════════════════════════════════════════════════════════
 
-registerTest("DEVOPS-CANARY-01", "DevOps", 6, "Canary traffic weighting routes requests proportionally", () => {
-  const serviceId = "svc_canary_test";
-  const config = getCanaryConfig(serviceId);
-  updateCanaryWeight(serviceId, 25); // 25% canary, 75% stable
-
-  // Seed = 10 (< 25) -> Canary
-  const route1 = routeTraffic(config, 10);
-  assertEqual(route1, config.canaryDeploymentId);
-
-  // Seed = 50 (>= 25) -> Stable
-  const route2 = routeTraffic(config, 50);
-  assertEqual(route2, config.stableDeploymentId);
+const canaryFixture = (overrides: Partial<CanaryConfig> = {}): CanaryConfig => ({
+  id: "cfg1",
+  serviceId: "svc_canary",
+  stableDeploymentId: "dep_stable",
+  canaryDeploymentId: "dep_canary",
+  stableUpstreamUrl: "http://127.0.0.1:10001",
+  canaryUpstreamUrl: "http://127.0.0.1:10002",
+  canaryWeightPercent: 25,
+  autoRollbackThreshold5xxPercent: 2,
+  status: "ACTIVE",
+  startedAt: new Date().toISOString(),
+  totalRequestsRouted: 0,
+  canaryRequestsRouted: 0,
+  ...overrides,
 });
 
-registerTest("DEVOPS-CANARY-02", "DevOps", 6, "Automated circuit breaker instantly trips rollback on 5xx error threshold", () => {
-  const serviceId = "svc_canary_tripwire";
-  const config = getCanaryConfig(serviceId);
-  config.canaryRequestsRouted = 0;
-  config.canary5xxErrors = 0;
-  config.canaryWeightPercent = 20;
-  config.autoRollbackThreshold5xxPercent = 2.0; // 2% max error rate
+registerTest("DEVOPS-CANARY-01", "DevOps", 6, "Canary traffic weighting routes requests proportionally and honours stickiness", () => {
+  const config = canaryFixture();
+  assertEqual(routeTraffic(config, 10), config.canaryDeploymentId);
+  assertEqual(routeTraffic(config, 50), config.stableDeploymentId);
+  assertEqual(pickVariant(config, 99, "canary"), "canary", "Sticky cookie wins while the split is active");
+  assertEqual(pickVariant({ ...config, status: "ROLLED_BACK" }, 1, "canary"), "stable", "Rollback ignores stickiness");
+});
 
-  // Simulate 10 errors out of 100 requests (10% error rate > 2.0% threshold)
-  const evalResult = evaluateCanaryHealth(config, 10, 100);
+registerTest("DEVOPS-CANARY-02", "DevOps", 6, "Circuit breaker decides ROLLBACK above the 5xx threshold", () => {
+  const config = canaryFixture();
+  const evalResult = evaluateCanaryCounts(config, 10, 100);
   assertEqual(evalResult.action, "ROLLBACK", "Action should be ROLLBACK");
-  assertEqual(config.status, "ROLLED_BACK", "Status should be ROLLED_BACK");
-  assertEqual(config.canaryWeightPercent, 0, "Canary weight must be reset to 0%");
   assertTrue(evalResult.reason.includes("Automated Rollback Triggered"), "Reason should mention rollback");
+  assertEqual(evaluateCanaryCounts(config, 1, 100).action, "MAINTAIN");
+  assertEqual(evaluateCanaryCounts(config, 0, 3).action, "INSUFFICIENT_DATA");
 });
 
-registerTest("DEVOPS-CANARY-03", "DevOps", 6, "Canary Promotion promotes deployment to 100% stable production", () => {
-  const serviceId = "svc_canary_promote";
-  const promoted = promoteCanary(serviceId);
-  assertEqual(promoted.status, "PROMOTED");
-  assertEqual(promoted.canaryWeightPercent, 100);
-  assertEqual(promoted.stableDeploymentId, promoted.canaryDeploymentId);
+registerTest("DEVOPS-CANARY-03", "DevOps", 6, "Promoted canary receives all traffic", () => {
+  const config = canaryFixture({ status: "PROMOTED", canaryWeightPercent: 100 });
+  assertEqual(routeTraffic(config, 99), config.canaryDeploymentId);
+  assertEqual(evaluateCanaryCounts(config, 50, 100).action, "PROMOTE");
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
