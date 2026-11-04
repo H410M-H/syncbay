@@ -229,9 +229,8 @@ function NewBucketWizardContent() {
             <h4 style={{ fontSize: "0.9375rem" }}>Object Storage Integration</h4>
           </div>
           <p style={{ fontSize: "0.8125rem", color: "var(--text-secondary)" }}>
-            Once provisioned, your bucket will be assigned an S3 endpoint and access credentials. You can generate
-            time-limited presigned URLs directly from the Project Console or upload assets securely from your backend
-            services.
+            The bucket is created in Cloudflare R2 and is private. Share or upload objects with time-limited
+            presigned URLs from the Buckets page or the Project Console.
           </p>
         </div>
 

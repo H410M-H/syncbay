@@ -5,13 +5,8 @@ import { trpc } from "@/lib/trpc-client";
 import Link from "next/link";
 import { useDashboard } from "../dashboard-shell";
 import { BackButton } from "@/components/ui/back-button";
-import {
-  detectCardBrand,
-  formatCardNumber,
-  formatExpiry,
-  getBrandMetadata,
-  type CardBrand,
-} from "@/lib/billing/payment-engine";
+import { formatExpiry, getBrandMetadata } from "@/lib/billing/card-display";
+import { StripeCardSetup, confirmTopUpPayment } from "@/components/billing/stripe-card-setup";
 
 export default function UsagePage() {
   const dashboard = useDashboard();
@@ -63,12 +58,20 @@ export default function UsagePage() {
     { enabled: !!workspaceId }
   );
 
-  // Billing Mutations
-  const addCardMutation = trpc.billing.addCard.useMutation();
+  // Stripe configuration (publishable key for Elements; "unconfigured" disables card payments)
+  const { data: stripeConfig } = trpc.billing.getConfig.useQuery(
+    { workspaceId: workspaceId! },
+    { enabled: !!workspaceId }
+  );
+  const stripeReady = !!stripeConfig?.configured && !!stripeConfig?.publishableKey;
+
+  // Billing Mutations (no procedure ever receives card data)
   const setDefaultMutation = trpc.billing.setDefaultCard.useMutation();
   const removeCardMutation = trpc.billing.removeCard.useMutation();
-  const addCreditsMutation = trpc.billing.addCredits.useMutation();
+  const createTopUpMutation = trpc.billing.createTopUp.useMutation();
+  const syncTopUpMutation = trpc.billing.syncTopUp.useMutation();
   const payInvoiceMutation = trpc.billing.payInvoice.useMutation();
+  const [topUpPending, setTopUpPending] = useState(false);
 
   // Role check
   const currentMember = activeWorkspace?.members?.find((m: any) => m.userId === dashboard?.user?.id);
@@ -83,15 +86,8 @@ export default function UsagePage() {
   const [selectedPaymentMethodId, setSelectedPaymentMethodId] = useState<string>("");
   const [billingNotice, setBillingNotice] = useState<{ type: "success" | "error"; message: string } | null>(null);
 
-  // Add Card form state
-  const [cardholderName, setCardholderName] = useState("");
-  const [cardNumberRaw, setCardNumberRaw] = useState("");
-  const [expMonth, setExpMonth] = useState<number>(new Date().getMonth() + 1);
-  const [expYear, setExpYear] = useState<number>(new Date().getFullYear());
-  const [cvc, setCvc] = useState("");
-  const [billingZip, setBillingZip] = useState("");
+  // Add Card (Stripe Elements) state
   const [setAsDefault, setSetAsDefault] = useState(true);
-  const [formError, setFormError] = useState("");
 
   // Invoice payment loading state
   const [payingInvoiceId, setPayingInvoiceId] = useState<string | null>(null);
@@ -119,48 +115,16 @@ export default function UsagePage() {
 
   const creditBalanceDollars = ((billingSummary?.creditBalanceCents ?? 0) / 100).toFixed(2);
 
-  // Card validation on client for live preview
-  const detectedBrand = detectCardBrand(cardNumberRaw);
-  const brandMeta = getBrandMetadata(detectedBrand);
-  const displayFormattedCardNumber = formatCardNumber(cardNumberRaw) || "•••• •••• •••• ••••";
-
   // Handlers
-  const handleAddCard = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!workspaceId) return;
-    setFormError("");
-
-    try {
-      await addCardMutation.mutateAsync({
-        workspaceId,
-        cardNumber: cardNumberRaw,
-        expMonth,
-        expYear,
-        cvc,
-        cardholderName,
-        billingZip: billingZip || undefined,
-        setAsDefault,
-      });
-
-      setBillingNotice({
-        type: "success",
-        message: `Card ending in ${cardNumberRaw.slice(-4)} added successfully!`,
-      });
-      setTimeout(() => setBillingNotice(null), 5000);
-
-      // Reset form
-      setShowAddCardModal(false);
-      setCardholderName("");
-      setCardNumberRaw("");
-      setCvc("");
-      setBillingZip("");
-
-      // Refetch
-      await refetchPaymentMethods();
-      await refetchBillingSummary();
-    } catch (err: any) {
-      setFormError(err.message || "Failed to add card. Please check your details.");
-    }
+  const handleCardSaved = async (card: { brand: string; last4: string }) => {
+    setShowAddCardModal(false);
+    setBillingNotice({
+      type: "success",
+      message: `${getBrandMetadata(card.brand).name} ending in ${card.last4} saved with Stripe.`,
+    });
+    setTimeout(() => setBillingNotice(null), 5000);
+    await refetchPaymentMethods();
+    await refetchBillingSummary();
   };
 
   const handleSetDefaultCard = async (methodId: string) => {
@@ -192,32 +156,42 @@ export default function UsagePage() {
   };
 
   const handleExecuteTopUp = async () => {
-    if (!workspaceId) return;
+    if (!workspaceId || !stripeConfig?.publishableKey) return;
     const amount = customTopUpInput ? Math.round(parseFloat(customTopUpInput) * 100) : topUpAmountDollars * 100;
     if (isNaN(amount) || amount < 500) {
       setBillingNotice({ type: "error", message: "Minimum top-up is $5.00." });
       return;
     }
 
+    setTopUpPending(true);
     try {
-      const res = await addCreditsMutation.mutateAsync({
+      // 1. Server creates a PaymentIntent for the saved card (no card data involved).
+      const topUp = await createTopUpMutation.mutateAsync({
         workspaceId,
         amountCents: amount,
         paymentMethodId: selectedPaymentMethodId || undefined,
       });
+      // 2. Browser confirms it with Stripe.js (handles 3-D Secure).
+      if (topUp.status !== "succeeded" && topUp.clientSecret) {
+        await confirmTopUpPayment(stripeConfig.publishableKey, topUp.clientSecret, topUp.stripePaymentMethodId);
+      }
+      // 3. Server re-reads the PaymentIntent from Stripe; credits are granted only on success.
+      const result = await syncTopUpMutation.mutateAsync({ workspaceId, invoiceId: topUp.invoiceId });
 
       setShowTopUpModal(false);
       setCustomTopUpInput("");
-      setBillingNotice({
-        type: "success",
-        message: `Successfully purchased $${(amount / 100).toFixed(2)} in compute credits! Receipt: ${res.charge.receiptNumber}`,
-      });
+      setBillingNotice(
+        result.invoiceStatus === "PAID"
+          ? { type: "success", message: `Added $${(amount / 100).toFixed(2)} in compute credits.` }
+          : { type: "success", message: `Payment is ${result.paymentIntentStatus}. Credits are added as soon as Stripe confirms it.` }
+      );
       setTimeout(() => setBillingNotice(null), 6000);
-
-      await refetchBillingSummary();
-      await refetchInvoices();
     } catch (err: any) {
       setBillingNotice({ type: "error", message: err.message || "Top-up failed. Please check your card." });
+    } finally {
+      setTopUpPending(false);
+      await refetchBillingSummary();
+      await refetchInvoices();
     }
   };
 
@@ -231,10 +205,14 @@ export default function UsagePage() {
         invoiceId,
       });
 
-      setBillingNotice({
-        type: "success",
-        message: `Invoice #${invoiceId.slice(0, 8)} paid successfully! Receipt: ${res.receiptNumber}`,
-      });
+      if (res.stripeStatus === "paid") {
+        setBillingNotice({ type: "success", message: `Invoice #${invoiceId.slice(0, 8)} paid.` });
+      } else if (res.hostedInvoiceUrl) {
+        setBillingNotice({ type: "error", message: `Stripe needs more information to pay this invoice (status: ${res.stripeStatus}). Opening the Stripe invoice page.` });
+        window.open(res.hostedInvoiceUrl, "_blank", "noopener,noreferrer");
+      } else {
+        setBillingNotice({ type: "error", message: `Invoice payment status: ${res.stripeStatus}.` });
+      }
       setTimeout(() => setBillingNotice(null), 6000);
 
       await refetchInvoices();
@@ -286,6 +264,28 @@ export default function UsagePage() {
           </div>
         )}
       </div>
+
+      {/* ── Stripe configuration state ── */}
+      {stripeConfig && !stripeReady && (
+        <div
+          className="card"
+          role="status"
+          style={{ marginBottom: "20px", border: "1px dashed var(--border-emphasis)", fontSize: "0.875rem" }}
+        >
+          <strong>Stripe not configured — card payments are disabled.</strong>{" "}
+          <span style={{ color: "var(--text-secondary)" }}>
+            {stripeConfig.mode === "unconfigured"
+              ? "Set STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET and NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY to enable saved cards, top-ups and invoice payments."
+              : "Set NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY so cards can be entered through Stripe Elements."}{" "}
+            Syncbay never accepts card numbers directly.
+          </span>
+        </div>
+      )}
+      {stripeConfig?.mode === "test" && stripeReady && (
+        <div style={{ marginBottom: "12px", fontSize: "0.75rem", color: "var(--status-building)" }}>
+          Stripe test mode — use Stripe test cards; no real charges are made.
+        </div>
+      )}
 
       {/* ── Global Billing Notification Banner ── */}
       {billingNotice && (
@@ -504,7 +504,7 @@ export default function UsagePage() {
                       setCustomTopUpInput("");
                       setShowTopUpModal(true);
                     }}
-                    disabled={!canManageBilling}
+                    disabled={!canManageBilling || !stripeReady}
                     className="btn btn-secondary btn-sm"
                     style={{ flex: 1, minWidth: "60px", justifyContent: "center", fontWeight: 700 }}
                   >
@@ -520,7 +520,7 @@ export default function UsagePage() {
               onClick={() => {
                 setShowTopUpModal(true);
               }}
-              disabled={!canManageBilling}
+              disabled={!canManageBilling || !stripeReady}
               className="btn btn-primary btn-sm"
               style={{ width: "100%", justifyContent: "center" }}
             >
@@ -547,7 +547,7 @@ export default function UsagePage() {
                 </p>
               </div>
 
-              {canManageBilling && (
+              {canManageBilling && stripeReady && (
                 <button
                   onClick={() => setShowAddCardModal(true)}
                   className="btn btn-secondary btn-sm"
@@ -571,7 +571,7 @@ export default function UsagePage() {
                 <div style={{ fontSize: "0.8125rem", color: "var(--text-secondary)", marginTop: "4px" }}>
                   Add a Visa, Mastercard, American Express, or Discover card to enable instant top-up.
                 </div>
-                {canManageBilling && (
+                {canManageBilling && stripeReady && (
                   <button
                     onClick={() => setShowAddCardModal(true)}
                     className="btn btn-primary btn-sm"
@@ -584,7 +584,7 @@ export default function UsagePage() {
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
                 {paymentMethods.map((pm: any) => {
-                  const bMeta = getBrandMetadata(pm.brand as CardBrand);
+                  const bMeta = getBrandMetadata(pm.brand);
                   return (
                     <div
                       key={pm.id}
@@ -619,7 +619,8 @@ export default function UsagePage() {
                             •••• {pm.last4}
                           </div>
                           <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
-                            Exp: {formatExpiry(pm.expMonth, pm.expYear)} · {pm.cardholderName}
+                            Exp: {formatExpiry(pm.expMonth, pm.expYear)}
+                            {pm.cardholderName ? ` · ${pm.cardholderName}` : ""}
                           </div>
                         </div>
                       </div>
@@ -663,7 +664,7 @@ export default function UsagePage() {
 
           <div style={{ marginTop: "16px", fontSize: "0.75rem", color: "var(--text-muted)", display: "flex", alignItems: "center", gap: "6px" }}>
             <span>🔒</span>
-            <span>PCI-DSS compliant tokenization. Raw numbers are never stored in database.</span>
+            <span>Cards are entered in Stripe-hosted fields and stored by Stripe. Syncbay never sees card numbers.</span>
           </div>
         </div>
       </div>
@@ -1012,7 +1013,7 @@ export default function UsagePage() {
                         )}
                       </td>
                       <td style={{ textAlign: "right" }}>
-                        {!isPaid && canManageBilling ? (
+                        {!isPaid && !isVoid && canManageBilling && inv.kind !== "TOP_UP" && inv.stripeInvoiceId && stripeReady ? (
                           <button
                             type="button"
                             onClick={() => handlePayInvoice(inv.id)}
@@ -1021,16 +1022,20 @@ export default function UsagePage() {
                           >
                             {payingInvoiceId === inv.id ? "Processing..." : "💳 Pay Now"}
                           </button>
-                        ) : (
+                        ) : inv.pdfUrl ? (
                           <a
-                            href={inv.pdfUrl || "#"}
+                            href={inv.pdfUrl}
                             target="_blank"
                             rel="noreferrer"
                             className="btn btn-ghost btn-sm"
                             style={{ fontSize: "0.75rem" }}
                           >
-                            📄 View Receipt
+                            📄 {inv.kind === "TOP_UP" ? "Stripe Receipt" : "Stripe Invoice"}
                           </a>
+                        ) : (
+                          <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
+                            {inv.failureMessage || (inv.stripeInvoiceId || inv.stripePaymentIntentId ? "—" : "Not issued in Stripe")}
+                          </span>
                         )}
                       </td>
                     </tr>
@@ -1073,214 +1078,29 @@ export default function UsagePage() {
               </button>
             </div>
 
-            {/* Live Credit Card Visual Simulation */}
-            <div
-              style={{
-                width: "100%",
-                height: "170px",
-                borderRadius: "16px",
-                background:
-                  detectedBrand === "visa"
-                    ? "linear-gradient(135deg, #1e3a8a, #3b82f6)"
-                    : detectedBrand === "mastercard"
-                    ? "linear-gradient(135deg, #7c2d12, #ea580c)"
-                    : detectedBrand === "amex"
-                    ? "linear-gradient(135deg, #0369a1, #06b6d4)"
-                    : detectedBrand === "discover"
-                    ? "linear-gradient(135deg, #b45309, #f59e0b)"
-                    : "linear-gradient(135deg, #1e293b, #0f172a)",
-                boxShadow: "0 10px 25px -5px rgba(0,0,0,0.5)",
-                border: "1px solid rgba(255,255,255,0.15)",
-                padding: "18px 22px",
-                display: "flex",
-                flexDirection: "column",
-                justifyContent: "space-between",
-                marginBottom: "20px",
-                color: "#fff",
-                position: "relative",
-                overflow: "hidden",
-              }}
-            >
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                  <span style={{ fontSize: "24px" }}>💳</span>
-                  <span style={{ fontSize: "0.75rem", letterSpacing: "0.1em", opacity: 0.8, textTransform: "uppercase" }}>
-                    Syncbay Cloud Pass
-                  </span>
-                </div>
-                <div style={{ fontWeight: 800, fontSize: "1rem", letterSpacing: "0.08em" }}>
-                  {brandMeta.name.toUpperCase()}
-                </div>
-              </div>
+            <p style={{ fontSize: "0.8125rem", color: "var(--text-secondary)", marginBottom: "16px" }}>
+              Card details are entered into Stripe&apos;s secure fields and sent directly to Stripe. Syncbay only stores
+              the card brand, last four digits and expiry that Stripe returns.
+            </p>
 
-              <div style={{ fontFamily: "monospace", fontSize: "1.25rem", letterSpacing: "0.15em", textAlign: "center" }}>
-                {displayFormattedCardNumber}
-              </div>
+            <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "0.8125rem", cursor: "pointer", marginBottom: "14px" }}>
+              <input type="checkbox" checked={setAsDefault} onChange={(e) => setSetAsDefault(e.target.checked)} />
+              <span>Set as default payment method for this workspace</span>
+            </label>
 
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end" }}>
-                <div>
-                  <div style={{ fontSize: "0.65rem", opacity: 0.7, textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                    Cardholder
-                  </div>
-                  <div style={{ fontSize: "0.875rem", fontWeight: 600, textTransform: "uppercase", maxWidth: "220px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {cardholderName.trim() || "YOUR NAME"}
-                  </div>
-                </div>
-
-                <div>
-                  <div style={{ fontSize: "0.65rem", opacity: 0.7, textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                    Expires
-                  </div>
-                  <div style={{ fontSize: "0.875rem", fontWeight: 600, fontFamily: "monospace" }}>
-                    {formatExpiry(expMonth, expYear)}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {formError && (
-              <div
-                style={{
-                  padding: "10px 14px",
-                  borderRadius: "var(--radius-sm)",
-                  background: "rgba(239, 68, 68, 0.15)",
-                  border: "1px solid rgba(239, 68, 68, 0.35)",
-                  color: "#fca5a5",
-                  fontSize: "0.8125rem",
-                  marginBottom: "16px",
-                }}
-              >
-                {formError}
+            {workspaceId && stripeConfig?.publishableKey ? (
+              <StripeCardSetup
+                workspaceId={workspaceId}
+                publishableKey={stripeConfig.publishableKey}
+                setAsDefault={setAsDefault}
+                onSaved={handleCardSaved}
+                onCancel={() => setShowAddCardModal(false)}
+              />
+            ) : (
+              <div role="alert" style={{ fontSize: "0.875rem", color: "var(--status-crashed)" }}>
+                Stripe not configured — cards cannot be added.
               </div>
             )}
-
-            <form onSubmit={handleAddCard} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-              <div className="field">
-                <label>Cardholder Name</label>
-                <input
-                  type="text"
-                  className="input"
-                  placeholder="e.g. Satoshi Nakamoto"
-                  value={cardholderName}
-                  onChange={(e) => setCardholderName(e.target.value)}
-                  required
-                />
-              </div>
-
-              <div className="field">
-                <label>Card Number</label>
-                <input
-                  type="text"
-                  className="input"
-                  placeholder="4111 2222 3333 4444"
-                  maxLength={19}
-                  value={cardNumberRaw}
-                  onChange={(e) => setCardNumberRaw(e.target.value.replace(/\D/g, ""))}
-                  required
-                  style={{ fontFamily: "monospace", fontSize: "0.9375rem" }}
-                />
-                <span className="field-hint">
-                  Supports Visa, Mastercard, American Express, and Discover.
-                </span>
-              </div>
-
-              <div className="grid-3" style={{ gap: "10px" }}>
-                <div className="field">
-                  <label>Exp Month</label>
-                  <select
-                    className="input"
-                    value={expMonth}
-                    onChange={(e) => setExpMonth(parseInt(e.target.value, 10))}
-                  >
-                    {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
-                      <option key={m} value={m}>
-                        {String(m).padStart(2, "0")}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="field">
-                  <label>Exp Year</label>
-                  <select
-                    className="input"
-                    value={expYear}
-                    onChange={(e) => setExpYear(parseInt(e.target.value, 10))}
-                  >
-                    {Array.from({ length: 15 }, (_, i) => new Date().getFullYear() + i).map((y) => (
-                      <option key={y} value={y}>
-                        {y}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="field">
-                  <label>CVC / CVV</label>
-                  <input
-                    type="password"
-                    className="input"
-                    placeholder="123"
-                    maxLength={4}
-                    value={cvc}
-                    onChange={(e) => setCvc(e.target.value.replace(/\D/g, ""))}
-                    required
-                    style={{ fontFamily: "monospace" }}
-                  />
-                </div>
-              </div>
-
-              <div className="grid-2" style={{ gap: "10px" }}>
-                <div className="field">
-                  <label>Postal / ZIP Code</label>
-                  <input
-                    type="text"
-                    className="input"
-                    placeholder="e.g. 94104"
-                    value={billingZip}
-                    onChange={(e) => setBillingZip(e.target.value)}
-                  />
-                </div>
-
-                <div className="field">
-                  <label>Country</label>
-                  <select className="input" defaultValue="US">
-                    <option value="US">United States (USD)</option>
-                    <option value="CA">Canada (CAD)</option>
-                    <option value="GB">United Kingdom (GBP)</option>
-                    <option value="EU">European Union (EUR)</option>
-                    <option value="OTHER">International</option>
-                  </select>
-                </div>
-              </div>
-
-              <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "0.8125rem", cursor: "pointer", marginTop: "4px" }}>
-                <input
-                  type="checkbox"
-                  checked={setAsDefault}
-                  onChange={(e) => setSetAsDefault(e.target.checked)}
-                />
-                <span>Set as default payment method for this workspace</span>
-              </label>
-
-              <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", marginTop: "12px" }}>
-                <button
-                  type="button"
-                  onClick={() => setShowAddCardModal(false)}
-                  className="btn btn-secondary"
-                  disabled={addCardMutation.isPending}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="btn btn-primary"
-                  disabled={addCardMutation.isPending || !cardNumberRaw || !cardholderName || !cvc}
-                >
-                  {addCardMutation.isPending ? "Validating & Tokenizing..." : "Save Card"}
-                </button>
-              </div>
-            </form>
           </div>
         </div>
       )}
@@ -1387,7 +1207,7 @@ export default function UsagePage() {
                 >
                   {paymentMethods.map((pm: any) => (
                     <option key={pm.id} value={pm.id}>
-                      {pm.brand.toUpperCase()} •••• {pm.last4} ({pm.cardholderName}) {pm.isDefault ? "[DEFAULT]" : ""}
+                      {pm.brand.toUpperCase()} •••• {pm.last4} {pm.isDefault ? "[DEFAULT]" : ""}
                     </option>
                   ))}
                 </select>
@@ -1399,18 +1219,18 @@ export default function UsagePage() {
                 type="button"
                 onClick={() => setShowTopUpModal(false)}
                 className="btn btn-secondary"
-                disabled={addCreditsMutation.isPending}
+                disabled={topUpPending}
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={handleExecuteTopUp}
-                disabled={addCreditsMutation.isPending || !paymentMethods || paymentMethods.length === 0}
+                disabled={topUpPending || !stripeReady || !paymentMethods || paymentMethods.length === 0}
                 className="btn btn-primary"
               >
-                {addCreditsMutation.isPending
-                  ? "Charging Card..."
+                {topUpPending
+                  ? "Confirming with Stripe..."
                   : `Pay $${customTopUpInput || topUpAmountDollars} & Add Credits`}
               </button>
             </div>

@@ -717,7 +717,7 @@ registerTest("F17-T2-02", "F17", 2, "Presigned URL with expiration beyond 604800
     operation: "get",
     expiresInSeconds: 999999, // > 7 days
   });
-  assertTrue(url.includes("X-Amz-Expires="));
+  assertEqual(new URL(url).searchParams.get("X-Amz-Expires"), "604800");
 });
 
 registerTest("F17-T2-03", "F17", 2, "Presigned URL with key containing spaces and special characters", async () => {
@@ -734,12 +734,17 @@ registerTest("F17-T2-04", "F17", 2, "Presigned URL with zero or negative expirat
     operation: "get",
     expiresInSeconds: 0,
   });
-  assertTrue(Boolean(url));
+  assertEqual(new URL(url).searchParams.get("X-Amz-Expires"), "1", "Expiry is clamped to at least 1 second");
 });
 
-registerTest("F17-T2-05", "F17", 2, "Empty key upload URL generation handling", async () => {
-  const url = await adapter.generatePresignedUrl("bkt", "", "put");
-  assertTrue(Boolean(url));
+registerTest("F17-T2-05", "F17", 2, "Empty key upload URL generation is rejected", async () => {
+  let rejected = false;
+  try {
+    await adapter.generatePresignedUrl("bkt", "", "put");
+  } catch {
+    rejected = true;
+  }
+  assertTrue(rejected, "A presigned PUT for an empty key would target the bucket root and must be refused");
 });
 
 // =========================================================================

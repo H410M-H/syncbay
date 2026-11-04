@@ -159,7 +159,7 @@ model Workspace {
   slug             String   @unique
   isPersonal       Boolean  @default(false)
   spendingCapCents   Int?
-  stripeCustomerId   String?
+  stripeCustomerId   String?  @unique // Team D: lets Stripe webhooks map customer → workspace
   creditBalanceCents Int      @default(0)
   // Team B — spending-cap notification state (once per calendar month)
   usageWarnedAt      DateTime?
@@ -486,8 +486,18 @@ model Invoice {
   paidAt          DateTime?
   createdAt       DateTime      @default(now())
 
+  // Team D: Stripe-backed invoicing (top-ups via PaymentIntents, monthly usage via Stripe Invoices)
+  kind                  InvoiceKind @default(USAGE)
+  stripePaymentIntentId String?     @unique
+  periodKey             String? // e.g. "usage:2026-10"; unique per workspace so monthly builds are idempotent
+  description           String?
+  lineItems             Json?
+  creditAppliedCents    Int         @default(0)
+  failureMessage        String?
+
   workspace Workspace @relation(fields: [workspaceId], references: [id])
 
+  @@unique([workspaceId, periodKey]) // Team D
   @@map("invoices")
 }
 
@@ -500,7 +510,7 @@ model PaymentMethod {
   expYear               Int       // e.g. 2028
   cardholderName        String?
   isDefault             Boolean   @default(false)
-  stripePaymentMethodId String?
+  stripePaymentMethodId String?   @unique // Team D: always a real Stripe pm_… id
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
 
@@ -632,4 +642,23 @@ model DeploymentJob {
   @@index([status, mode, createdAt])
   @@index([status, leaseExpiresAt])
   @@map("deployment_jobs")
+}
+
+// ── Team D ── Stripe billing & R2 storage ───────────────────────────────────────
+
+enum InvoiceKind {
+  USAGE
+  TOP_UP
+}
+
+/// Processed Stripe webhook events, keyed by Stripe event id (evt_…) for idempotency.
+model StripeEvent {
+  id          String    @id
+  type        String
+  status      String    @default("PROCESSING") // PROCESSING | PROCESSED
+  receivedAt  DateTime  @default(now())
+  processedAt DateTime?
+
+  @@index([type])
+  @@map("stripe_events")
 }
