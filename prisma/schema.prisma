@@ -317,6 +317,10 @@ model Deployment {
   createdAt        DateTime         @default(now())
   // Team B — persisted failure reason (written by the engine)
   errorMessage     String?
+  // Team A: where the running instance lives, so lifecycle ops (stop/restart/rollback) reach it
+  assignedPort     Int?
+  runnerDriver     String? // webhook | ssh | queue | local
+  job              DeploymentJob?
 
   service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
   build   Build   @relation(fields: [buildId], references: [id])
@@ -581,4 +585,49 @@ model MetricSample {
   @@index([deploymentId, sampledAt])
   @@index([sampledAt])
   @@map("metric_samples")
+// ── Team A ── durable deployment queue, leases and runner pull consumer
+
+enum DeploymentJobStatus {
+  PENDING // created by scheduleDeployment, orchestrator not started yet
+  QUEUED // pull mode: waiting for a runner to claim it
+  RUNNING // dispatched to a runner (push) or claimed by one (pull)
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+model DeploymentJob {
+  id                     String              @id @default(cuid())
+  kind                   String              @default("deploy") // deploy | stop | restart
+  mode                   String              @default("push") // push: control plane dispatches · pull: runner claims
+  deploymentId           String?             @unique
+  buildId                String?
+  serviceId              String?
+  status                 DeploymentJobStatus @default(PENDING)
+  driverType             String?
+  runnerJobId            String?
+  options                Json? // TriggerOptions (no secrets)
+  payload                Json? // pull-mode dispatch params (env included); cleared once terminal
+  targetContainerId      String?
+  targetRunnerId         String?
+  runnerId               String?
+  leaseOwner             String?
+  leaseExpiresAt         DateTime?
+  heartbeatAt            DateTime?
+  orchestratorLeaseUntil DateTime?
+  attempts               Int                 @default(0)
+  maxAttempts            Int                 @default(3)
+  result                 Json?
+  exitCode               Int?
+  errorMessage           String?
+  startedAt              DateTime?
+  completedAt            DateTime?
+  createdAt              DateTime            @default(now())
+  updatedAt              DateTime            @updatedAt
+
+  deployment Deployment? @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+
+  @@index([status, mode, createdAt])
+  @@index([status, leaseExpiresAt])
+  @@map("deployment_jobs")
 }

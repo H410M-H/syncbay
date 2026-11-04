@@ -18,6 +18,7 @@ import { PortManager, defaultPortManager } from "./port-manager.ts";
 import { createTunnelDriver, type TunnelDriver, type TunnelDriverConfig } from "./tunnel-driver.ts";
 import { isValidIngressHostname } from "./tunnel-config.ts";
 import { NonceCache, verifyAndConsume, verifyCanonicalSignature } from "./request-auth.ts";
+import { JobPullConsumer } from "./job-consumer.ts";
 
 /** Max clock skew / replay window for signed requests. */
 /** Dev-only fallback secret; the daemon refuses to start without RUNNER_SECRET in production. */
@@ -60,6 +61,8 @@ export interface JobState {
   exitCode?: number;
   /** Public hostnames routed to this job's port through the tunnel ingress. */
   hostnames?: string[];
+  /** True when the pipeline ran with a mock executor (no real process). */
+  simulated?: boolean;
   sseClients: Set<http.ServerResponse>;
 }
 
@@ -77,6 +80,7 @@ export class RunnerDaemon {
   private server: http.Server | null = null;
   private jobs: Map<string, JobState> = new Map();
   private pollTimer: NodeJS.Timeout | null = null;
+  private pullConsumer: JobPullConsumer | null = null;
   private isShuttingDown: boolean = false;
   /** Nonces of accepted signed requests (all methods); see runner/src/request-auth.ts. */
   private readonly nonces = new NonceCache();
@@ -87,7 +91,8 @@ export class RunnerDaemon {
     this.port = config.port ?? parseInt(process.env.RUNNER_PORT || "8080", 10);
     this.host = config.host || process.env.RUNNER_HOST || "0.0.0.0";
     this.webhookSecret = resolveDaemonSecret(config.webhookSecret);
-    this.queueMode = config.queueMode ?? (process.env.RUNNER_QUEUE_MODE === "true");
+    const queueEnv = (process.env.RUNNER_QUEUE_MODE || "").toLowerCase();
+    this.queueMode = config.queueMode ?? (queueEnv === "pull" || queueEnv === "true");
     this.pollIntervalMs = config.pollIntervalMs ?? 5000;
     this.portManager = config.portManager || defaultPortManager;
     this.pipeline = config.pipeline || new BuildPipeline({ portManager: this.portManager });
@@ -192,6 +197,7 @@ export class RunnerDaemon {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
     }
+    await this.pullConsumer?.stop();
 
     this.services.shutdown();
 
@@ -339,6 +345,20 @@ export class RunnerDaemon {
       return;
     }
 
+    // POST /api/containers/:containerId/restart: stop + start the same image/process
+    const restartMatch = pathname.match(/^\/api\/containers\/([^\/]+)\/restart$/);
+    if (restartMatch && method === "POST") {
+      if (!this.verifySignedPost(req, pathname, body)) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Unauthorized: Invalid HMAC signature" }));
+        return;
+      }
+      const result = await this.restartInstance(decodeURIComponent(restartMatch[1]));
+      res.writeHead(result.restarted ? 200 : 409, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result));
+      return;
+    }
+
     // Reverse Proxy for Deployed Applications
     let targetPort: number | undefined;
     const targetPortStr = (req.headers["x-target-port"] || url.searchParams.get("__sb_port")) as string | undefined;
@@ -421,6 +441,22 @@ export class RunnerDaemon {
       return;
     }
 
+    const { job: jobState } = this.startJob(params);
+    const jobId = jobState.jobId;
+
+    // Return 202 Accepted with stream URL
+    res.writeHead(202, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        jobId,
+        status: "BUILDING",
+        streamUrl: `/api/builds/${jobId}/logs`,
+      })
+    );
+  }
+
+  /** Registers a build job and runs its pipeline in the background (HTTP dispatch and pull consumer). */
+  public startJob(params: any): { job: JobState; done: Promise<void> } {
     const jobId = params.jobId || params.buildId || params.deploymentId || "job_" + crypto.randomUUID();
 
     // Register Job in memory
@@ -440,18 +476,7 @@ export class RunnerDaemon {
       this.saveJobToDisk(params.deploymentId, jobState);
     }
 
-    // Return 202 Accepted with stream URL
-    res.writeHead(202, { "Content-Type": "application/json" });
-    res.end(
-      JSON.stringify({
-        jobId,
-        status: "BUILDING",
-        streamUrl: `/api/builds/${jobId}/logs`,
-      })
-    );
-
-    // Asynchronously launch pipeline
-    this.runJobPipeline(jobId, params);
+    return { job: jobState, done: this.runJobPipeline(jobId, { ...params, jobId }) };
   }
 
   private getLogFilePath(jobId: string): string {
@@ -568,6 +593,7 @@ export class RunnerDaemon {
         job.containerId = result.containerId;
         job.assignedPort = result.assignedPort;
         job.strategy = result.strategy;
+        job.simulated = Boolean(result.simulated);
         log(`[runner] Job ${jobId} succeeded. Container: ${result.containerId}, Port: ${result.assignedPort}`);
         if (result.assignedPort) {
           await this.registerEdgeRoute(params, result.assignedPort, log);
@@ -621,6 +647,8 @@ export class RunnerDaemon {
         error: job.error,
         errorMessage: job.error,
         exitCode: job.exitCode,
+        simulated: Boolean(job.simulated),
+        metadata: { simulated: Boolean(job.simulated) },
         logs: job.logs,
       })
     );
@@ -680,11 +708,16 @@ export class RunnerDaemon {
       return;
     }
 
-    // Release port associated with container/service
-    this.portManager.releaseJobPort(containerId);
+    const result = await this.stopInstance(containerId);
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ containerId, ...result, message: "Container stop signaled" }));
+  }
 
-    // Stop container or process via pipeline
-    await this.pipeline.stopContainer(containerId).catch(() => null);
+  /** Stops an instance, frees its port and drops its tunnel ingress (HTTP route and pull consumer). */
+  public async stopInstance(containerId: string): Promise<{ stopped: boolean; releasedPort?: number }> {
+    // Stop container or process via pipeline (it releases the port it recorded)
+    const res = await this.pipeline.stopContainer(containerId).catch(() => null);
+    this.portManager.releaseJobPort(containerId);
 
     // Mark job cancelled if found
     for (const job of this.jobs.values()) {
@@ -694,23 +727,62 @@ export class RunnerDaemon {
     }
 
     await this.removeTunnelIngress(containerId);
-
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ containerId, stopped: true, message: "Container stop signaled" }));
+    return { stopped: Boolean(res?.stopped), releasedPort: res?.releasedPort };
   }
 
-  private startQueuePoller(): void {
-    this.pollTimer = setInterval(async () => {
-      // Queue poller hook: checks for QUEUED builds and triggers pipeline
-      // In standalone runner daemon, pending queue jobs are processed sequentially
-      for (const [id, job] of this.jobs.entries()) {
-        if (job.status === "QUEUED") {
-          job.status = "BUILDING";
-          this.runJobPipeline(id, { jobId: id });
-          break; // process one job at a time
+  /**
+   * Restarts an instance via the pipeline's launch spec and moves the job record and tunnel
+   * ingress to the new instance id / port.
+   */
+  public async restartInstance(
+    containerId: string
+  ): Promise<{ restarted: boolean; containerId: string; port?: number; error?: string }> {
+    const job = Array.from(this.jobs.values()).find((j) => j.containerId === containerId);
+    const log = (msg: string) => {
+      if (job) job.logs.push(msg);
+    };
+    const result = await this.pipeline.restartContainer(containerId, log);
+    if (result.restarted) {
+      if (job) {
+        job.containerId = result.containerId;
+        job.assignedPort = result.port;
+        job.status = "ACTIVE";
+        this.saveJobToDisk(job.jobId, job);
+      }
+      let changed = false;
+      for (const [host, r] of this.ingressRoutes) {
+        if (r.containerId === containerId) {
+          this.ingressRoutes.set(host, { ...r, containerId: result.containerId, port: result.port ?? r.port });
+          changed = true;
         }
       }
-    }, this.pollIntervalMs);
+      // A stopped job's ingress was removed; restore it for its hostnames.
+      for (const host of job?.hostnames || []) {
+        if (!this.ingressRoutes.has(host.toLowerCase()) && result.port) {
+          this.ingressRoutes.set(host.toLowerCase(), { port: result.port, jobId: job!.jobId, containerId: result.containerId });
+          changed = true;
+        }
+      }
+      if (changed) await this.syncTunnelIngress();
+    }
+    return result;
+  }
+
+  /** `RUNNER_QUEUE_MODE=pull`: claim jobs from the control plane instead of waiting for webhooks. */
+  private startQueuePoller(): void {
+    const apiUrl = process.env.SYNCBAY_API_URL;
+    if (!apiUrl) {
+      console.warn("[runner-daemon] RUNNER_QUEUE_MODE=pull needs SYNCBAY_API_URL; pull consumer not started");
+      return;
+    }
+    this.pullConsumer = new JobPullConsumer({
+      apiUrl,
+      secret: this.webhookSecret,
+      runnerId: process.env.RUNNER_ID,
+      pollIntervalMs: this.pollIntervalMs,
+      daemon: this,
+    });
+    this.pullConsumer.start();
   }
 
   private resolveRouteHostnames(params: any): string[] {

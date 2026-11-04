@@ -15,6 +15,7 @@ import { hasValidRunnerSecret } from "@/lib/edge/runner-auth";
 import { isWorkspaceOverSpendingCap } from "@/lib/usage/metering";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
   let body: { serviceId?: unknown; deploymentId?: unknown } = {};

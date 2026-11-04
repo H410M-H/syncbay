@@ -1,7 +1,10 @@
 import { z } from "zod";
 import { createTRPCRouter, protectedProcedure } from "@/server/trpc";
 import { TRPCError } from "@trpc/server";
-import { executeDeployment } from "@/lib/orchestrator/engine";
+import { scheduleDeployment } from "@/lib/orchestrator/schedule";
+import { cancelDeploymentJob } from "@/lib/orchestrator/job-queue";
+import { driverFor } from "@/lib/orchestrator/lifecycle";
+import { resolveHeadCommitSha } from "@/lib/orchestrator/pr-manager";
 import { purgeEdgeCache } from "@/lib/edge/edge-router";
 import { executeInstantRollback } from "@/lib/devops/instant-rollback";
 import { logEventBus } from "@/lib/telemetry/event-bus";
@@ -138,14 +141,23 @@ export const deploymentRouter = createTRPCRouter({
             },
           },
         },
+        include: { environment: true },
       });
       if (!service) throw new TRPCError({ code: "NOT_FOUND" });
+
+      // Real HEAD of the tracked branch, or null — never an invented SHA
+      const commitSha =
+        input.commitSha ||
+        (await resolveHeadCommitSha(service.repoUrl, service.branch, {
+          projectId: service.environment.projectId,
+          userId: ctx.session.user.id,
+        }));
 
       // Create Build record
       const build = await ctx.db.build.create({
         data: {
           serviceId: input.serviceId,
-          commitSha: input.commitSha || Math.random().toString(16).slice(2, 9),
+          commitSha,
           commitMessage: input.commitMessage || "Manual deployment via console",
           triggeredBy: ctx.session.user.id,
           status: "QUEUED",
@@ -162,14 +174,12 @@ export const deploymentRouter = createTRPCRouter({
         },
       });
 
-      // Execute asynchronously via dual-driver orchestrator
-      executeDeployment(deployment.id, build.id, service.id, {
+      // Durable job row now; the build runs in after() (maxDuration 300) and is recovered if the function dies
+      await scheduleDeployment(deployment.id, build.id, service.id, {
         serviceId: service.id,
         commitSha: build.commitSha || undefined,
         commitMessage: build.commitMessage || undefined,
         userId: ctx.session.user.id,
-      }).catch((err) => {
-        console.error("Deployment execution error:", err);
       });
 
       return { build, deployment };
@@ -202,7 +212,7 @@ export const deploymentRouter = createTRPCRouter({
             },
           },
         },
-        include: { build: true, service: true },
+        include: { build: true, service: { include: { environment: true } } },
       });
       if (!prev) throw new TRPCError({ code: "NOT_FOUND" });
 
@@ -213,7 +223,12 @@ export const deploymentRouter = createTRPCRouter({
         const newBuild = await ctx.db.build.create({
           data: {
             serviceId: prev.serviceId,
-            commitSha: prev.build?.commitSha || Math.random().toString(16).slice(2, 9),
+            commitSha:
+              prev.build?.commitSha ||
+              (await resolveHeadCommitSha(prev.service.repoUrl, prev.service.branch, {
+                projectId: prev.service.environment.projectId,
+                userId: ctx.session.user.id,
+              })),
             commitMessage: prev.build?.commitMessage
               ? `Rebuild: ${prev.build.commitMessage}`
               : `Redeploy with fresh build of ${prev.id.slice(0, 8)}`,
@@ -234,7 +249,7 @@ export const deploymentRouter = createTRPCRouter({
         },
       });
 
-      executeDeployment(deployment.id, targetBuildId, prev.serviceId, {
+      await scheduleDeployment(deployment.id, targetBuildId, prev.serviceId, {
         serviceId: prev.serviceId,
         commitSha: prev.build?.commitSha || undefined,
         commitMessage: shouldRebuild
@@ -242,8 +257,6 @@ export const deploymentRouter = createTRPCRouter({
           : `Fast redeploy of deployment ${prev.id.slice(0, 8)}`,
         cleanBuild: shouldRebuild,
         userId: ctx.session.user.id,
-      }).catch((err) => {
-        console.error("Redeploy error:", err);
       });
 
       return deployment;
@@ -282,6 +295,8 @@ export const deploymentRouter = createTRPCRouter({
       });
       if (!deployment) throw new TRPCError({ code: "NOT_FOUND" });
 
+      // A pull-mode runner sees the cancelled job on its next report and tears the build down
+      await cancelDeploymentJob(deployment.id);
       return ctx.db.deployment.update({
         where: { id: input.deploymentId },
         data: { status: "CANCELLED" },
@@ -326,9 +341,7 @@ export const deploymentRouter = createTRPCRouter({
       // 1. Stop container if running
       if (deployment.cfContainerId) {
         try {
-          const { getRunnerDriver } = await import("@/lib/orchestrator/runner-driver");
-          const driver = getRunnerDriver();
-          await driver.stopContainer(deployment.cfContainerId).catch(() => null);
+          await driverFor(deployment.runnerDriver).stopContainer(deployment.cfContainerId).catch(() => null);
         } catch {}
       }
 

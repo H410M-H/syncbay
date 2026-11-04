@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { validateBearerToken, checkScope } from "@/lib/api/auth-token";
-import { executeDeployment } from "@/lib/orchestrator/engine";
+import { scheduleDeployment } from "@/lib/orchestrator/schedule";
+import { resolveHeadCommitSha } from "@/lib/orchestrator/pr-manager";
 import { logEventBus } from "@/lib/telemetry/event-bus";
 
 export const dynamic = "force-dynamic";
+// Deployments run in after(); give them the full serverless budget.
+export const maxDuration = 300;
 
 export async function GET(req: NextRequest) {
   try {
@@ -70,7 +73,7 @@ export async function POST(req: NextRequest) {
             environment: { project: { workspaceId: auth.workspaceId } },
           },
         },
-        include: { build: true, service: true },
+        include: { build: true, service: { include: { environment: true } } },
       });
 
       if (!prev) {
@@ -84,7 +87,12 @@ export async function POST(req: NextRequest) {
         const newBuild = await db.build.create({
           data: {
             serviceId: prev.serviceId,
-            commitSha: prev.build?.commitSha || Math.random().toString(16).slice(2, 9),
+            commitSha:
+              prev.build?.commitSha ||
+              (await resolveHeadCommitSha(prev.service.repoUrl, prev.service.branch, {
+                projectId: prev.service.environment.projectId,
+                userId: auth.userId || undefined,
+              })),
             commitMessage: prev.build?.commitMessage
               ? `Rebuild: ${prev.build.commitMessage}`
               : `Redeploy with fresh build of ${prev.id.slice(0, 8)}`,
@@ -104,7 +112,7 @@ export async function POST(req: NextRequest) {
         },
       });
 
-      executeDeployment(deployment.id, targetBuildId, prev.serviceId, {
+      await scheduleDeployment(deployment.id, targetBuildId, prev.serviceId, {
         serviceId: prev.serviceId,
         commitSha: prev.build?.commitSha || undefined,
         commitMessage: shouldRebuild
@@ -112,8 +120,6 @@ export async function POST(req: NextRequest) {
           : `Fast redeploy of deployment ${prev.id.slice(0, 8)}`,
         cleanBuild: shouldRebuild,
         userId: auth.userId || undefined,
-      }).catch((err) => {
-        console.error("Redeploy error:", err);
       });
 
       return NextResponse.json(
@@ -148,7 +154,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Service not found in workspace" }, { status: 404 });
     }
 
-    const commitSha = body.commitSha || Math.random().toString(16).slice(2, 9);
+    // Real HEAD of the tracked branch, or null — never an invented SHA
+    const commitSha =
+      body.commitSha ||
+      (await resolveHeadCommitSha(service.repoUrl, service.branch, {
+        projectId: service.environment.projectId,
+        userId: auth.userId || undefined,
+      }));
     const commitMessage = body.commitMessage || "CLI trigger deployment";
 
     const build = await db.build.create({
@@ -170,14 +182,12 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    executeDeployment(deployment.id, build.id, service.id, {
+    await scheduleDeployment(deployment.id, build.id, service.id, {
       serviceId: service.id,
-      commitSha: body.commitSha || undefined,
+      commitSha: commitSha || undefined,
       commitMessage,
       cleanBuild: body.rebuild ?? false,
       userId: auth.userId || undefined,
-    }).catch((err) => {
-      console.error("Deployment execution error:", err);
     });
 
     return NextResponse.json(

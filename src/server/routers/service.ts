@@ -4,6 +4,8 @@ import { TRPCError } from "@trpc/server";
 import { domainService } from "@/lib/domain-service";
 import { executeSyncVariables } from "@/lib/devops/env-sync";
 import { logEventBus } from "@/lib/telemetry/event-bus";
+import { restartServiceInstance, stopServiceInstances } from "@/lib/orchestrator/lifecycle";
+import { scheduleDeployment } from "@/lib/orchestrator/schedule";
 
 export const serviceRouter = createTRPCRouter({
   /** List services in an environment */
@@ -242,10 +244,30 @@ export const serviceRouter = createTRPCRouter({
       });
       if (!service) throw new TRPCError({ code: "NOT_FOUND" });
 
-      return ctx.db.service.update({
-        where: { id: input.serviceId },
-        data: { isPaused: input.paused },
+      if (input.paused) {
+        // Stop the running instance(s) on the runner and route traffic to the sleeping splash
+        const report = await stopServiceInstances(service.id, "pause", ctx.db);
+        const updated = await ctx.db.service.update({ where: { id: input.serviceId }, data: { isPaused: true } });
+        return { ...updated, lifecycle: report };
+      }
+
+      // Unpause: wake the latest sleeping deployment (re-runs it through the durable scheduler)
+      const updated = await ctx.db.service.update({ where: { id: input.serviceId }, data: { isPaused: false } });
+      const latest = await ctx.db.deployment.findFirst({
+        where: { serviceId: service.id },
+        orderBy: { createdAt: "desc" },
+        include: { build: true },
       });
+      if (latest?.status === "SLEEPING") {
+        await ctx.db.deployment.update({ where: { id: latest.id }, data: { status: "QUEUED" } });
+        await scheduleDeployment(latest.id, latest.buildId, service.id, {
+          serviceId: service.id,
+          commitSha: latest.build?.commitSha || undefined,
+          commitMessage: `Resume paused service (deployment ${latest.id.slice(0, 8)})`,
+          userId: ctx.session.user.id,
+        });
+      }
+      return { ...updated, wokeDeploymentId: latest?.status === "SLEEPING" ? latest.id : null };
     }),
 
   /** Restart a service container gracefully — 0ms reboot */
@@ -272,14 +294,25 @@ export const serviceRouter = createTRPCRouter({
       });
       if (!service) throw new TRPCError({ code: "NOT_FOUND", message: "Service not found" });
 
+      const started = Date.now();
+      const result = await restartServiceInstance(service.id, ctx.session.user.id, ctx.db);
+      if (result.mode === "none") {
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: result.message || "Nothing to restart" });
+      }
       await ctx.db.service.update({
         where: { id: input.serviceId },
         data: { isPaused: false, updatedAt: new Date() },
       });
 
+      const message = {
+        restart: `Instance of ${service.name} restarted in ${Date.now() - started}ms`,
+        queued: `Restart of ${service.name} queued for its pull-mode runner`,
+        redeploy: `Instance of ${service.name} could not be restarted in place; redeploying its live build`,
+      }[result.mode];
       return {
         success: true,
-        message: `Container ${service.name} restarted successfully (0ms latency)`,
+        ...result,
+        message,
         timestamp: new Date().toISOString(),
       };
     }),
@@ -455,9 +488,12 @@ export const serviceRouter = createTRPCRouter({
       });
       if (!service) throw new TRPCError({ code: "NOT_FOUND" });
 
-      return ctx.db.service.update({
+      // Stop instances (frees ports and tunnel ingress on the runner) and drop every route
+      const report = await stopServiceInstances(service.id, "delete", ctx.db);
+      const deleted = await ctx.db.service.update({
         where: { id: input.serviceId },
         data: { deletedAt: new Date() },
       });
+      return { ...deleted, lifecycle: report };
     }),
 });
