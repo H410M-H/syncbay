@@ -4,8 +4,10 @@
  * A `CanaryConfig` row splits a service's traffic between a stable and a
  * canary deployment's upstream. The proxy (`src/lib/edge/canary.ts`) picks a
  * variant per client with a sticky cookie and counts routed requests;
- * `evaluateCanaryHealth` reads real 5xx rates from `MetricSample` rows when
- * that model exists, and trips an automatic rollback above the threshold.
+ * `evaluateCanaryHealth` trips an automatic rollback when the canary's 5xx
+ * rate exceeds the threshold. `MetricSample` (Team B) records CPU/memory/network
+ * only, so there is no request/5xx signal yet: the result is INSUFFICIENT_DATA
+ * (rate null) unless a caller supplies `errorCounts`.
  */
 
 import type { PrismaClient } from "@prisma/client";
@@ -42,7 +44,7 @@ export interface CanaryHealthResult {
   reason: string;
 }
 
-export type CanaryDb = Pick<PrismaClient, "canaryConfig" | "deployment">;
+export type CanaryDb = Pick<PrismaClient, "canaryConfig" | "deployment" | "metricSample">;
 type CanaryRow = Awaited<ReturnType<CanaryDb["canaryConfig"]["findUniqueOrThrow"]>>;
 
 export function toCanaryConfig(row: CanaryRow): CanaryConfig {
@@ -133,42 +135,8 @@ export function evaluateCanaryCounts(
   };
 }
 
-// ─── MetricSample access (Team B's model; may not exist yet) ─────────────────
-
-const REQUEST_FIELDS = ["requestCount", "requests", "requestsTotal", "httpRequests"];
-const ERROR_FIELDS = ["errors5xx", "status5xx", "http5xx", "errorCount", "errors"];
-
-function sumField(rows: Array<Record<string, unknown>>, names: string[]): number | null {
-  const name = names.find((n) => rows.some((r) => typeof r[n] === "number"));
-  if (!name) return null;
-  return rows.reduce((acc, r) => acc + (typeof r[name] === "number" ? (r[name] as number) : 0), 0);
-}
-
-/**
- * Sums request and 5xx counts of a deployment's MetricSample rows since `since`.
- * Returns null when the model, the rows or the count fields are unavailable.
- */
-export async function readDeploymentErrorCounts(
-  db: unknown,
-  deploymentId: string,
-  since: Date
-): Promise<{ requests: number; errors5xx: number } | null> {
-  const delegate = (db as { metricSample?: { findMany?: (args: unknown) => Promise<unknown[]> } }).metricSample;
-  if (!delegate || typeof delegate.findMany !== "function") return null;
-  try {
-    const rows = (await delegate.findMany({
-      where: { deploymentId, createdAt: { gte: since } },
-      take: 5000,
-    })) as Array<Record<string, unknown>>;
-    if (!rows.length) return null;
-    const requests = sumField(rows, REQUEST_FIELDS);
-    const errors5xx = sumField(rows, ERROR_FIELDS);
-    if (requests === null || errors5xx === null) return null;
-    return { requests, errors5xx };
-  } catch {
-    return null;
-  }
-}
+/** Request / 5xx counts of a deployment since a time, from whatever source records them. */
+export type ErrorCountSource = (deploymentId: string, since: Date) => Promise<{ requests: number; errors5xx: number } | null>;
 
 // ─── DB operations ────────────────────────────────────────────────────────────
 
@@ -290,26 +258,41 @@ export async function rollbackCanary(db: CanaryDb, serviceId: string, reason?: s
 }
 
 /**
- * Evaluates the canary from real MetricSample data over the last
- * `windowMinutes` and rolls back automatically above the threshold.
- * With no metrics available the result is INSUFFICIENT_DATA (rate null).
+ * Evaluates the canary over the last `windowMinutes` and rolls back
+ * automatically above the threshold. Request/5xx counts come from
+ * `options.errorCounts`; without one (MetricSample has no request counters)
+ * the result is INSUFFICIENT_DATA with a null rate, and the reason says how
+ * many resource samples the canary has, so a canary that is not even running
+ * is visible.
  */
 export async function evaluateCanaryHealth(
   db: CanaryDb,
   serviceId: string,
-  options: { windowMinutes?: number; minRequests?: number; now?: Date } = {}
+  options: { windowMinutes?: number; minRequests?: number; now?: Date; errorCounts?: ErrorCountSource } = {}
 ): Promise<CanaryHealthResult> {
   const row = await requireCanary(db, serviceId);
   const now = options.now || new Date();
   const since = new Date(Math.max(row.startedAt.getTime(), now.getTime() - (options.windowMinutes ?? 15) * 60_000));
-  const counts = await readDeploymentErrorCounts(db, row.canaryDeploymentId, since);
+  const counts = options.errorCounts ? await options.errorCounts(row.canaryDeploymentId, since).catch(() => null) : null;
 
-  const result = counts
-    ? evaluateCanaryCounts(toCanaryConfig(row), counts.errors5xx, counts.requests, options.minRequests)
-    : {
-        ...evaluateCanaryCounts(toCanaryConfig(row), 0, 0, options.minRequests),
-        ...(row.status === "ACTIVE" ? { reason: "No request/5xx metrics recorded for the canary deployment yet" } : {}),
+  let result: CanaryHealthResult;
+  if (counts) {
+    result = evaluateCanaryCounts(toCanaryConfig(row), counts.errors5xx, counts.requests, options.minRequests);
+  } else {
+    result = evaluateCanaryCounts(toCanaryConfig(row), 0, 0, options.minRequests);
+    if (row.status === "ACTIVE") {
+      const samples = await db.metricSample
+        .count({ where: { deploymentId: row.canaryDeploymentId, sampledAt: { gte: since } } })
+        .catch(() => 0);
+      result = {
+        ...result,
+        reason:
+          samples > 0
+            ? `No request/5xx counters recorded (MetricSample has ${samples} CPU/memory sample(s) for the canary in this window)`
+            : "No metrics recorded for the canary deployment in this window",
       };
+    }
+  }
 
   if (row.status === "ACTIVE") {
     await db.canaryConfig.update({

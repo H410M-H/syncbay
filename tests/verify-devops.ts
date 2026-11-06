@@ -11,8 +11,8 @@
  *    The Upstash rate counter is exercised against a stubbed fetch (MOCKED).
  * 4. Canary weighted split through `proxy()`: ~30% of 2000 cookieless requests,
  *    sticky cookie pinning, stats flushed to CanaryConfig, rollback behaviour,
- *    evaluateCanaryHealth with no MetricSample model (null rate) and with a stubbed
- *    metricSample delegate (MOCKED delegate, real CanaryConfig rows).
+ *    evaluateCanaryHealth against a real MetricSample row (CPU/memory only → null rate)
+ *    and with INJECTED request/5xx counts (real CanaryConfig rows).
  * 5. applyVercelMigration writes CronJob/WafRule rows.
  */
 
@@ -324,21 +324,19 @@ async function main() {
       assert.ok(share > 20 && share < 40);
     });
 
-    await step("evaluateCanaryHealth: null rate without MetricSample; stubbed delegate trips rollback", async () => {
-      const hasModel = typeof (db as any).metricSample?.findMany === "function";
-      if (!hasModel) {
-        const res = await canary.evaluateCanaryHealth(db, service.id);
-        assert.strictEqual(res.action, "INSUFFICIENT_DATA");
-        assert.strictEqual(res.errorRatePercent, null);
-      }
-      const stubDb = {
-        canaryConfig: db.canaryConfig,
-        deployment: db.deployment,
-        metricSample: { findMany: async () => [{ requestCount: 80, errors5xx: 6 }, { requestCount: 20, errors5xx: 4 }] },
-      } as any;
-      const res = await canary.evaluateCanaryHealth(stubDb, service.id);
-      assert.strictEqual(res.action, "ROLLBACK");
-      assert.strictEqual(res.errorRatePercent, 10);
+    await step("evaluateCanaryHealth: null rate from real MetricSample rows; injected 5xx counts trip rollback", async () => {
+      await db.metricSample.create({
+        data: { serviceId: service.id, deploymentId: canaryDep.id, containerId: "proc_1", source: "proc", cpuPercent: 3.5, memoryMb: 42 },
+      });
+      const res = await canary.evaluateCanaryHealth(db, service.id);
+      assert.strictEqual(res.action, "INSUFFICIENT_DATA");
+      assert.strictEqual(res.errorRatePercent, null);
+      assert.match(res.reason, /1 CPU\/memory sample/);
+      const injected = await canary.evaluateCanaryHealth(db, service.id, {
+        errorCounts: async () => ({ requests: 100, errors5xx: 10 }), // INJECTED counts (no real 5xx source exists)
+      });
+      assert.strictEqual(injected.action, "ROLLBACK");
+      assert.strictEqual(injected.errorRatePercent, 10);
       const cfg = await canary.getCanaryConfig(db, service.id);
       assert.strictEqual(cfg!.status, "ROLLED_BACK");
       assert.strictEqual(cfg!.canaryWeightPercent, 0);

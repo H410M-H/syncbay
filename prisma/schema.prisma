@@ -666,6 +666,7 @@ model StripeEvent {
 
   @@index([type])
   @@map("stripe_events")
+}
 
 // ── Team E ── DevOps engines: scheduled HTTP crons, edge WAF rules, canary routing ──
 
