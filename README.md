@@ -102,3 +102,4 @@ See [`ROADMAP.md`](./ROADMAP.md).
 - [x] Hardened runner fabric and tunnel reload
 - [x] Managed Postgres/Redis and web terminal
 - [x] GitHub Actions CI and env validation
+- [x] v1.1: durable deploys, persistent logs/metrics/usage, scale-to-zero, Stripe + R2, DB-backed WAF/cron/canary, real Query Studio
