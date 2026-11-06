@@ -11,6 +11,7 @@ export function QueryStudio({ databases }: QueryStudioProps) {
   const [selectedDbId, setSelectedDbId] = useState<string>(databases[0]?.id || "");
   const [query, setQuery] = useState<string>("SELECT * FROM users LIMIT 10;");
   const [safeMode, setSafeMode] = useState<boolean>(true);
+  const [writeMode, setWriteMode] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<"results" | "schema">("results");
 
   const activeDb = databases.find((d) => d.id === selectedDbId) || databases[0];
@@ -28,6 +29,7 @@ export function QueryStudio({ databases }: QueryStudioProps) {
       databaseId: selectedDbId,
       query: query.trim(),
       safeMode,
+      mode: writeMode && schemaData?.canWrite ? "write" : "read",
     });
   };
 
@@ -103,6 +105,17 @@ export function QueryStudio({ databases }: QueryStudioProps) {
             />
             <span className="text-[11px]">Safe Mode Guard</span>
           </label>
+          {schemaData?.canWrite && (
+            <label className="flex items-center space-x-1.5 text-zinc-400 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={writeMode}
+                onChange={(e) => setWriteMode(e.target.checked)}
+                className="rounded bg-black border-zinc-700 text-amber-500 focus:ring-0"
+              />
+              <span className="text-[11px]">{writeMode ? "Write mode" : "Read-only"}</span>
+            </label>
+          )}
 
           <button
             type="button"

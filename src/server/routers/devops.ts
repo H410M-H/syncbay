@@ -2,25 +2,31 @@ import { z } from "zod";
 import { createTRPCRouter, protectedProcedure } from "@/server/trpc";
 import { TRPCError } from "@trpc/server";
 import {
-  listCronsForService,
+  listCronJobs,
   createCronJob,
   toggleCronJob,
   deleteCronJob,
-  executeCronJob,
-  getCronRunLogs,
-  getCronJobById,
+  listCronRuns,
+  getCronJob,
 } from "@/lib/devops/cron-engine";
+import { executeCronJob } from "@/lib/devops/cron-runner";
 import {
-  getDefaultWafConfig,
+  WAF_RULE_TYPES,
+  getWafConfig,
   updateWafConfig,
   getSecurityEvents,
+  listWafRules,
+  createWafRule,
 } from "@/lib/devops/waf-engine";
 import {
   getCanaryConfig,
+  startCanary,
   updateCanaryWeight,
   promoteCanary,
   rollbackCanary,
+  evaluateCanaryHealth,
 } from "@/lib/devops/canary-engine";
+import { clearEdgePolicyCache } from "@/lib/edge/edge-policy";
 import { autoTuneFramework } from "@/lib/devops/auto-tuner";
 import { diagnoseBuildLogs } from "@/lib/devops/ai-diagnostics";
 import { parseVercelConfig, applyVercelMigration } from "@/lib/devops/vercel-migrator";
@@ -87,7 +93,7 @@ async function assertCronAccess(
   cronId: string,
   allowedRoles: ("OWNER" | "ADMIN" | "MEMBER" | "VIEWER")[] = ["OWNER", "ADMIN", "MEMBER"]
 ) {
-  const cron = getCronJobById(cronId);
+  const cron = await getCronJob(db, cronId);
   if (!cron) {
     throw new TRPCError({ code: "NOT_FOUND", message: `Cron job not found: ${cronId}` });
   }
@@ -95,13 +101,23 @@ async function assertCronAccess(
   return cron;
 }
 
+async function canaryMutation<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    const result = await fn();
+    clearEdgePolicyCache();
+    return result;
+  } catch (err: any) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: err.message });
+  }
+}
+
 export const devopsRouter = createTRPCRouter({
-  // ─── CRON SCHEDULER ────────────────────────────────────────────────────────
+  // ─── CRON SCHEDULER (CronJob / CronRun rows; runDueCronJobs executes them) ──
   listCrons: protectedProcedure
     .input(z.object({ serviceId: z.string() }))
     .query(async ({ ctx, input }) => {
       await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "ADMIN", "MEMBER", "VIEWER"]);
-      return listCronsForService(input.serviceId);
+      return listCronJobs(ctx.db, input.serviceId);
     }),
 
   createCron: protectedProcedure
@@ -110,14 +126,17 @@ export const devopsRouter = createTRPCRouter({
         serviceId: z.string(),
         name: z.string().min(1).max(100),
         schedule: z.string().min(5),
-        path: z.string().min(1),
-        method: z.enum(["GET", "POST"]).default("GET"),
+        path: z.string().min(1).max(2048),
+        method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]).default("GET"),
+        headers: z.record(z.string(), z.string().max(4096)).optional(),
+        timeoutMs: z.number().int().min(1000).max(60000).optional(),
+        maxRetries: z.number().int().min(0).max(5).optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
       await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "ADMIN", "MEMBER"]);
       try {
-        return createCronJob(input);
+        return await createCronJob(ctx.db, input);
       } catch (err: any) {
         throw new TRPCError({ code: "BAD_REQUEST", message: err.message });
       }
@@ -128,7 +147,7 @@ export const devopsRouter = createTRPCRouter({
     .mutation(async ({ ctx, input }) => {
       await assertCronAccess(ctx.db, ctx.session.user.id, input.cronId, ["OWNER", "ADMIN", "MEMBER"]);
       try {
-        return toggleCronJob(input.cronId, input.enabled);
+        return await toggleCronJob(ctx.db, input.cronId, input.enabled);
       } catch (err: any) {
         throw new TRPCError({ code: "NOT_FOUND", message: err.message });
       }
@@ -139,7 +158,7 @@ export const devopsRouter = createTRPCRouter({
     .mutation(async ({ ctx, input }) => {
       await assertCronAccess(ctx.db, ctx.session.user.id, input.cronId, ["OWNER", "ADMIN", "MEMBER"]);
       try {
-        return await executeCronJob(input.cronId);
+        return await executeCronJob(input.cronId, { trigger: "manual" });
       } catch (err: any) {
         throw new TRPCError({ code: "BAD_REQUEST", message: err.message });
       }
@@ -149,22 +168,22 @@ export const devopsRouter = createTRPCRouter({
     .input(z.object({ cronId: z.string() }))
     .mutation(async ({ ctx, input }) => {
       await assertCronAccess(ctx.db, ctx.session.user.id, input.cronId, ["OWNER", "ADMIN", "MEMBER"]);
-      return { success: deleteCronJob(input.cronId) };
+      return { success: await deleteCronJob(ctx.db, input.cronId) };
     }),
 
   getCronLogs: protectedProcedure
-    .input(z.object({ cronId: z.string() }))
+    .input(z.object({ cronId: z.string(), limit: z.number().int().min(1).max(100).optional() }))
     .query(async ({ ctx, input }) => {
       await assertCronAccess(ctx.db, ctx.session.user.id, input.cronId, ["OWNER", "ADMIN", "MEMBER", "VIEWER"]);
-      return getCronRunLogs(input.cronId);
+      return listCronRuns(ctx.db, input.cronId, input.limit);
     }),
 
-  // ─── WAF & RATE LIMITING ───────────────────────────────────────────────────
+  // ─── WAF & RATE LIMITING (WafRule rows, enforced in src/proxy.ts) ─────────
   getWafConfig: protectedProcedure
     .input(z.object({ serviceId: z.string() }))
     .query(async ({ ctx, input }) => {
       await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "ADMIN", "MEMBER", "VIEWER"]);
-      return getDefaultWafConfig(input.serviceId);
+      return getWafConfig(ctx.db, input.serviceId);
     }),
 
   updateWafConfig: protectedProcedure
@@ -172,34 +191,98 @@ export const devopsRouter = createTRPCRouter({
       z.object({
         serviceId: z.string(),
         enabled: z.boolean().optional(),
-        rateLimitRpm: z.number().int().min(10).max(50000).optional(),
-        rateLimitAction: z.enum(["BLOCK_429", "CHALLENGE"]).optional(),
-        ddosShieldEnabled: z.boolean().optional(),
-        botProtectionEnabled: z.boolean().optional(),
-        ipBlocklist: z.array(z.string()).optional(),
-        ipAllowlist: z.array(z.string()).optional(),
-        geoBlockCountries: z.array(z.string()).optional(),
+        rateLimitRpm: z.number().int().min(10).max(50000).nullable().optional(),
+        ipBlocklist: z.array(z.string().max(64)).max(1000).optional(),
+        ipAllowlist: z.array(z.string().max(64)).max(1000).optional(),
+        geoBlockCountries: z.array(z.string().length(2)).max(250).optional(),
+        pathBlocklist: z.array(z.string().max(512)).max(500).optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
       await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "ADMIN", "MEMBER"]);
       const { serviceId, ...partial } = input;
-      return updateWafConfig(serviceId, partial);
+      try {
+        const config = await updateWafConfig(ctx.db, serviceId, partial);
+        clearEdgePolicyCache();
+        return config;
+      } catch (err: any) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: err.message });
+      }
+    }),
+
+  listWafRules: protectedProcedure
+    .input(z.object({ serviceId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "ADMIN", "MEMBER", "VIEWER"]);
+      return listWafRules(ctx.db, input.serviceId);
+    }),
+
+  createWafRule: protectedProcedure
+    .input(
+      z.object({
+        serviceId: z.string(),
+        type: z.enum(WAF_RULE_TYPES),
+        value: z.string().min(1).max(512),
+        rateLimitRpm: z.number().int().min(1).max(100000).optional(),
+        description: z.string().max(200).optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "ADMIN", "MEMBER"]);
+      try {
+        const rule = await createWafRule(ctx.db, input);
+        clearEdgePolicyCache();
+        return rule;
+      } catch (err: any) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: err.message });
+      }
+    }),
+
+  deleteWafRule: protectedProcedure
+    .input(z.object({ serviceId: z.string(), ruleId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "ADMIN", "MEMBER"]);
+      const result = await ctx.db.wafRule.deleteMany({ where: { id: input.ruleId, serviceId: input.serviceId } });
+      clearEdgePolicyCache();
+      return { success: result.count > 0 };
     }),
 
   getSecurityEvents: protectedProcedure
     .input(z.object({ serviceId: z.string() }))
     .query(async ({ ctx, input }) => {
       await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "ADMIN", "MEMBER", "VIEWER"]);
-      return getSecurityEvents(input.serviceId);
+      return getSecurityEvents(ctx.db, input.serviceId);
     }),
 
-  // ─── CANARY & ROLLING RELEASES ─────────────────────────────────────────────
+  // ─── CANARY & ROLLING RELEASES (CanaryConfig, split in src/proxy.ts) ──────
   getCanaryConfig: protectedProcedure
     .input(z.object({ serviceId: z.string() }))
     .query(async ({ ctx, input }) => {
       await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "ADMIN", "MEMBER", "VIEWER"]);
-      return getCanaryConfig(input.serviceId);
+      return getCanaryConfig(ctx.db, input.serviceId);
+    }),
+
+  startCanary: protectedProcedure
+    .input(
+      z.object({
+        serviceId: z.string(),
+        stableDeploymentId: z.string(),
+        canaryDeploymentId: z.string(),
+        stableUpstreamUrl: z.string().url().optional(),
+        canaryUpstreamUrl: z.string().url().optional(),
+        weightPercent: z.number().min(0).max(100).optional(),
+        autoRollbackThreshold5xxPercent: z.number().min(0.1).max(100).optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "ADMIN", "MEMBER"]);
+      try {
+        const config = await startCanary(ctx.db, input);
+        clearEdgePolicyCache();
+        return config;
+      } catch (err: any) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: err.message });
+      }
     }),
 
   updateCanaryWeight: protectedProcedure
@@ -211,21 +294,28 @@ export const devopsRouter = createTRPCRouter({
     )
     .mutation(async ({ ctx, input }) => {
       await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "ADMIN", "MEMBER"]);
-      return updateCanaryWeight(input.serviceId, input.weightPercent);
+      return canaryMutation(() => updateCanaryWeight(ctx.db, input.serviceId, input.weightPercent));
     }),
 
   promoteCanary: protectedProcedure
     .input(z.object({ serviceId: z.string() }))
     .mutation(async ({ ctx, input }) => {
       await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "ADMIN", "MEMBER"]);
-      return promoteCanary(input.serviceId);
+      return canaryMutation(() => promoteCanary(ctx.db, input.serviceId));
     }),
 
   rollbackCanary: protectedProcedure
     .input(z.object({ serviceId: z.string() }))
     .mutation(async ({ ctx, input }) => {
       await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "ADMIN", "MEMBER"]);
-      return rollbackCanary(input.serviceId);
+      return canaryMutation(() => rollbackCanary(ctx.db, input.serviceId));
+    }),
+
+  evaluateCanary: protectedProcedure
+    .input(z.object({ serviceId: z.string(), windowMinutes: z.number().int().min(1).max(1440).optional() }))
+    .mutation(async ({ ctx, input }) => {
+      await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "ADMIN", "MEMBER"]);
+      return canaryMutation(() => evaluateCanaryHealth(ctx.db, input.serviceId, { windowMinutes: input.windowMinutes }));
     }),
 
   // ─── ZERO-CONFIG AUTO-TUNER ────────────────────────────────────────────────
@@ -275,7 +365,8 @@ export const devopsRouter = createTRPCRouter({
       await assertDevopsAccess(ctx.db, ctx.session.user.id, input.serviceId, ["OWNER", "ADMIN", "MEMBER"]);
       try {
         const plan = parseVercelConfig(input.rawJson);
-        const result = applyVercelMigration(input.serviceId, plan);
+        const result = await applyVercelMigration(ctx.db, input.serviceId, plan);
+        clearEdgePolicyCache();
         return {
           success: true,
           plan,

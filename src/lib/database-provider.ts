@@ -1,8 +1,9 @@
 /**
  * Syncbay PaaS — Managed Database Provider (R6 Core)
  * Provisions, parses, and manages PostgreSQL, Redis/Valkey, and MySQL database instances.
- * POSTGRES/REDIS are provisioned as containers on the Syncbay runner when RUNNER_URL is set;
- * otherwise (and for MYSQL) a simulated `sb-db-*` instance is returned.
+ * With RUNNER_URL set, the runner provisions the database: Docker containers (postgres:16-alpine,
+ * redis:7-alpine, mysql:8) or, without Docker, native Postgres/Redis processes. Without a runner
+ * a simulated `sb-db-*` instance is returned (it has no server; Query Studio refuses it).
  */
 
 import type { PrismaClient } from "@prisma/client";
@@ -113,7 +114,7 @@ interface RunnerDatabaseResponse {
   host: string;
   port: number;
   containerId: string;
-  mode: "docker" | "mock";
+  mode: "docker" | "native" | "mock";
 }
 
 /**
@@ -131,11 +132,11 @@ export async function provisionManagedDatabase(params: {
   const provider = params.provider;
   const region = params.region || "us-east-1";
 
-  if (getRunnerBaseUrl() && provider !== "MYSQL") {
+  if (getRunnerBaseUrl()) {
     const runnerDb = await runnerJson<RunnerDatabaseResponse>("/api/databases", {
       method: "POST",
       body: { id: params.id, name: params.name, provider },
-      timeoutMs: 200000,
+      timeoutMs: 320000,
     });
     const creds = parseDatabaseUrl(runnerDb.connectionUrl, provider);
     return {

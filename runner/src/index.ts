@@ -34,6 +34,7 @@ function resolveDaemonSecret(explicit?: string): string {
 }
 import { RunnerServices } from "./services.ts";
 import { handleMetricsRequest } from "./metrics.ts";
+import { sanitizeVolumes } from "./volumes.ts";
 
 export interface DaemonConfig {
   port?: number;
@@ -590,6 +591,7 @@ export class RunnerDaemon {
         targetPort: params.targetPort || params.port || 3000,
         cleanBuild: params.cleanBuild,
         environmentVariables: params.environmentVariables,
+        volumes: sanitizeVolumes(params.volumes),
         onLog: log,
       });
 

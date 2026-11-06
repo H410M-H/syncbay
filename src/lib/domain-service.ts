@@ -223,8 +223,13 @@ export async function verifyDomainDetailed(
   const cloudflare: DomainVerificationResult["cloudflare"] = { configured: cf.isLiveApiConfigured };
   let status: DomainStatus = "VERIFYING";
 
+  // Cloudflare custom hostnames need "SSL for SaaS" on the zone. Without it (or when explicitly
+  // disabled) DNS ownership verification alone decides, and TLS must come from elsewhere.
+  const customHostnamesEnabled =
+    cf.isLiveApiConfigured && (process.env.CLOUDFLARE_CUSTOM_HOSTNAMES || "").toLowerCase() !== "off";
+
   if (dnsCheck.txt.ok && dnsCheck.cname.ok) {
-    if (!cf.isLiveApiConfigured) {
+    if (!customHostnamesEnabled) {
       status = "ACTIVE";
     } else {
       try {
@@ -245,7 +250,17 @@ export async function verifyDomainDetailed(
           errors.push(`Cloudflare is still validating the hostname (status ${record.status}, certificate ${record.ssl?.status || "pending"})`);
         }
       } catch (err: any) {
-        errors.push(`Cloudflare custom hostname check failed: ${err.message}`);
+        if (/no quota has been allocated/i.test(String(err?.message))) {
+          // The zone has no SSL for SaaS entitlement: custom hostnames can never be created, so
+          // fall back to DNS-only verification instead of leaving the domain VERIFYING forever.
+          status = "ACTIVE";
+          cloudflare.status = "unavailable";
+          errors.push(
+            "Cloudflare custom hostnames are not enabled for this zone (SSL for SaaS); verified by DNS only. Set CLOUDFLARE_CUSTOM_HOSTNAMES=off to skip this check."
+          );
+        } else {
+          errors.push(`Cloudflare custom hostname check failed: ${err.message}`);
+        }
       }
     }
   }

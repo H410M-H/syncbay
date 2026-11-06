@@ -1,8 +1,10 @@
 /**
- * Syncbay PaaS — AI Operations Deploy Diagnoser
- * PRD Phase 4 §3 & Vercel Challenger — Automated Build & Runtime Diagnosis
- * Analyzes build step failures and runtime container stdout/stderr to isolate
- * root causes, evaluate diagnostic confidence, and provide 1-click solutions.
+ * Syncbay PaaS — Deploy log diagnoser (heuristic)
+ *
+ * Rule-based pattern matching over build/runtime log lines (no model is
+ * called). Each report names the matched rule; `confidenceScore` is the fixed
+ * weight of that rule, not a measured probability. `automatedFixCommand` is a
+ * suggestion — nothing is run or applied.
  */
 
 export interface AiDiagnosticReport {
@@ -18,8 +20,10 @@ export interface AiDiagnosticReport {
   rootCause: string;
   suggestedSolution: string;
   automatedFixCommand?: string;
-  confidenceScore: number; // 0.0 - 1.0
+  /** Fixed per-rule weight (0.0 - 1.0), not a calibrated probability. */
+  confidenceScore: number;
   detectedPatterns: string[];
+  method: "heuristic";
 }
 
 export function diagnoseBuildLogs(logLines: string[]): AiDiagnosticReport {
@@ -44,6 +48,7 @@ export function diagnoseBuildLogs(logLines: string[]): AiDiagnosticReport {
       suggestedSolution: `Add "${moduleName}" to your package.json dependencies or install it via npm/pnpm before building.`,
       automatedFixCommand: `npm install --save ${moduleName}`,
       confidenceScore: 0.96,
+      method: "heuristic",
       detectedPatterns: ["Cannot find module", moduleName],
     };
   }
@@ -61,6 +66,7 @@ export function diagnoseBuildLogs(logLines: string[]): AiDiagnosticReport {
       suggestedSolution: `Add "${moduleName}" to requirements.txt or pyproject.toml.`,
       automatedFixCommand: `echo "${moduleName}" >> requirements.txt`,
       confidenceScore: 0.95,
+      method: "heuristic",
       detectedPatterns: ["ModuleNotFoundError", moduleName],
     };
   }
@@ -79,6 +85,7 @@ export function diagnoseBuildLogs(logLines: string[]): AiDiagnosticReport {
       suggestedSolution: "Configure your service to read process.env.PORT (default 3000 or 8080) and bind to 0.0.0.0 instead of localhost.",
       automatedFixCommand: `export PORT=3000 && npm start`,
       confidenceScore: 0.94,
+      method: "heuristic",
       detectedPatterns: ["EADDRINUSE", "port conflict"],
     };
   }
@@ -101,6 +108,7 @@ export function diagnoseBuildLogs(logLines: string[]): AiDiagnosticReport {
       suggestedSolution: `Navigate to Settings & Variables tab and add "${varName}" or link it using Syncbay's reference syntax \${{ Postgres.URL }}.`,
       automatedFixCommand: `syncbay env set ${varName}="<YOUR_SECRET_VALUE>"`,
       confidenceScore: 0.91,
+      method: "heuristic",
       detectedPatterns: ["Missing environment variable", varName],
     };
   }
@@ -119,6 +127,7 @@ export function diagnoseBuildLogs(logLines: string[]): AiDiagnosticReport {
       suggestedSolution: "Upgrade service instance tier from 'lite' (512MB) to 'standard-1' (2GB) or pass NODE_OPTIONS='--max-old-space-size=1536'.",
       automatedFixCommand: `NODE_OPTIONS="--max-old-space-size=1536" npm run build`,
       confidenceScore: 0.98,
+      method: "heuristic",
       detectedPatterns: ["JavaScript heap out of memory", "OOM Killer"],
     };
   }
@@ -136,6 +145,7 @@ export function diagnoseBuildLogs(logLines: string[]): AiDiagnosticReport {
       suggestedSolution: "Fix the type mismatch in your code or run 'npx tsc --noEmit' locally to inspect all type errors.",
       automatedFixCommand: `npx tsc --noEmit`,
       confidenceScore: 0.93,
+      method: "heuristic",
       detectedPatterns: ["Type error", "TS2322"],
     };
   }
@@ -148,6 +158,7 @@ export function diagnoseBuildLogs(logLines: string[]): AiDiagnosticReport {
     rootCause: "Process returned a non-zero exit code during execution step.",
     suggestedSolution: "Inspect full build step logs above. Check your repository buildCommand and startCommand.",
     confidenceScore: 0.70,
+    method: "heuristic",
     detectedPatterns: ["Process exited with code 1"],
   };
 }

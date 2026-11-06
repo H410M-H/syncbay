@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse, type NextFetchEvent } from "next/server";
 import { resolveServiceRoute } from "@/lib/edge/service-registry";
 import { recordServiceRequest } from "@/lib/scale/activity";
+import { enforceWaf } from "@/lib/edge/waf";
+import { selectCanaryUpstream } from "@/lib/edge/canary";
 
 /**
  * Syncbay edge proxy (Next 16 `proxy.ts`, Node.js runtime).
@@ -145,6 +147,9 @@ export async function proxy(req: NextRequest, event?: NextFetchEvent) {
     });
   }
 
+  const wafBlock = await enforceWaf(req, host);
+  if (wafBlock) return wafBlock;
+
   // Return 502 Bad Gateway if service has crashed or failed
   if (route && (route.status === "FAILED" || route.status === "CRASHED")) {
     return NextResponse.json(
@@ -164,6 +169,8 @@ export async function proxy(req: NextRequest, event?: NextFetchEvent) {
     if (activity) event?.waitUntil(activity);
     let upstreamBase = route.upstreamUrl || (route.targetPort ? `http://127.0.0.1:${route.targetPort}` : undefined);
     let targetPort = route.targetPort;
+    const canary = await selectCanaryUpstream(req, host, upstreamBase);
+    if (canary) [upstreamBase, targetPort] = [canary.upstreamUrl, canary.targetPort];
     const runnerUrl = process.env.RUNNER_URL;
 
     if (upstreamBase && upstreamBase.includes("127.0.0.1") && runnerUrl && !route.isLocal && process.env.RUNNER_FORCE_LOCAL !== "true") {
@@ -194,11 +201,12 @@ export async function proxy(req: NextRequest, event?: NextFetchEvent) {
           target.searchParams.set("__sb_port", String(targetPort));
         }
 
-        return NextResponse.rewrite(target, {
+        const rewritten = NextResponse.rewrite(target, {
           request: {
             headers: requestHeaders,
           },
         });
+        return canary ? canary.applyCookie(rewritten) : rewritten;
       } catch {
         // If URL parsing fails, pass-through
         return NextResponse.next();

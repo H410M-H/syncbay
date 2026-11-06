@@ -2,18 +2,23 @@ import { NextRequest, NextResponse } from "next/server";
 import { isAuthorizedCronRequest } from "@/lib/crons/cron-auth";
 import { runDeploymentRecovery } from "@/lib/crons/recovery-hook";
 import { sampleActiveServices } from "@/lib/telemetry/metrics-sampler";
+import { runDueCronJobs } from "@/lib/devops/cron-runner";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-/** Every minute (vercel.json): stale-deployment recovery + metric sampling. */
+/** Every minute (vercel.json): stale-deployment recovery, metric sampling and due customer CronJobs. */
 export async function GET(req: NextRequest) {
   if (!isAuthorizedCronRequest(req.headers)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  const [recovery, metrics] = await Promise.all([
+  const now = new Date();
+  const [recovery, metrics, crons] = await Promise.all([
     runDeploymentRecovery(),
     sampleActiveServices().catch((err: Error) => ({ error: err.message })),
+    runDueCronJobs(now)
+      .then(({ results: _results, ...summary }) => summary)
+      .catch((err: Error) => ({ error: err.message })),
   ]);
-  return NextResponse.json({ ok: true, at: new Date().toISOString(), recovery, metrics });
+  return NextResponse.json({ ok: true, at: now.toISOString(), recovery, metrics, crons });
 }

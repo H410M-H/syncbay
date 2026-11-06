@@ -13,6 +13,7 @@ import crypto from "node:crypto";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { logEventBus } from "../telemetry/event-bus";
+import { dockerVolumeArgs, type VolumePayload } from "@/lib/orchestrator/volume-payload";
 
 const execAsync = promisify(exec);
 
@@ -81,6 +82,8 @@ export interface BuildDispatchParams {
   targetPort?: number;
   cleanBuild?: boolean;
   environmentVariables?: Record<string, string>;
+  /** Team E: Volume rows mounted by the runner (named Docker volume or native bind dir). */
+  volumes?: VolumePayload[];
   subdomain?: string;
   callbackUrl?: string;
   onLog?: (line: string) => void;
@@ -610,6 +613,7 @@ export class WebhookRunnerDriver implements RunnerDriver {
       port: params.port,
       cleanBuild: params.cleanBuild,
       environmentVariables: params.environmentVariables,
+      volumes: params.volumes,
       subdomain: params.subdomain,
       callbackUrl: params.callbackUrl,
     };
@@ -1241,7 +1245,7 @@ export class SshRunnerDriver implements RunnerDriver {
       }
     }
 
-    return `docker run -d --name ${name} --restart unless-stopped -p ${safeHostPort}:${safeContainerPort} ${envFlags.join(" ")} ${tag}`.trim();
+    return `docker run -d --name ${name} --restart unless-stopped -p ${safeHostPort}:${safeContainerPort} ${dockerVolumeArgs(params.volumes)} ${envFlags.join(" ")} ${tag}`.replace(/ {2,}/g, " ").trim();
   }
 
   public async dispatchBuild(params: BuildDispatchParams): Promise<BuildDispatchResult> {
@@ -1425,6 +1429,7 @@ export class LocalRunnerDriver implements RunnerDriver {
         targetPort: params.targetPort || params.port || 3000,
         cleanBuild: params.cleanBuild,
         environmentVariables: params.environmentVariables,
+        volumes: params.volumes,
         onLog: (line: string) => emitLog(params, line),
       });
 

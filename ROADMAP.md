@@ -28,12 +28,28 @@
 - [x] **Managed databases and terminal.** Postgres and Redis containers on the runner, health checks, `DATABASE_URL`/`REDIS_URL` auto-injection, and an SSE/POST web terminal with a simulated fallback.
 - [x] **CI/CD and environment validation.** GitHub Actions CI, OAuth callback hardening for Vercel previews, a React Email build check, and a complete `.env.example`.
 
+## Completed — v1.1 (backend de-mocked)
+- [x] Stateless web terminal: signed session tokens, `TerminalSession` rows; works across Vercel instances
+- [x] `requestTunnelReload()` rebuilds cloudflared ingress from the DB after every deploy, stop, sleep, domain change
+- [x] Single-use nonces on every signed runner request (GET replay closed)
+- [x] Session cookie scoped to `.syncbay.app` (`AUTH_COOKIE_DOMAIN`) so the wake button works on service hosts
+- [x] `PROJECT.md` rewritten to the current architecture
+- [x] Real `/health` probing on Vercel; durable deploys (`DeploymentJob` + `after()` + cron recovery); pull-mode runners
+- [x] Supersede/stop on redeploy; real pause, delete, restart, rollback; PR commit status success/failure
+- [x] Persistent deployment logs, real runner metrics, hourly usage metering, spending caps, scale-to-zero crons
+- [x] Real DNS domain verification; Cloudflare calls fail closed in production; real cache purge
+- [x] Stripe SetupIntents/PaymentIntents/invoices/webhooks (no card data on Syncbay); real R2 buckets
+- [x] DB-backed cron jobs, WAF (enforced in `proxy.ts`), canary routing; real Query Studio (read-only by default)
+- [x] Runner-native Postgres/Redis provisioning without Docker; volume mounts
+
 ## Next
-- [ ] Shared terminal-session store (sessions are in-memory per control-plane instance; Vercel needs sticky routing or Redis)
-- [ ] Call `reloadTunnel()` from the control plane with the full active-route table (runner-side config-file hook already live)
-- [ ] Single-use nonces for signed GET requests (POSTs are already replay-protected)
-- [ ] Widen the NextAuth cookie domain to `.syncbay.app` so the splash-page wake button works for signed-in users on service hosts
-- [ ] Update `PROJECT.md`, which still describes the M1–M8 era layout
+- [ ] Per-deployment request / 5xx counters so canary auto-rollback has real input (`MetricSample` has CPU/memory/network only)
+- [ ] Build over SSH: `SshRunnerDriver` only runs a pre-built `syncbay-<svc>:<sha>` image; it does not clone/build
+- [ ] TLS for custom domains on a zone without Cloudflare SSL for SaaS (DNS-only verification works; certificates must come from elsewhere, e.g. Vercel domains)
+- [ ] MySQL provisioning / Query Studio against a real MySQL server (untested: Docker Hub rate limit)
+- [ ] Monthly invoicing catch-up if the sweep cron is down on the 1st
+- [ ] Query Studio tunnel through the runner for DBs on private hosts
+- [ ] Bring the `syncbay` Cloudflare tunnel connector up on a runner host (tunnel exists, status `down`)
 
 ## Tech debt
 - [ ] Resolve the React Compiler advisories (`react-hooks/set-state-in-effect`, `preserve-manual-memoization`). They're downgraded to warnings in `eslint.config.mjs`.

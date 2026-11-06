@@ -8,6 +8,7 @@ import { runKnipAnalysis } from "@/lib/buildpack/knip-analyzer";
 import { registerServiceRouteAsync } from "@/lib/edge/service-registry";
 import { applyDatabaseEnv } from "@/lib/database-provider";
 import { requestTunnelReload } from "@/lib/tunnel/tunnel-sync";
+import { loadServiceVolumes } from "@/lib/orchestrator/volume-payload";
 import {
   getRunnerDriver,
   RunnerDriverFactory,
@@ -250,6 +251,7 @@ export async function executeDeployment(
       targetPort: service?.port || 3000,
       cleanBuild: options.cleanBuild,
       environmentVariables: envMap,
+      volumes: await loadServiceVolumes(serviceId),
       subdomain: defaultUrl,
       onLog: dispatchOnLog,
     };

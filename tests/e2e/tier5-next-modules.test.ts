@@ -31,7 +31,7 @@ import {
 import { parseCliArgs, runCli } from "../../src/cli/index";
 import { checkScope } from "../../src/lib/api/auth-token";
 import { executeShellCommand, getPrompt } from "../../src/lib/shell/web-shell";
-import { executeQuery, getDatabaseSchema } from "../../src/lib/query-studio/engine";
+import { executeQuery, getDatabaseSchema, detectDestructiveSql, parseRedisCommand } from "../../src/lib/query-studio/engine";
 import robots from "../../src/app/robots";
 import sitemap from "../../src/app/sitemap";
 
@@ -227,81 +227,54 @@ registerTest("M7-SHELL-03", "M7", 5, "Web shell navigation (cd) tracks directory
   assertIncludes(prompt, "~");
 });
 
-registerTest("M7-STUDIO-01", "M7", 5, "Query Studio executes SQL queries and returns column metadata", async () => {
-  const result = await executeQuery("SELECT * FROM users LIMIT 5", "POSTGRES", true);
-  assertEqual(result.commandType, "SELECT");
-  assertTrue(result.rows.length > 0);
-  assertTrue(result.columns.some((c) => c.name === "email"));
-  assertTrue(result.durationMs >= 0);
-  assertFalse(result.isDestructive);
+// Real-server Query Studio coverage lives in tests/verify-query-studio.ts (Postgres + Redis).
+const PG_TARGET = { provider: "POSTGRES" as const, connectionUrl: "postgresql://postgres:x@127.0.0.1:1/main" };
+const SIMULATED = { provider: "POSTGRES" as const, connectionUrl: "postgresql://postgres:x@sb-db-postgres-abc.us-east-1.syncbay-db.internal:5432/main" };
+
+registerTest("M7-STUDIO-01", "M7", 5, "Query Studio refuses simulated instances instead of inventing rows", async () => {
+  let message = "";
+  try {
+    await executeQuery(SIMULATED, "SELECT * FROM users LIMIT 5");
+  } catch (err: any) {
+    message = err.message;
+  }
+  assertIncludes(message, "simulated instance");
+  assertFalse(detectDestructiveSql("SELECT * FROM users WHERE id = 1").isDestructive);
 });
 
 registerTest("M7-STUDIO-02", "M7", 5, "Query Studio Safe Mode blocks destructive DROP/DELETE without WHERE and bypass attempts", async () => {
+  for (const sql of ["DROP TABLE users;", "DELETE FROM users", "SELECT 1; DELETE FROM users;", "TRUNCATE TABLE users;", "DROP SCHEMA public CASCADE;"]) {
+    let message = "";
+    try {
+      await executeQuery(PG_TARGET, sql, { mode: "write", safeMode: true });
+    } catch (err: any) {
+      message = err.message;
+    }
+    assertIncludes(message, "Safe Mode Block", `Safe Mode must block: ${sql}`);
+  }
+});
+
+registerTest("M7-STUDIO-03", "M7", 5, "Query Studio Redis read-only mode refuses write commands before connecting", async () => {
+  const target = { provider: "REDIS" as const, connectionUrl: "redis://default:x@127.0.0.1:1" };
+  let message = "";
+  try {
+    await executeQuery(target, "SET user:session 123");
+  } catch (err: any) {
+    message = err.message;
+  }
+  assertIncludes(message, "Read-only mode");
+  const args = parseRedisCommand(`SET greeting "hello world" EX 10`);
+  assertEqual(args.join("|"), "SET|greeting|hello world|EX|10");
+});
+
+registerTest("M7-STUDIO-04", "M7", 5, "Schema introspection refuses simulated instances", async () => {
   let threw = false;
   try {
-    await executeQuery("DROP TABLE users;", "POSTGRES", true);
-  } catch (err: any) {
+    await getDatabaseSchema(SIMULATED);
+  } catch {
     threw = true;
-    assertIncludes(err.message, "Safe Mode Block");
   }
-  assertTrue(threw, "Safe Mode must block DROP TABLE");
-
-  let threwDelete = false;
-  try {
-    await executeQuery("DELETE FROM users", "POSTGRES", true);
-  } catch (err: any) {
-    threwDelete = true;
-    assertIncludes(err.message, "Safe Mode Block");
-  }
-  assertTrue(threwDelete, "Safe Mode must block DELETE without WHERE");
-
-  // Multi-statement bypass attempt: SELECT 1; DELETE FROM users;
-  let threwMulti = false;
-  try {
-    await executeQuery("SELECT 1; DELETE FROM users;", "POSTGRES", true);
-  } catch (err: any) {
-    threwMulti = true;
-    assertIncludes(err.message, "Safe Mode Block");
-  }
-  assertTrue(threwMulti, "Safe Mode must block multi-statement DELETE without WHERE");
-
-  // TRUNCATE TABLE bypass attempt
-  let threwTruncate = false;
-  try {
-    await executeQuery("TRUNCATE TABLE users;", "POSTGRES", true);
-  } catch (err: any) {
-    threwTruncate = true;
-    assertIncludes(err.message, "Safe Mode Block");
-  }
-  assertTrue(threwTruncate, "Safe Mode must block TRUNCATE TABLE");
-
-  // DROP SCHEMA bypass attempt
-  let threwDropSchema = false;
-  try {
-    await executeQuery("DROP SCHEMA public CASCADE;", "POSTGRES", true);
-  } catch (err: any) {
-    threwDropSchema = true;
-    assertIncludes(err.message, "Safe Mode Block");
-  }
-  assertTrue(threwDropSchema, "Safe Mode must block DROP SCHEMA");
-});
-
-registerTest("M7-STUDIO-03", "M7", 5, "Query Studio handles Redis commands (PING, SET, GET, KEYS)", async () => {
-  const pingRes = await executeQuery("PING", "REDIS");
-  assertEqual(pingRes.rows[0].response, "PONG");
-
-  const setRes = await executeQuery("SET user:session 123", "REDIS");
-  assertEqual(setRes.rows[0].status, "OK");
-
-  const keysRes = await executeQuery("KEYS *", "REDIS");
-  assertTrue(keysRes.rows.length >= 1);
-});
-
-registerTest("M7-STUDIO-04", "M7", 5, "Database schema introspection returns table structures", () => {
-  const schema = getDatabaseSchema("POSTGRES");
-  assertTrue(schema.length >= 3);
-  const usersTable = schema.find((t) => t.tableName === "users");
-  assertTrue(!!usersTable && usersTable.columns.some((c) => c.name === "id" && c.isPrimaryKey));
+  assertTrue(threw, "Introspection must not fabricate tables");
 });
 
 // ══════════════════════════════════════════════════════════════════════════════

@@ -2,9 +2,10 @@
  * Syncbay Runner Agent — Managed Databases & Web Terminal Sessions
  *
  * HMAC-protected routes mounted by RunnerDaemon.handleRequest:
- *   POST   /api/databases                 provision postgres:16-alpine | redis:7-alpine
- *   DELETE /api/databases/:id             remove container + named volume, release port
- *   GET    /api/databases/:id/health      pg_isready / redis-cli ping via docker exec
+ *   POST   /api/databases                 provision postgres:16-alpine | redis:7-alpine | mysql:8 (Docker),
+ *                                         or a native Postgres/Redis server (see native-db.ts)
+ *   DELETE /api/databases/:id             remove container + named volume (or stop + rm data dir), release port
+ *   GET    /api/databases/:id/health      pg_isready / redis-cli ping / mysqladmin ping
  *   POST   /api/terminals                 spawn `docker exec -i <container> sh` or `sh` in the job workspace
  *   POST   /api/terminals/:id/input       write to the session's stdin
  *   GET    /api/terminals/:id/stream      SSE output stream
@@ -14,8 +15,10 @@
  * runner-driver.ts and runner/src/request-auth.ts); POST payload is the raw body, GET/DELETE
  * payload is the request pathname. The daemon's verifier consumes the `X-Syncbay-Nonce`, so
  * every signed request is single-use.
- * When Docker is unavailable (or RUNNER_DRIVER=mock) databases are simulated: a fake
- * container id is returned and health always reports healthy.
+ * Database mode (RUNNER_DB_MODE, default auto): Docker when `docker info` works,
+ * otherwise native processes when initdb/pg_ctl or redis-server exist on the host,
+ * otherwise (or RUNNER_DRIVER=mock) a simulated record whose health is always healthy.
+ * MySQL needs Docker.
  */
 
 import type * as http from "node:http";
@@ -24,6 +27,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { PortManager, defaultPortManager } from "./port-manager.ts";
+import { NativeDatabaseManager } from "./native-db.ts";
 
 export type SignatureVerifier = (
   payload: string,
@@ -33,15 +37,18 @@ export type SignatureVerifier = (
 
 export interface RunnerServicesOptions {
   portManager?: PortManager;
-  /** "auto" probes `docker info`; "mock" forces simulation. */
-  mode?: "auto" | "docker" | "mock";
+  /** "auto" probes `docker info`, then native binaries; "native" forces native processes; "mock" forces simulation. */
+  mode?: "auto" | "docker" | "native" | "mock";
+  /** Native database manager (state dir override in tests). */
+  native?: NativeDatabaseManager;
   /** Hostname written into connection URLs (as seen by services on this runner). */
   dbHost?: string;
   terminalIdleMs?: number;
   workspaceRoot?: string;
 }
 
-type ManagedDbProvider = "POSTGRES" | "REDIS";
+type ManagedDbProvider = "POSTGRES" | "REDIS" | "MYSQL";
+type DbBackend = "docker" | "native" | "mock";
 
 interface ManagedDbRecord {
   id: string;
@@ -51,7 +58,7 @@ interface ManagedDbRecord {
   host: string;
   port: number;
   connectionUrl: string;
-  mock: boolean;
+  backend: DbBackend;
   createdAt: string;
 }
 
@@ -103,7 +110,8 @@ function parseJson(body: string): Record<string, any> | null {
 
 export class RunnerServices {
   private readonly portManager: PortManager;
-  private readonly mode: "auto" | "docker" | "mock";
+  private readonly mode: "auto" | "docker" | "native" | "mock";
+  private readonly native: NativeDatabaseManager;
   private readonly dbHost: string;
   private readonly terminalIdleMs: number;
   private readonly workspaceRoot: string;
@@ -114,7 +122,9 @@ export class RunnerServices {
 
   constructor(options: RunnerServicesOptions = {}) {
     this.portManager = options.portManager || defaultPortManager;
-    this.mode = options.mode || (process.env.RUNNER_DRIVER === "mock" ? "mock" : "auto");
+    const envMode = process.env.RUNNER_DB_MODE as RunnerServicesOptions["mode"] | undefined;
+    this.mode = options.mode || (process.env.RUNNER_DRIVER === "mock" ? "mock" : envMode && ["auto", "docker", "native", "mock"].includes(envMode) ? envMode : "auto");
+    this.native = options.native || new NativeDatabaseManager();
     this.dbHost = options.dbHost || process.env.RUNNER_DB_HOST || "127.0.0.1";
     this.terminalIdleMs = options.terminalIdleMs ?? 10 * 60 * 1000;
     this.workspaceRoot = options.workspaceRoot || path.join(process.cwd(), ".runner_workspace");
@@ -174,7 +184,7 @@ export class RunnerServices {
   // ─── Capability probes ─────────────────────────────────────────────────────
 
   private useDocker(): Promise<boolean> {
-    if (this.mode === "mock") return Promise.resolve(false);
+    if (this.mode === "mock" || this.mode === "native") return Promise.resolve(false);
     if (this.mode === "docker") return Promise.resolve(true);
     if (!this.dockerProbe) {
       this.dockerProbe = run("docker", ["info", "--format", "{{.ServerVersion}}"], undefined, 5000).then((r) => r.code === 0);
@@ -191,48 +201,82 @@ export class RunnerServices {
 
   // ─── Managed databases ────────────────────────────────────────────────────
 
+  /** Backend for a new database of this provider. */
+  private async backendFor(provider: ManagedDbProvider): Promise<DbBackend | null> {
+    if (this.mode === "mock") return "mock";
+    if (await this.useDocker()) return "docker";
+    if (provider === "MYSQL") return null;
+    if (this.mode === "native" || this.mode === "auto") {
+      if (this.native.availableProviders().includes(provider)) return "native";
+      return this.mode === "native" ? null : "mock";
+    }
+    return null;
+  }
+
   private async createDatabase(res: http.ServerResponse, body: string): Promise<void> {
     const params = parseJson(body);
     if (!params) return sendJson(res, 400, { error: "Invalid JSON body" });
 
     const provider = String(params.provider || "POSTGRES").toUpperCase();
-    if (provider !== "POSTGRES" && provider !== "REDIS") {
-      return sendJson(res, 400, { error: `Unsupported provider: ${provider}. Supported: POSTGRES, REDIS` });
+    if (provider !== "POSTGRES" && provider !== "REDIS" && provider !== "MYSQL") {
+      return sendJson(res, 400, { error: `Unsupported provider: ${provider}. Supported: POSTGRES, REDIS, MYSQL` });
     }
     const id = typeof params.id === "string" && SAFE_ID.test(params.id) ? params.id.toLowerCase() : `db${crypto.randomBytes(6).toString("hex")}`;
 
     const existing = this.databases.get(id);
     if (existing) return sendJson(res, 200, this.publicRecord(existing));
 
+    const backend = await this.backendFor(provider);
+    if (!backend) {
+      return sendJson(res, 501, {
+        error: provider === "MYSQL" ? "MySQL provisioning requires Docker on the runner" : `No Docker and no native ${provider} binaries on this runner`,
+      });
+    }
+
     const password = crypto.randomBytes(18).toString("base64url");
     const containerName = `syncbay-db-${id}`;
     const port = await this.portManager.allocatePort(`db:${id}`);
-    const docker = await this.useDocker();
+    const host = this.dbHost;
     let containerId = `mock-${crypto.randomBytes(6).toString("hex")}`;
 
-    if (docker) {
-      const env = { ...process.env, SB_DB_PASSWORD: password, POSTGRES_PASSWORD: password, REDIS_PASSWORD: password };
+    if (backend === "docker") {
+      const env = { ...process.env, SB_DB_PASSWORD: password, POSTGRES_PASSWORD: password, REDIS_PASSWORD: password, MYSQL_ROOT_PASSWORD: password };
       const common = ["run", "-d", "--name", containerName, "--label", `syncbay.managed-db=${id}`, "--restart", "unless-stopped"];
       const args =
         provider === "POSTGRES"
           ? [...common, "-e", "POSTGRES_PASSWORD", "-e", "POSTGRES_USER=postgres", "-e", "POSTGRES_DB=main",
              "-p", `${port}:5432`, "-v", `${containerName}-data:/var/lib/postgresql/data`, "postgres:16-alpine"]
+          : provider === "MYSQL"
+          ? [...common, "-e", "MYSQL_ROOT_PASSWORD", "-e", "MYSQL_DATABASE=main",
+             "-p", `${port}:3306`, "-v", `${containerName}-data:/var/lib/mysql`, "mysql:8"]
           : [...common, "-e", "REDIS_PASSWORD", "-p", `${port}:6379`, "-v", `${containerName}-data:/data`, "redis:7-alpine",
              "sh", "-c", 'exec redis-server --appendonly yes --requirepass "$REDIS_PASSWORD"'];
       // Passwords travel via the docker client's environment (`-e NAME` without value), never argv.
-      const result = await run("docker", args, env, 180000);
+      const result = await run("docker", args, env, 300000);
       if (result.code !== 0) {
         this.portManager.releasePort(port);
         return sendJson(res, 500, { error: `docker run failed: ${result.stderr.trim().slice(0, 500)}` });
       }
       containerId = result.stdout.trim().split("\n").pop()!.slice(0, 12) || containerName;
+    } else if (backend === "native") {
+      const listen = process.env.RUNNER_DB_LISTEN || (/^(127\.|localhost$)/.test(host) ? "127.0.0.1" : "*");
+      try {
+        await this.native.provision({ id, provider: provider as "POSTGRES" | "REDIS", port, host, listen, password });
+      } catch (err: any) {
+        this.portManager.releaseServicePort(`db:${id}`);
+        await this.native.destroy(id).catch(() => null);
+        return sendJson(res, 500, { error: `native provisioning failed: ${String(err?.message || err).slice(0, 600)}` });
+      }
+      containerId = `native-${id}`;
     }
 
-    const host = this.dbHost;
+    const encoded = encodeURIComponent(password);
     const connectionUrl =
       provider === "POSTGRES"
-        ? `postgresql://postgres:${password}@${host}:${port}/main`
-        : `redis://default:${password}@${host}:${port}`;
+        ? `postgresql://postgres:${encoded}@${host}:${port}/main`
+        : provider === "MYSQL"
+        ? `mysql://root:${encoded}@${host}:${port}/main`
+        : `redis://default:${encoded}@${host}:${port}`;
 
     const record: ManagedDbRecord = {
       id,
@@ -242,11 +286,32 @@ export class RunnerServices {
       host,
       port,
       connectionUrl,
-      mock: !docker,
+      backend,
       createdAt: new Date().toISOString(),
     };
     this.databases.set(id, record);
     sendJson(res, 201, this.publicRecord(record));
+  }
+
+  /** In-memory record, or a native instance recovered from its meta.json after a restart. */
+  private findRecord(id: string): ManagedDbRecord | undefined {
+    const record = this.databases.get(id);
+    if (record) return record;
+    const meta = this.native.readMeta(id);
+    if (!meta) return undefined;
+    const recovered: ManagedDbRecord = {
+      id,
+      provider: meta.provider,
+      containerName: `syncbay-db-${id}`,
+      containerId: `native-${id}`,
+      host: meta.host,
+      port: meta.port,
+      connectionUrl: meta.connectionUrl,
+      backend: "native",
+      createdAt: meta.createdAt,
+    };
+    this.databases.set(id, recovered);
+    return recovered;
   }
 
   private publicRecord(record: ManagedDbRecord) {
@@ -258,17 +323,19 @@ export class RunnerServices {
       port: record.port,
       containerId: record.containerId,
       containerName: record.containerName,
-      mode: record.mock ? "mock" : "docker",
+      mode: record.backend,
     };
   }
 
   private async deleteDatabase(res: http.ServerResponse, rawId: string): Promise<void> {
     if (!SAFE_ID.test(rawId)) return sendJson(res, 400, { error: "Invalid database id" });
     const id = rawId.toLowerCase();
-    const record = this.databases.get(id);
+    const record = this.findRecord(id);
     const containerName = record?.containerName || `syncbay-db-${id}`;
 
-    if (record ? !record.mock : await this.useDocker()) {
+    if (record?.backend === "native") {
+      await this.native.destroy(id);
+    } else if (record ? record.backend === "docker" : await this.useDocker()) {
       const removed = await run("docker", ["rm", "-f", containerName], undefined, 60000);
       if (removed.code !== 0 && !/no such container/i.test(removed.stderr)) {
         return sendJson(res, 500, { error: `Container teardown failed: ${removed.stderr.trim().slice(0, 500)}` });
@@ -286,11 +353,26 @@ export class RunnerServices {
   private async databaseHealth(res: http.ServerResponse, rawId: string): Promise<void> {
     if (!SAFE_ID.test(rawId)) return sendJson(res, 400, { error: "Invalid database id" });
     const id = rawId.toLowerCase();
-    const record = this.databases.get(id);
+    const record = this.findRecord(id);
     const startedAt = Date.now();
 
-    if (record?.mock || (!record && !(await this.useDocker()))) {
+    if (record?.backend === "mock" || (!record && !(await this.useDocker()))) {
+      if (!record && this.mode !== "mock") return sendJson(res, 404, { id, healthy: false, status: "missing" });
       return sendJson(res, 200, { id, healthy: true, status: "healthy", mode: "mock", latencyMs: 0 });
+    }
+
+    if (record?.backend === "native") {
+      const meta = this.native.readMeta(id);
+      if (!meta) return sendJson(res, 404, { id, healthy: false, status: "missing" });
+      const probe = await this.native.health(meta);
+      return sendJson(res, 200, {
+        id,
+        healthy: probe.healthy,
+        status: probe.healthy ? "healthy" : "unhealthy",
+        mode: "native",
+        latencyMs: Date.now() - startedAt,
+        output: probe.output.slice(0, 300),
+      });
     }
 
     const containerName = record?.containerName || `syncbay-db-${id}`;
@@ -298,14 +380,17 @@ export class RunnerServices {
     if (!provider) {
       const inspect = await run("docker", ["inspect", "-f", "{{.Config.Image}}", containerName], undefined, 10000);
       if (inspect.code !== 0) return sendJson(res, 404, { id, healthy: false, status: "missing" });
-      provider = inspect.stdout.includes("redis") ? "REDIS" : "POSTGRES";
+      provider = inspect.stdout.includes("redis") ? "REDIS" : inspect.stdout.includes("mysql") ? "MYSQL" : "POSTGRES";
     }
 
     const probe =
       provider === "POSTGRES"
         ? await run("docker", ["exec", containerName, "pg_isready", "-U", "postgres", "-d", "main"], undefined, 10000)
+        : provider === "MYSQL"
+        ? await run("docker", ["exec", containerName, "sh", "-c", 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysqladmin ping -uroot -h127.0.0.1 --silent'], undefined, 10000)
         : await run("docker", ["exec", containerName, "sh", "-c", 'redis-cli -a "$REDIS_PASSWORD" --no-auth-warning ping'], undefined, 10000);
-    const healthy = probe.code === 0 && (provider === "POSTGRES" || probe.stdout.includes("PONG"));
+    const healthy =
+      probe.code === 0 && (provider === "POSTGRES" || (provider === "MYSQL" ? /alive/.test(probe.stdout) : probe.stdout.includes("PONG")));
 
     sendJson(res, 200, {
       id,
