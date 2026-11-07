@@ -148,6 +148,8 @@ type ServiceActionResult = {
   stopFailures?: number;
 };
 
+const errorMessage = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
 /** All failures are runner configuration errors and nothing succeeded: one PRECONDITION_FAILED. */
 function throwIfOnlyConfigFailures(results: ServiceActionResult[], configError: Error | null): void {
   if (!configError) return;
@@ -305,8 +307,8 @@ export const projectRouter = createTRPCRouter({
             { rebuild: Boolean(input.rebuild) || needsRebuild(prev), userId: ctx.session.user.id }
           );
           results.push({ ...base, status: "scheduled", deploymentId: deployment.id, rebuild });
-        } catch (err: any) {
-          results.push({ ...base, status: "failed", reason: err?.message || String(err) });
+        } catch (err) {
+          results.push({ ...base, status: "failed", reason: errorMessage(err) });
         }
       }
       return { projectId: input.projectId, results, scheduled: results.filter((r) => r.status === "scheduled").length };
@@ -334,9 +336,9 @@ export const projectRouter = createTRPCRouter({
             stopFailures: lifecycle?.failed.length ?? 0,
             ...(lifecycle?.failed.length ? { reason: lifecycle.failed.map((f) => f.message).filter(Boolean).join("; ") } : {}),
           });
-        } catch (err: any) {
+        } catch (err) {
           if (isRunnerConfigError(err)) configError = err;
-          results.push({ ...base, status: "failed", reason: err?.message || String(err) });
+          results.push({ ...base, status: "failed", reason: errorMessage(err) });
         }
       }
       throwIfOnlyConfigFailures(results, configError);
@@ -363,9 +365,9 @@ export const projectRouter = createTRPCRouter({
             status: "resumed",
             ...(wokeDeploymentId ? { deploymentId: wokeDeploymentId } : { reason: "Nothing to wake" }),
           });
-        } catch (err: any) {
+        } catch (err) {
           if (isRunnerConfigError(err)) configError = err;
-          results.push({ ...base, status: "failed", reason: err?.message || String(err) });
+          results.push({ ...base, status: "failed", reason: errorMessage(err) });
         }
       }
       throwIfOnlyConfigFailures(results, configError);

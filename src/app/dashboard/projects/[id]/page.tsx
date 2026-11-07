@@ -11,6 +11,9 @@ import { WebShell } from "@/components/dashboard/web-shell";
 import { QueryStudio } from "@/components/dashboard/query-studio";
 import { DevOpsSuite } from "@/components/dashboard/devops-suite";
 import { BackButton } from "@/components/ui/back-button";
+import { ActionMenu } from "@/components/ui/action-menu";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { ProjectSetupNotice } from "@/components/dashboard/project-setup-notice";
 
 type ConsoleTab =
   | "services"
@@ -114,22 +117,8 @@ function ProjectConsoleContent() {
   const updateScalingMutation = trpc.service.updateScaling.useMutation();
   const [scalingServiceId, setScalingServiceId] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
-  const [openDeploymentMenuId, setOpenDeploymentMenuId] = useState<string | null>(null);
-
-  useEffect(() => {
-    function handleClickOutside(e: MouseEvent) {
-      if (openDeploymentMenuId) {
-        const target = e.target as HTMLElement;
-        if (!target.closest?.("[data-deployment-menu]")) {
-          setOpenDeploymentMenuId(null);
-        }
-      }
-    }
-    if (openDeploymentMenuId) {
-      document.addEventListener("mousedown", handleClickOutside);
-    }
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [openDeploymentMenuId]);
+  const [deleteProjectOpen, setDeleteProjectOpen] = useState(false);
+  const [deleteProjectError, setDeleteProjectError] = useState<string | null>(null);
 
   const handleRestartService = async (serviceId: string) => {
     try {
@@ -670,20 +659,14 @@ function ProjectConsoleContent() {
     }
   };
 
-  const handleDeleteProject = async () => {
-    const confirmation = prompt(`To permanently delete this project, type its exact name "${project.name}":`);
-    if (confirmation !== project.name) {
-      if (confirmation !== null) alert("Name does not match.");
-      return;
-    }
+  const handleDeleteProject = async (confirmName: string) => {
+    setDeleteProjectError(null);
     try {
-      await deleteProjectMutation.mutateAsync({
-        projectId: project.id,
-        confirmName: project.name,
-      });
+      await deleteProjectMutation.mutateAsync({ projectId: project.id, confirmName });
+      setDeleteProjectOpen(false);
       router.push("/dashboard/projects");
-    } catch (e: any) {
-      alert(`Failed to delete project: ${e.message}`);
+    } catch (e) {
+      setDeleteProjectError((e as Error)?.message || "Failed to delete project");
     }
   };
 
@@ -786,6 +769,8 @@ function ProjectConsoleContent() {
           </button>
         ))}
       </div>
+
+      <ProjectSetupNotice />
 
       {/* ════════════════════════════════════════════════════════════════════════
           TAB 1: SERVICES
@@ -1234,95 +1219,20 @@ function ProjectConsoleContent() {
                             >
                               View deployment
                             </Link>
-                            <div style={{ position: "relative" }} data-deployment-menu="true">
-                              <button
-                                type="button"
-                                className="btn btn-ghost btn-sm"
-                                aria-label={`Actions for deployment ${dep.id.slice(0, 8)}`}
-                                aria-expanded={openDeploymentMenuId === dep.id}
-                                onClick={() => setOpenDeploymentMenuId((current) => current === dep.id ? null : dep.id)}
-                              >
-                                More ▾
-                              </button>
-                              {openDeploymentMenuId === dep.id && (
-                                <div
-                                  role="menu"
-                                  aria-label={`Deployment ${dep.id.slice(0, 8)} actions`}
-                                  style={{ position: "absolute", right: 0, top: "calc(100% + 6px)", zIndex: 20, minWidth: "190px", padding: "6px", border: "1px solid var(--border-subtle)", borderRadius: "10px", background: "var(--bg-elevated)", boxShadow: "var(--shadow-lg)", textAlign: "left" }}
-                                >
-                                  <Link
-                                    href={`/dashboard/deployments/${dep.id}`}
-                                    role="menuitem"
-                                    className="btn btn-ghost btn-sm"
-                                    style={{ display: "block", width: "100%", textAlign: "left" }}
-                                    onClick={() => setOpenDeploymentMenuId(null)}
-                                  >
-                                    Overview
-                                  </Link>
-                                  <Link
-                                    href={`/dashboard/deployments/${dep.id}?view=logs`}
-                                    role="menuitem"
-                                    className="btn btn-ghost btn-sm"
-                                    style={{ display: "block", width: "100%", textAlign: "left" }}
-                                    onClick={() => setOpenDeploymentMenuId(null)}
-                                  >
-                                    View logs
-                                  </Link>
-                                  {isRunning && (
-                                    <button
-                                      type="button"
-                                      role="menuitem"
-                                      onClick={() => { setOpenDeploymentMenuId(null); handleCancelDeploy(dep.id); }}
-                                      className="btn btn-ghost btn-sm"
-                                      style={{ display: "block", width: "100%", textAlign: "left", color: "#f87171" }}
-                                    >
-                                      Cancel deployment
-                                    </button>
-                                  )}
-                                  {!isRunning && (
-                                    <>
-                                      <button
-                                        type="button"
-                                        role="menuitem"
-                                        onClick={() => { setOpenDeploymentMenuId(null); handleRedeploy(dep.id, false); }}
-                                        className="btn btn-ghost btn-sm"
-                                        style={{ display: "block", width: "100%", textAlign: "left" }}
-                                      >
-                                        Redeploy
-                                      </button>
-                                      <button
-                                        type="button"
-                                        role="menuitem"
-                                        onClick={() => { setOpenDeploymentMenuId(null); handleRedeploy(dep.id, true); }}
-                                        className="btn btn-ghost btn-sm"
-                                        style={{ display: "block", width: "100%", textAlign: "left" }}
-                                      >
-                                        Clean rebuild
-                                      </button>
-                                      <button
-                                        type="button"
-                                        role="menuitem"
-                                        onClick={() => { setOpenDeploymentMenuId(null); handleInstantRollback(dep.id); }}
-                                        className="btn btn-ghost btn-sm"
-                                        style={{ display: "block", width: "100%", textAlign: "left" }}
-                                      >
-                                        Roll back to this
-                                      </button>
-                                    </>
-                                  )}
-                                  <hr style={{ border: "none", borderTop: "1px solid var(--border-subtle)", margin: "4px 0" }} />
-                                  <button
-                                    type="button"
-                                    role="menuitem"
-                                    onClick={() => { setOpenDeploymentMenuId(null); handleDeleteDeployment(dep.id); }}
-                                    className="btn btn-ghost btn-sm"
-                                    style={{ display: "block", width: "100%", textAlign: "left", color: "#ef4444", fontWeight: 600 }}
-                                  >
-                                    🗑️ Delete deployment
-                                  </button>
-                                </div>
-                              )}
-                            </div>
+                            <ActionMenu
+                              label={`Actions for deployment ${dep.id.slice(0, 8)}`}
+                              trigger="More ▾"
+                              minWidth={190}
+                              items={[
+                                { key: "overview", label: "Overview", href: `/dashboard/deployments/${dep.id}` },
+                                { key: "logs", label: "View logs", href: `/dashboard/deployments/${dep.id}?view=logs` },
+                                isRunning && { key: "cancel", label: "Cancel deployment", danger: true, onSelect: () => handleCancelDeploy(dep.id) },
+                                !isRunning && { key: "redeploy", label: "Redeploy", onSelect: () => handleRedeploy(dep.id, false) },
+                                !isRunning && { key: "rebuild", label: "Clean rebuild", onSelect: () => handleRedeploy(dep.id, true) },
+                                !isRunning && { key: "rollback", label: "Roll back to this", onSelect: () => handleInstantRollback(dep.id) },
+                                { key: "delete", label: "Delete deployment", icon: "🗑️", danger: true, separatorBefore: true, onSelect: () => handleDeleteDeployment(dep.id) },
+                              ]}
+                            />
                           </div>
                         </td>
                       </tr>
@@ -2360,11 +2270,23 @@ function ProjectConsoleContent() {
           <div className="card" style={{ borderColor: "rgba(239,68,68,0.3)" }}>
             <h3 style={{ color: "#f87171", marginBottom: "6px" }}>Danger Zone</h3>
             <p style={{ fontSize: "0.875rem", marginBottom: "16px" }}>
-              Permanently delete this project and all affiliated services, containers, and domain routing.
+              Permanently delete this project: every service&apos;s containers are stopped on the runner, its routes and custom domains are removed. There is no restore.
             </p>
-            <button onClick={handleDeleteProject} className="btn btn-danger">
+            <button onClick={() => { setDeleteProjectError(null); setDeleteProjectOpen(true); }} className="btn btn-danger">
               Delete Project &quot;{project.name}&quot;
             </button>
+            <ConfirmDialog
+              open={deleteProjectOpen}
+              danger
+              title={`Delete project "${project.name}"?`}
+              description="Every service's containers are stopped on the runner, its routes and custom domains are removed, and the project is deleted. This cannot be undone."
+              requireText={project.name}
+              confirmLabel="Delete project"
+              busy={deleteProjectMutation.isPending}
+              error={deleteProjectError}
+              onConfirm={handleDeleteProject}
+              onCancel={() => setDeleteProjectOpen(false)}
+            />
           </div>
         </div>
       )}

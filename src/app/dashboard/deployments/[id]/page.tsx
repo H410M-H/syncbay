@@ -5,6 +5,7 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useState, useEffect, useRef, useMemo } from "react";
 import { trpc } from "@/lib/trpc-client";
 import { BackButton } from "@/components/ui/back-button";
+import { ActionMenu } from "@/components/ui/action-menu";
 
 const statusClass = (status: string) =>
   status === "ACTIVE" ? "badge-active" :
@@ -26,8 +27,6 @@ export default function DeploymentDetailPage() {
   const searchParams = useSearchParams();
   const deploymentId = params.id as string;
 
-  const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
   const logContainerRef = useRef<HTMLPreElement>(null);
 
   const [autoScroll, setAutoScroll] = useState(true);
@@ -64,19 +63,6 @@ export default function DeploymentDetailPage() {
   const rollbackMutation = trpc.deployment.instantRollback.useMutation();
   const cancelMutation = trpc.deployment.cancel.useMutation();
   const deleteMutation = trpc.deployment.delete.useMutation();
-
-  // Close actions menu on click outside
-  useEffect(() => {
-    function handleClickOutside(e: MouseEvent) {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setMenuOpen(false);
-      }
-    }
-    if (menuOpen) {
-      document.addEventListener("mousedown", handleClickOutside);
-    }
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [menuOpen]);
 
   // Connect to SSE log stream for live streaming
   useEffect(() => {
@@ -167,7 +153,6 @@ export default function DeploymentDetailPage() {
 
   const runAction = async (action: () => Promise<any>, successMessage: string) => {
     try {
-      setMenuOpen(false);
       const res = await action();
       setNotice(successMessage);
       await deploymentQuery.refetch();
@@ -279,203 +264,74 @@ export default function DeploymentDetailPage() {
         </div>
 
         {/* ── Dropdown Actions Menu Button ── */}
-        <div style={{ position: "relative" }} ref={menuRef}>
-          <button
-            type="button"
-            className="btn btn-primary"
-            aria-expanded={menuOpen}
-            aria-haspopup="menu"
-            onClick={() => setMenuOpen((open) => !open)}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "8px",
-              padding: "8px 16px",
-              fontWeight: 600,
-            }}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="1"></circle>
-              <circle cx="19" cy="12" r="1"></circle>
-              <circle cx="5" cy="12" r="1"></circle>
-            </svg>
-            <span>Deployment Actions</span>
-            <span style={{ fontSize: "10px", marginLeft: "2px", opacity: 0.8 }}>▼</span>
-          </button>
-
-          {menuOpen && (
-            <div
-              role="menu"
-              style={{
-                position: "absolute",
-                right: 0,
-                top: "calc(100% + 8px)",
-                zIndex: 50,
-                minWidth: "240px",
-                padding: "6px",
-                border: "1px solid var(--border-default)",
-                borderRadius: "12px",
-                background: "var(--bg-elevated)",
-                backdropFilter: "blur(20px)",
-                boxShadow: "0 12px 32px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.08)",
-                animation: "fadeIn 0.15s ease-out",
-              }}
-            >
-              {/* Live Service URL if ACTIVE */}
-              {activeServiceUrl && (
-                <a
-                  href={activeServiceUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  role="menuitem"
-                  className="btn btn-ghost btn-sm"
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "8px",
-                    width: "100%",
-                    textAlign: "left",
-                    color: "var(--brand-accent)",
-                    fontWeight: 600,
-                  }}
-                  onClick={() => setMenuOpen(false)}
-                >
-                  <span>🌐</span>
-                  <span>Open Live Application</span>
-                  <span style={{ marginLeft: "auto", fontSize: "10px" }}>↗</span>
-                </a>
-              )}
-
-              {/* Running Cancel */}
-              {isRunning ? (
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="btn btn-ghost btn-sm"
-                  style={{ display: "flex", alignItems: "center", gap: "8px", width: "100%", textAlign: "left", color: "#f87171" }}
-                  onClick={() => runAction(() => cancelMutation.mutateAsync({ deploymentId }), "Deployment cancelled")}
-                >
-                  <span>🛑</span>
-                  <span>Cancel Deployment</span>
-                </button>
-              ) : (
-                <>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className="btn btn-ghost btn-sm"
-                    style={{ display: "flex", alignItems: "center", gap: "8px", width: "100%", textAlign: "left" }}
-                    onClick={() => runAction(() => redeployMutation.mutateAsync({ deploymentId, rebuild: false }), "Redeploy triggered")}
-                  >
-                    <span>🔄</span>
-                    <span>Redeploy (Fast)</span>
-                  </button>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className="btn btn-ghost btn-sm"
-                    style={{ display: "flex", alignItems: "center", gap: "8px", width: "100%", textAlign: "left" }}
-                    onClick={() => runAction(() => redeployMutation.mutateAsync({ deploymentId, rebuild: true }), "Clean rebuild triggered")}
-                  >
-                    <span>⚡</span>
-                    <span>Clean Rebuild</span>
-                  </button>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className="btn btn-ghost btn-sm"
-                    style={{ display: "flex", alignItems: "center", gap: "8px", width: "100%", textAlign: "left" }}
-                    onClick={() => runAction(() => rollbackMutation.mutateAsync({ deploymentId }), "Traffic rolled back to this deployment")}
-                  >
-                    <span>⏪</span>
-                    <span>Roll Back Traffic to This</span>
-                  </button>
-                </>
-              )}
-
-              <hr style={{ border: "none", borderTop: "1px solid var(--border-subtle)", margin: "4px 0" }} />
-
-              {/* Copy actions */}
-              <button
-                type="button"
-                role="menuitem"
-                className="btn btn-ghost btn-sm"
-                style={{ display: "flex", alignItems: "center", gap: "8px", width: "100%", textAlign: "left", fontSize: "0.8125rem" }}
-                onClick={() => {
-                  copyToClipboard(deployment.id, "Deployment ID");
-                  setMenuOpen(false);
-                }}
-              >
-                <span>📋</span>
-                <span>Copy Deployment ID</span>
-              </button>
-
-              {deployment.build?.commitSha && (
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="btn btn-ghost btn-sm"
-                  style={{ display: "flex", alignItems: "center", gap: "8px", width: "100%", textAlign: "left", fontSize: "0.8125rem" }}
-                  onClick={() => {
-                    copyToClipboard(deployment.build!.commitSha!, "Commit SHA");
-                    setMenuOpen(false);
-                  }}
-                >
-                  <span>🔀</span>
-                  <span>Copy Commit SHA</span>
-                </button>
-              )}
-
-              {/* Service & Project navigation */}
-              <hr style={{ border: "none", borderTop: "1px solid var(--border-subtle)", margin: "4px 0" }} />
-              <Link
-                href={`/dashboard/services/${deployment.serviceId}`}
-                role="menuitem"
-                className="btn btn-ghost btn-sm"
-                style={{ display: "flex", alignItems: "center", gap: "8px", width: "100%", textAlign: "left", fontSize: "0.8125rem" }}
-                onClick={() => setMenuOpen(false)}
-              >
-                <span>⚡</span>
-                <span>View Service Console</span>
-              </Link>
-              {deployment.service?.environment?.projectId && (
-                <Link
-                  href={`/dashboard/projects/${deployment.service.environment.projectId}?tab=deployments`}
-                  role="menuitem"
-                  className="btn btn-ghost btn-sm"
-                  style={{ display: "flex", alignItems: "center", gap: "8px", width: "100%", textAlign: "left", fontSize: "0.8125rem" }}
-                  onClick={() => setMenuOpen(false)}
-                >
-                  <span>📦</span>
-                  <span>View Project Deployments</span>
-                </Link>
-              )}
-
-              <hr style={{ border: "none", borderTop: "1px solid var(--border-subtle)", margin: "4px 0" }} />
-
-              {/* Danger: Delete Deployment */}
-              <button
-                type="button"
-                role="menuitem"
-                disabled={isDeleting}
-                className="btn btn-ghost btn-sm"
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "8px",
-                  width: "100%",
-                  textAlign: "left",
-                  color: "#ef4444",
-                  fontWeight: 600,
-                }}
-                onClick={handleDeleteDeployment}
-              >
-                <span>🗑️</span>
-                <span>{isDeleting ? "Deleting..." : "Delete Deployment"}</span>
-              </button>
-            </div>
-          )}
-        </div>
+        <ActionMenu
+          label="Deployment actions"
+          minWidth={240}
+          triggerClassName="btn btn-primary"
+          triggerStyle={{ display: "inline-flex", alignItems: "center", gap: "8px", padding: "8px 16px", fontWeight: 600 }}
+          trigger={
+            <>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="1"></circle>
+                <circle cx="19" cy="12" r="1"></circle>
+                <circle cx="5" cy="12" r="1"></circle>
+              </svg>
+              <span>Deployment Actions</span>
+              <span style={{ fontSize: "10px", marginLeft: "2px", opacity: 0.8 }} aria-hidden="true">▼</span>
+            </>
+          }
+          items={[
+            activeServiceUrl && { key: "live", label: "Open Live Application", icon: "🌐", href: activeServiceUrl, external: true },
+            isRunning && {
+              key: "cancel",
+              label: "Cancel Deployment",
+              icon: "🛑",
+              danger: true,
+              onSelect: () => runAction(() => cancelMutation.mutateAsync({ deploymentId }), "Deployment cancelled"),
+            },
+            !isRunning && {
+              key: "redeploy",
+              label: "Redeploy (Fast)",
+              icon: "🔄",
+              onSelect: () => runAction(() => redeployMutation.mutateAsync({ deploymentId, rebuild: false }), "Redeploy triggered"),
+            },
+            !isRunning && {
+              key: "rebuild",
+              label: "Clean Rebuild",
+              icon: "⚡",
+              onSelect: () => runAction(() => redeployMutation.mutateAsync({ deploymentId, rebuild: true }), "Clean rebuild triggered"),
+            },
+            !isRunning && {
+              key: "rollback",
+              label: "Roll Back Traffic to This",
+              icon: "⏪",
+              onSelect: () => runAction(() => rollbackMutation.mutateAsync({ deploymentId }), "Traffic rolled back to this deployment"),
+            },
+            { key: "copy-id", label: "Copy Deployment ID", icon: "📋", separatorBefore: true, onSelect: () => copyToClipboard(deployment.id, "Deployment ID") },
+            deployment.build?.commitSha && {
+              key: "copy-sha",
+              label: "Copy Commit SHA",
+              icon: "🔀",
+              onSelect: () => copyToClipboard(deployment.build!.commitSha!, "Commit SHA"),
+            },
+            { key: "service", label: "View Service Console", icon: "⚡", separatorBefore: true, href: `/dashboard/services/${deployment.serviceId}` },
+            deployment.service?.environment?.projectId && {
+              key: "project",
+              label: "View Project Deployments",
+              icon: "📦",
+              href: `/dashboard/projects/${deployment.service.environment.projectId}?tab=deployments`,
+            },
+            {
+              key: "delete",
+              label: isDeleting ? "Deleting..." : "Delete Deployment",
+              icon: "🗑️",
+              danger: true,
+              separatorBefore: true,
+              disabled: isDeleting,
+              onSelect: handleDeleteDeployment,
+            },
+          ]}
+        />
       </div>
 
       {/* Notices */}
