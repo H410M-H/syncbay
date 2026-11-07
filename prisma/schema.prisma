@@ -330,6 +330,9 @@ model Deployment {
   service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
   build   Build   @relation(fields: [buildId], references: [id])
 
+  // Team B (v1.2) — dashboard aggregates: deploys per window/day, latest deployment per service
+  @@index([status, createdAt])
+  @@index([serviceId, createdAt])
   @@map("deployments")
 }
 
@@ -600,6 +603,40 @@ model MetricSample {
   @@index([deploymentId, sampledAt])
   @@index([sampledAt])
   @@map("metric_samples")
+}
+
+/// Team B (v1.2) — HTTP traffic of a deployment for one UTC minute, drained from the runner's
+/// reverse proxy (`POST /api/traffic/drain`, runner/src/traffic.ts) by the 1-minute cron.
+/// Drains that land in the same minute are summed into one row (ON CONFLICT on the unique key).
+/// `errors` are upstream network failures the proxy answered with 502; latency is time to the
+/// upstream's response headers; bytes are request/response body bytes.
+model TrafficSample {
+  id           String   @id @default(cuid())
+  serviceId    String
+  deploymentId String?
+  bucketStart  DateTime
+  requests     Int      @default(0)
+  s2xx         Int      @default(0)
+  s3xx         Int      @default(0)
+  s4xx         Int      @default(0)
+  s5xx         Int      @default(0)
+  errors       Int      @default(0)
+  bytesIn      BigInt   @default(0)
+  bytesOut     BigInt   @default(0)
+  latencySumMs Float    @default(0)
+  latencyMaxMs Float    @default(0)
+  lt50         Int      @default(0)
+  lt200        Int      @default(0)
+  lt1000       Int      @default(0)
+  ge1000       Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @default(now()) @updatedAt
+
+  @@unique([serviceId, deploymentId, bucketStart])
+  @@index([serviceId, bucketStart])
+  @@index([deploymentId, bucketStart])
+  @@index([bucketStart])
+  @@map("traffic_samples")
 }
 
 // ── Team A ── durable deployment queue, leases and runner pull consumer

@@ -5,9 +5,10 @@
  * canary deployment's upstream. The proxy (`src/lib/edge/canary.ts`) picks a
  * variant per client with a sticky cookie and counts routed requests;
  * `evaluateCanaryHealth` trips an automatic rollback when the canary's 5xx
- * rate exceeds the threshold. `MetricSample` (Team B) records CPU/memory/network
- * only, so there is no request/5xx signal yet: the result is INSUFFICIENT_DATA
- * (rate null) unless a caller supplies `errorCounts`.
+ * rate exceeds the threshold. The request/5xx signal is the canary deployment's
+ * `TrafficSample` rows (runner proxy counters, drained every minute; upstream
+ * network errors count as 5xx because the client got a 502). A caller may supply
+ * `errorCounts` instead. With neither, the result is INSUFFICIENT_DATA (rate null).
  */
 
 import type { PrismaClient } from "@prisma/client";
@@ -44,7 +45,7 @@ export interface CanaryHealthResult {
   reason: string;
 }
 
-export type CanaryDb = Pick<PrismaClient, "canaryConfig" | "deployment" | "metricSample">;
+export type CanaryDb = Pick<PrismaClient, "canaryConfig" | "deployment" | "metricSample" | "trafficSample">;
 type CanaryRow = Awaited<ReturnType<CanaryDb["canaryConfig"]["findUniqueOrThrow"]>>;
 
 export function toCanaryConfig(row: CanaryRow): CanaryConfig {
@@ -137,6 +138,22 @@ export function evaluateCanaryCounts(
 
 /** Request / 5xx counts of a deployment since a time, from whatever source records them. */
 export type ErrorCountSource = (deploymentId: string, since: Date) => Promise<{ requests: number; errors5xx: number } | null>;
+
+/**
+ * Default source: the deployment's `TrafficSample` minutes since `since` (rounded down to the
+ * minute). 5xx = upstream 5xx + proxy network errors. Null when no traffic row exists.
+ */
+export function trafficErrorCounts(db: Pick<CanaryDb, "trafficSample">): ErrorCountSource {
+  return async (deploymentId, since) => {
+    const agg = await db.trafficSample.aggregate({
+      where: { deploymentId, bucketStart: { gte: new Date(Math.floor(since.getTime() / 60_000) * 60_000) } },
+      _sum: { requests: true, s5xx: true, errors: true },
+      _count: { _all: true },
+    });
+    if (!agg._count._all) return null;
+    return { requests: agg._sum.requests ?? 0, errors5xx: (agg._sum.s5xx ?? 0) + (agg._sum.errors ?? 0) };
+  };
+}
 
 // ─── DB operations ────────────────────────────────────────────────────────────
 
@@ -260,10 +277,10 @@ export async function rollbackCanary(db: CanaryDb, serviceId: string, reason?: s
 /**
  * Evaluates the canary over the last `windowMinutes` and rolls back
  * automatically above the threshold. Request/5xx counts come from
- * `options.errorCounts`; without one (MetricSample has no request counters)
- * the result is INSUFFICIENT_DATA with a null rate, and the reason says how
- * many resource samples the canary has, so a canary that is not even running
- * is visible.
+ * `options.errorCounts`, else from the canary's `TrafficSample` rows. With no
+ * traffic recorded the result is INSUFFICIENT_DATA with a null rate, and the
+ * reason says how many resource samples the canary has, so a canary that is
+ * not even running is visible.
  */
 export async function evaluateCanaryHealth(
   db: CanaryDb,
@@ -273,7 +290,8 @@ export async function evaluateCanaryHealth(
   const row = await requireCanary(db, serviceId);
   const now = options.now || new Date();
   const since = new Date(Math.max(row.startedAt.getTime(), now.getTime() - (options.windowMinutes ?? 15) * 60_000));
-  const counts = options.errorCounts ? await options.errorCounts(row.canaryDeploymentId, since).catch(() => null) : null;
+  const source = options.errorCounts || trafficErrorCounts(db);
+  const counts = await source(row.canaryDeploymentId, since).catch(() => null);
 
   let result: CanaryHealthResult;
   if (counts) {
@@ -288,7 +306,7 @@ export async function evaluateCanaryHealth(
         ...result,
         reason:
           samples > 0
-            ? `No request/5xx counters recorded (MetricSample has ${samples} CPU/memory sample(s) for the canary in this window)`
+            ? `No request traffic recorded for the canary (MetricSample has ${samples} CPU/memory sample(s) for the canary in this window)`
             : "No metrics recorded for the canary deployment in this window",
       };
     }
