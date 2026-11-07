@@ -5,7 +5,7 @@
 # ─── Stage 1: Binary Toolchain Installer ──────────────────────────────────────
 FROM node:20-bookworm-slim AS toolchain
 # Set by BuildKit for the platform being built (amd64 for x86 ECS, arm64 for ARM hosts).
-ARG TARGETARCH=amd64
+ARG TARGETARCH
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
@@ -33,7 +33,7 @@ RUN case "$TARGETARCH" in arm64) A=aarch64 ;; *) A=x86_64 ;; esac && \
     && rm -rf /tmp/docker /tmp/docker.tgz
 
 # Install Cloudflare Tunnel agent (cloudflared)
-RUN curl -sSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${TARGETARCH}" -o /usr/local/bin/cloudflared \
+RUN curl -sSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${TARGETARCH:-amd64}" -o /usr/local/bin/cloudflared \
     && chmod +x /usr/local/bin/cloudflared
 
 # ─── Stage 2: Production Runner Runtime ───────────────────────────────────────
