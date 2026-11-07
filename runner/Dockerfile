@@ -5,7 +5,7 @@
 # ─── Stage 1: Binary Toolchain Installer ──────────────────────────────────────
 FROM node:20-bookworm-slim AS toolchain
 # Set by BuildKit for the platform being built (amd64 for x86 ECS, arm64 for ARM hosts).
-ARG TARGETARCH=amd64
+ARG TARGETARCH
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
