@@ -1,0 +1,44 @@
+# Syncbay runner on a single VPS (Alibaba Cloud ECS or any Linux host with a public IP).
+# Caddy terminates TLS for RUNNER_DOMAIN and proxies to the runner daemon on 127.0.0.1:8080.
+# Both use host networking: the runner starts customer apps/containers on host ports
+# 10000-60000 and reaches them on 127.0.0.1. Only 80/443 need to be open in the security group.
+name: syncbay-runner
+
+services:
+  runner:
+    build:
+      context: ../../runner
+    image: syncbay-runner:latest
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      RUNNER_HOST: 127.0.0.1
+      RUNNER_PORT: "8080"
+      TUNNEL_DRIVER: local
+      RUNNER_DB_MODE: ${RUNNER_DB_MODE:-docker}
+      RUNNER_STATE_DIR: /var/lib/syncbay-runner
+    volumes:
+      # The runner drives the host Docker daemon to build and run customer containers.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - runner-state:/var/lib/syncbay-runner
+      - runner-workspace:/app/.runner_workspace
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - runner
+
+volumes:
+  runner-state:
+  runner-workspace:
+  caddy-data:
+  caddy-config:

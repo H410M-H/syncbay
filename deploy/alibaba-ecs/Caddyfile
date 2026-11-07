@@ -1,0 +1,9 @@
+# Automatic HTTPS (Let's Encrypt) for the runner's public hostname, e.g. runner.syncbay.app.
+# RUNNER_TLS is your Let's Encrypt email, or `internal` for a local test with Caddy's own CA.
+{$RUNNER_DOMAIN} {
+	tls {$RUNNER_TLS}
+	encode gzip
+	reverse_proxy 127.0.0.1:8080 {
+		flush_interval -1
+	}
+}

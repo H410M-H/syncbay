@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "node node_modules/next/dist/bin/next dev --webpack",
     "build": "node node_modules/prisma/build/index.js generate && node node_modules/next/dist/bin/next build --webpack",
+    "vercel-build": "node scripts/vercel-build.mjs",
     "postinstall": "node node_modules/prisma/build/index.js generate || prisma generate",
     "start": "node node_modules/next/dist/bin/next start",
     "lint": "node node_modules/eslint/bin/eslint.js",
