@@ -72,6 +72,17 @@ Register these redirect URIs with each provider (Google: "Authorized redirect UR
 - A GitHub OAuth app accepts only one callback URL. Use a separate OAuth app for previews and for local dev.
 - After sign-in, the `redirect` callback in `src/lib/auth.ts` accepts only these targets: `https://syncbay.app`, `https://*.syncbay.app`, and the current deployment origin (`VERCEL_URL`, `VERCEL_BRANCH_URL`, `VERCEL_PROJECT_PRODUCTION_URL`).
 
+### Database migrations
+Production deploys migrate automatically. Vercel runs `npm run vercel-build` (`scripts/vercel-build.mjs`), which on `VERCEL_ENV=production` runs `prisma migrate deploy` before `next build`.
+- It uses `DIRECT_URL` if set, otherwise `DATABASE_URL`.
+- A failed migration stops the build, so the previous deployment keeps serving.
+- A database that was never baselined (P3005) stops the build with the exact `prisma migrate resolve` steps.
+- Preview builds never touch the database.
+- Set `SKIP_DB_MIGRATE=1` to bypass.
+
+### Self-host the runner (Alibaba Cloud ECS / any VPS)
+`deploy/alibaba-ecs/` runs the runner plus Caddy with automatic HTTPS on one server with a public IP, with no tunnel needed. See [`deploy/alibaba-ecs/README.md`](./deploy/alibaba-ecs/README.md). Set `RUNNER_URL=https://runner.syncbay.app` and the same `RUNNER_SECRET` in Vercel.
+
 ## Environment variables
 
 `.env.example` is the source of truth. These are the main variables:

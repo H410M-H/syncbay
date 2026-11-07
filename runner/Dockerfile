@@ -4,6 +4,8 @@
 
 # ─── Stage 1: Binary Toolchain Installer ──────────────────────────────────────
 FROM node:20-bookworm-slim AS toolchain
+# Set by BuildKit for the platform being built (amd64 for x86 ECS, arm64 for ARM hosts).
+ARG TARGETARCH=amd64
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
@@ -15,22 +17,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install Nixpacks binary
 ARG NIXPACKS_VERSION=1.30.0
-RUN curl -sSL https://nixpacks.com/install.sh | bash || \
-    (curl -sSL -o /tmp/nixpacks.tar.gz "https://github.com/railwayapp/nixpacks/releases/download/v${NIXPACKS_VERSION}/nixpacks-v${NIXPACKS_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+RUN case "$TARGETARCH" in arm64) A=aarch64 ;; *) A=x86_64 ;; esac && \
+    curl -sSL -o /tmp/nixpacks.tar.gz "https://github.com/railwayapp/nixpacks/releases/download/v${NIXPACKS_VERSION}/nixpacks-v${NIXPACKS_VERSION}-${A}-unknown-linux-musl.tar.gz" \
     && tar -xzf /tmp/nixpacks.tar.gz -C /usr/local/bin/ \
     && chmod +x /usr/local/bin/nixpacks \
-    && rm -f /tmp/nixpacks.tar.gz)
+    && rm -f /tmp/nixpacks.tar.gz
 
 # Install Docker CLI static binary
 ARG DOCKER_VERSION=26.1.4
-RUN curl -sSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VERSION}.tgz" -o /tmp/docker.tgz \
+RUN case "$TARGETARCH" in arm64) A=aarch64 ;; *) A=x86_64 ;; esac && \
+    curl -sSL "https://download.docker.com/linux/static/stable/${A}/docker-${DOCKER_VERSION}.tgz" -o /tmp/docker.tgz \
     && tar -xzf /tmp/docker.tgz -C /tmp/ \
     && mv /tmp/docker/docker /usr/local/bin/docker \
     && chmod +x /usr/local/bin/docker \
     && rm -rf /tmp/docker /tmp/docker.tgz
 
 # Install Cloudflare Tunnel agent (cloudflared)
-RUN curl -sSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" -o /usr/local/bin/cloudflared \
+RUN curl -sSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${TARGETARCH}" -o /usr/local/bin/cloudflared \
     && chmod +x /usr/local/bin/cloudflared
 
 # ─── Stage 2: Production Runner Runtime ───────────────────────────────────────
@@ -62,8 +65,8 @@ RUN mkdir -p ${WORKSPACE_DIR} ${APP_DIR}
 WORKDIR ${APP_DIR}
 
 # Install the TypeScript runtime used by the source entrypoint
-COPY package.json ./
-RUN npm install --omit=dev
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
 COPY src/ ./src/
 
 # Environment Configuration

@@ -5,13 +5,15 @@
     "bin/*.js",
     "runner/src/index.ts",
     "runner/test/*.test.ts",
-    "tests/**/*.ts"
+    "tests/**/*.ts",
+    "scripts/*.mjs"
   ],
   "project": [
     "src/**/*.{ts,tsx}",
     "runner/src/**/*.ts",
     "tests/**/*.ts",
-    "bin/*.js"
+    "bin/*.js",
+    "scripts/*.mjs"
   ],
   "ignoreExportsUsedInFile": true
 }
