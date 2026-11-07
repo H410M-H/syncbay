@@ -33,7 +33,7 @@ RUN case "$TARGETARCH" in arm64) A=aarch64 ;; *) A=x86_64 ;; esac && \
     && rm -rf /tmp/docker /tmp/docker.tgz
 
 # Install Cloudflare Tunnel agent (cloudflared)
-RUN curl -sSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${TARGETARCH}" -o /usr/local/bin/cloudflared \
+RUN curl -sSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${TARGETARCH:-amd64}" -o /usr/local/bin/cloudflared \
     && chmod +x /usr/local/bin/cloudflared
 
 # ─── Stage 2: Production Runner Runtime ───────────────────────────────────────
