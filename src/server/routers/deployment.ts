@@ -9,6 +9,9 @@ import { purgeEdgeCache } from "@/lib/edge/edge-router";
 import { executeInstantRollback } from "@/lib/devops/instant-rollback";
 import { logEventBus } from "@/lib/telemetry/event-bus";
 import { requestTunnelReload } from "@/lib/tunnel/tunnel-sync";
+import { checkRunnerHealth, getRunnerConfigStatus } from "@/lib/orchestrator/runner-config";
+import { needsRebuild, redeployFromDeployment } from "@/lib/orchestrator/service-actions";
+import { requireRunnerReady, surfaceRunnerConfigErrors } from "@/server/runner-preflight";
 
 export const deploymentRouter = createTRPCRouter({
   /** Get single deployment by id */
@@ -144,6 +147,8 @@ export const deploymentRouter = createTRPCRouter({
         include: { environment: true },
       });
       if (!service) throw new TRPCError({ code: "NOT_FOUND" });
+      // A misconfigured runner is PRECONDITION_FAILED here, not a FAILED deployment row later
+      requireRunnerReady();
 
       // Real HEAD of the tracked branch, or null — never an invented SHA
       const commitSha =
@@ -215,50 +220,12 @@ export const deploymentRouter = createTRPCRouter({
         include: { build: true, service: { include: { environment: true } } },
       });
       if (!prev) throw new TRPCError({ code: "NOT_FOUND" });
+      requireRunnerReady();
 
-      let targetBuildId = prev.buildId;
-      const shouldRebuild = input.rebuild || !prev.build || prev.build.status === "FAILED";
-
-      if (shouldRebuild) {
-        const newBuild = await ctx.db.build.create({
-          data: {
-            serviceId: prev.serviceId,
-            commitSha:
-              prev.build?.commitSha ||
-              (await resolveHeadCommitSha(prev.service.repoUrl, prev.service.branch, {
-                projectId: prev.service.environment.projectId,
-                userId: ctx.session.user.id,
-              })),
-            commitMessage: prev.build?.commitMessage
-              ? `Rebuild: ${prev.build.commitMessage}`
-              : `Redeploy with fresh build of ${prev.id.slice(0, 8)}`,
-            triggeredBy: ctx.session.user.id,
-            status: "QUEUED",
-          },
-        });
-        targetBuildId = newBuild.id;
-      }
-
-      // Create new deployment
-      const deployment = await ctx.db.deployment.create({
-        data: {
-          serviceId: prev.serviceId,
-          buildId: targetBuildId,
-          triggeredBy: ctx.session.user.id,
-          status: "QUEUED",
-        },
-      });
-
-      await scheduleDeployment(deployment.id, targetBuildId, prev.serviceId, {
-        serviceId: prev.serviceId,
-        commitSha: prev.build?.commitSha || undefined,
-        commitMessage: shouldRebuild
-          ? `Clean rebuild of deployment ${prev.id.slice(0, 8)}`
-          : `Fast redeploy of deployment ${prev.id.slice(0, 8)}`,
-        cleanBuild: shouldRebuild,
+      const { deployment } = await redeployFromDeployment(ctx.db, prev, {
+        rebuild: Boolean(input.rebuild) || needsRebuild(prev),
         userId: ctx.session.user.id,
       });
-
       return deployment;
     }),
 
@@ -266,7 +233,18 @@ export const deploymentRouter = createTRPCRouter({
   instantRollback: protectedProcedure
     .input(z.object({ deploymentId: z.string(), serviceId: z.string().optional() }))
     .mutation(async ({ ctx, input }) => {
-      return executeInstantRollback(ctx.db, ctx.session.user.id, input);
+      return surfaceRunnerConfigErrors(() => executeInstantRollback(ctx.db, ctx.session.user.id, input));
+    }),
+
+  /**
+   * Which runner deploys use and whether it is configured (no secret values), for the wizard and
+   * project pages. `health: true` also probes the runner's `/health` (3 s timeout).
+   */
+  runnerStatus: protectedProcedure
+    .input(z.object({ health: z.boolean().optional() }).optional())
+    .query(async ({ input }) => {
+      const config = getRunnerConfigStatus();
+      return { ...config, health: input?.health ? await checkRunnerHealth() : null };
     }),
 
   /** Cancel a running/queued deployment */
@@ -338,11 +316,17 @@ export const deploymentRouter = createTRPCRouter({
         });
       }
 
-      // 1. Stop container if running
+      // 1. Stop container if running. A live instance on a misconfigured runner is not orphaned:
+      //    the delete fails with the configuration problem instead.
       if (deployment.cfContainerId) {
-        try {
-          await driverFor(deployment.runnerDriver).stopContainer(deployment.cfContainerId).catch(() => null);
-        } catch {}
+        if (["ACTIVE", "CRASHED", "DEPLOYING"].includes(deployment.status)) {
+          const driver = await surfaceRunnerConfigErrors(async () => driverFor(deployment.runnerDriver));
+          await driver.stopContainer(deployment.cfContainerId).catch(() => null);
+        } else {
+          try {
+            await driverFor(deployment.runnerDriver).stopContainer(deployment.cfContainerId).catch(() => null);
+          } catch {}
+        }
       }
 
       // 2. Remove logs from the event bus and the DeploymentLog table

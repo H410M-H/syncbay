@@ -4,6 +4,14 @@ import { validateBearerToken, checkScope } from "@/lib/api/auth-token";
 import { scheduleDeployment } from "@/lib/orchestrator/schedule";
 import { resolveHeadCommitSha } from "@/lib/orchestrator/pr-manager";
 import { logEventBus } from "@/lib/telemetry/event-bus";
+import { getRunnerConfigStatus } from "@/lib/orchestrator/runner-config";
+import { needsRebuild, redeployFromDeployment } from "@/lib/orchestrator/service-actions";
+
+/** Deploy preflight: a misconfigured runner is a 412 with the fix, and no deployment row is created. */
+function runnerPreflight(): NextResponse | null {
+  const { problem } = getRunnerConfigStatus();
+  return problem ? NextResponse.json({ error: problem, code: "RUNNER_NOT_CONFIGURED" }, { status: 412 }) : null;
+}
 
 export const dynamic = "force-dynamic";
 // Deployments run in after(); give them the full serverless budget.
@@ -80,46 +88,14 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "Previous deployment not found in workspace" }, { status: 404 });
       }
 
-      let targetBuildId = prev.buildId;
-      const shouldRebuild = body.rebuild ?? (!prev.build || prev.build.status === "FAILED");
+      const blocked = runnerPreflight();
+      if (blocked) return blocked;
 
-      if (shouldRebuild) {
-        const newBuild = await db.build.create({
-          data: {
-            serviceId: prev.serviceId,
-            commitSha:
-              prev.build?.commitSha ||
-              (await resolveHeadCommitSha(prev.service.repoUrl, prev.service.branch, {
-                projectId: prev.service.environment.projectId,
-                userId: auth.userId || undefined,
-              })),
-            commitMessage: prev.build?.commitMessage
-              ? `Rebuild: ${prev.build.commitMessage}`
-              : `Redeploy with fresh build of ${prev.id.slice(0, 8)}`,
-            triggeredBy: auth.userId || `token:${auth.tokenName}`,
-            status: "QUEUED",
-          },
-        });
-        targetBuildId = newBuild.id;
-      }
-
-      const deployment = await db.deployment.create({
-        data: {
-          serviceId: prev.serviceId,
-          buildId: targetBuildId,
-          triggeredBy: auth.userId || `token:${auth.tokenName}`,
-          status: "QUEUED",
-        },
-      });
-
-      await scheduleDeployment(deployment.id, targetBuildId, prev.serviceId, {
-        serviceId: prev.serviceId,
-        commitSha: prev.build?.commitSha || undefined,
-        commitMessage: shouldRebuild
-          ? `Clean rebuild of deployment ${prev.id.slice(0, 8)}`
-          : `Fast redeploy of deployment ${prev.id.slice(0, 8)}`,
-        cleanBuild: shouldRebuild,
+      const shouldRebuild = Boolean(body.rebuild ?? needsRebuild(prev));
+      const { deployment, buildId: targetBuildId } = await redeployFromDeployment(db, prev, {
+        rebuild: shouldRebuild,
         userId: auth.userId || undefined,
+        triggeredBy: auth.userId || `token:${auth.tokenName}`,
       });
 
       return NextResponse.json(
@@ -153,6 +129,8 @@ export async function POST(req: NextRequest) {
     if (!service) {
       return NextResponse.json({ error: "Service not found in workspace" }, { status: 404 });
     }
+    const blocked = runnerPreflight();
+    if (blocked) return blocked;
 
     // Real HEAD of the tracked branch, or null — never an invented SHA
     const commitSha =

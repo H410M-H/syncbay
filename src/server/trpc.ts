@@ -4,6 +4,7 @@ import { authOptions } from "@/lib/auth";
 import { db } from "@/lib/db";
 import superjson from "superjson";
 import { ZodError } from "zod";
+import { ErrorDetails } from "./error-details";
 
 /**
  * tRPC Context — created per request.
@@ -29,6 +30,7 @@ const t = initTRPC.context<TRPCContext>().create({
         ...shape.data,
         zodError:
           error.cause instanceof ZodError ? error.cause.flatten() : null,
+        details: error.cause instanceof ErrorDetails ? error.cause.details : null,
       },
     };
   },

@@ -14,6 +14,7 @@ import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { logEventBus } from "../telemetry/event-bus";
 import { dockerVolumeArgs, type VolumePayload } from "@/lib/orchestrator/volume-payload";
+import { missingRunnerSecretMessage, missingRunnerUrlMessage, RunnerConfigError } from "./runner-config";
 
 const execAsync = promisify(exec);
 
@@ -287,7 +288,8 @@ export function resolveRunnerSecret(): string {
     process.env.SYNCBAY_WEBHOOK_SECRET;
   if (secret) return secret;
   if (process.env.NODE_ENV === "production") {
-    throw new AuthenticationError("RUNNER_SECRET is not configured; refusing to sign runner requests in production");
+    // Actionable: says which setting is missing where (see runner-config.ts), never a value.
+    throw new AuthenticationError(missingRunnerSecretMessage());
   }
   return DEV_RUNNER_SECRET;
 }
@@ -1594,7 +1596,9 @@ export class RunnerDriverFactory {
  * Precedence: explicit `driverType` → `RUNNER_DRIVER` env (webhook | ssh | queue | local | mock)
  * → `RUNNER_URL` (webhook) → `RUNNER_QUEUE_MODE=pull` (queue) → local. `mock` is the local driver whose
  * pipeline uses MockPipelineExecutor (the runner reads `RUNNER_DRIVER=mock` itself).
- * Webhook/SSH drivers require a runner secret; in production a missing one throws AuthenticationError.
+ * Webhook/SSH drivers require a runner secret; in production a missing one throws AuthenticationError,
+ * and a webhook driver without RUNNER_URL throws RunnerConfigError. Both carry the actionable
+ * message from `runner-config.ts` (what is missing, where, and how to fix it).
  */
 export function getRunnerDriver(
   driverType?: "LOCAL" | "CLOUD" | "webhook" | "queue" | "ssh" | "local" | "mock",
@@ -1607,9 +1611,13 @@ export function getRunnerDriver(
   const queueMode = (process.env.RUNNER_QUEUE_MODE || "").toLowerCase();
   const pullMode = queueMode === "pull" || queueMode === "true";
   if (normalized === "webhook" || (process.env.RUNNER_URL && !pullMode && normalized !== "queue" && normalized !== "ssh")) {
+    const webhookSecret = options?.webhookSecret || resolveRunnerSecret();
+    if (!process.env.RUNNER_URL && !options?.runnerUrl && process.env.NODE_ENV === "production") {
+      throw new RunnerConfigError(missingRunnerUrlMessage());
+    }
     return RunnerDriverFactory.createDriver("webhook", {
       runnerUrl: process.env.RUNNER_URL || "http://localhost:8080",
-      webhookSecret: options?.webhookSecret || resolveRunnerSecret(),
+      webhookSecret,
       ...options,
     });
   }
