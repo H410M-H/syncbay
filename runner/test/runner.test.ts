@@ -492,3 +492,6 @@ test("NonceCache: single-use within the window, expires with the timestamp, boun
   for (const c of ["c", "d", "e"]) cache.consume(c.repeat(32), now + SIGNATURE_TOLERANCE_MS, now + SIGNATURE_TOLERANCE_MS + 1);
   assert.strictEqual(cache.size, 3, "bounded to maxEntries");
 });
+
+// Traffic counters + POST /api/traffic/drain (runner/src/traffic.ts)
+import "./traffic.test.ts";
