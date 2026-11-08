@@ -3,6 +3,7 @@ import { authOptions } from "@/lib/auth";
 import { db } from "@/lib/db";
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { DashboardAnalytics } from "@/components/analytics/dashboard-analytics";
 
 export default async function DashboardPage() {
   const session = await getServerSession(authOptions);
@@ -10,32 +11,16 @@ export default async function DashboardPage() {
 
   if (!userId) redirect("/auth/signin");
 
-  // Load workspaces for the current user
+  // Workspaces for the scope picker and the list below. Live numbers (services, deploys,
+  // traffic, cost, runner) come from the client-side analytics component, which polls.
   const workspaces = await db.workspace.findMany({
     where: {
       members: { some: { userId } },
     },
     include: {
-      _count: { select: { projects: true } },
-      members: true,
+      _count: { select: { projects: { where: { deletedAt: null } }, members: true } },
     },
     orderBy: { createdAt: "asc" },
-  });
-
-  // Count active services across all workspaces
-  const activeDeployments = await db.deployment.count({
-    where: {
-      status: "ACTIVE",
-      service: {
-        environment: {
-          project: {
-            workspace: {
-              members: { some: { userId } },
-            },
-          },
-        },
-      },
-    },
   });
 
   const totalProjects = workspaces.reduce(
@@ -59,39 +44,13 @@ export default async function DashboardPage() {
         </Link>
       </div>
 
-      {/* Stats row */}
-      <div className="grid-4" style={{ marginBottom: "32px" }}>
-        <div className="stat-card">
-          <div className="stat-label">Workspaces</div>
-          <div className="stat-value">{workspaces.length}</div>
-          <div className="stat-change">personal + team</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">Projects</div>
-          <div className="stat-value">{totalProjects}</div>
-          <div className="stat-change">across all workspaces</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">Active Services</div>
-          <div className="stat-value" style={{ color: "var(--status-active)" }}>
-            {activeDeployments}
-          </div>
-          <div className="stat-change">serving traffic now</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">Platform</div>
-          <div className="stat-value" style={{ fontSize: "1.1rem", marginTop: "4px" }}>
-            Syncbay v0.1
-          </div>
-          <div className="stat-change">Phase 0 — skeleton</div>
-        </div>
-      </div>
+      <DashboardAnalytics workspaces={workspaces.map((ws) => ({ id: ws.id, name: ws.name }))} />
 
       {/* Command center */}
       <section className="card" aria-labelledby="command-center-title" style={{ marginBottom: "32px" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "16px", flexWrap: "wrap", marginBottom: "16px" }}>
           <div>
-            <h2 id="command-center-title" style={{ marginBottom: "4px" }}>Command center</h2>
+            <h2 id="command-center-title" style={{ marginBottom: "4px" }}>Modules</h2>
             <p style={{ color: "var(--text-secondary)", fontSize: "0.875rem" }}>Jump into the modules you use to ship, operate, and scale your projects.</p>
           </div>
           <Link href="/dashboard/projects/new" className="btn btn-secondary btn-sm">Deploy from Git</Link>
@@ -151,14 +110,15 @@ export default async function DashboardPage() {
               </div>
               <div style={{ display: "flex", gap: "16px", fontSize: "0.8125rem", color: "var(--text-secondary)" }}>
                 <span>📁 {ws._count.projects} project{ws._count.projects !== 1 ? "s" : ""}</span>
-                <span>👥 {ws.members.length} member{ws.members.length !== 1 ? "s" : ""}</span>
+                <span>👥 {ws._count.members} member{ws._count.members !== 1 ? "s" : ""}</span>
               </div>
             </Link>
           ))}
         </div>
       )}
 
-      {/* Getting started card */}
+      {/* Getting started card (only until the first project exists) */}
+      {totalProjects === 0 && (
       <div
         className="card"
         style={{
@@ -176,16 +136,12 @@ export default async function DashboardPage() {
           <Link href="/dashboard/projects/new" className="btn btn-primary btn-sm">
             Deploy from GitHub
           </Link>
-          <a
-            href="https://github.com"
-            target="_blank"
-            rel="noreferrer"
-            className="btn btn-secondary btn-sm"
-          >
-            View Docs ↗
-          </a>
+          <Link href="/docs" className="btn btn-secondary btn-sm">
+            View Docs
+          </Link>
         </div>
       </div>
+      )}
     </div>
   );
 }
