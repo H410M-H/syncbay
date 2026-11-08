@@ -7,6 +7,7 @@
 import assert from "node:assert";
 import * as crypto from "node:crypto";
 import * as http from "node:http";
+import type { AddressInfo } from "node:net";
 import test from "node:test";
 import { PortManager } from "../src/port-manager.ts";
 import { BuildPipeline, MockPipelineExecutor } from "../src/pipeline.ts";
@@ -59,7 +60,7 @@ async function startApp(): Promise<{ port: number; close: () => Promise<void> }>
     });
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
-  const port = (server.address() as any).port as number;
+  const port = (server.address() as AddressInfo).port;
   return { port, close: () => new Promise((r) => server.close(() => r())) };
 }
 
@@ -128,7 +129,7 @@ test("RunnerDaemon: proxied traffic is counted per port and drained once over si
   const base = `http://127.0.0.1:${port}`;
   const app = await startApp();
   const via = (path: string, init: RequestInit = {}) =>
-    fetch(`${base}${path}`, { ...init, redirect: "manual", headers: { ...(init.headers as any), "x-target-port": String(app.port) } });
+    fetch(`${base}${path}`, { ...init, redirect: "manual", headers: { ...(init.headers as Record<string, string> | undefined), "x-target-port": String(app.port) } });
 
   try {
     const statuses: number[] = [];
@@ -151,8 +152,9 @@ test("RunnerDaemon: proxied traffic is counted per port and drained once over si
     assert.strictEqual(replay.status, 401, "nonce is single-use");
 
     const drained = await res.json();
-    const rows = drained.entries.filter((e: any) => e.port === app.port);
-    const sum = (k: string) => rows.reduce((n: number, e: any) => n + e[k], 0);
+    type Row = Record<string, number> & { port: number };
+    const rows = (drained.entries as Row[]).filter((e) => e.port === app.port);
+    const sum = (k: string) => rows.reduce((n, e) => n + e[k], 0);
     assert.strictEqual(sum("requests"), 8);
     assert.deepStrictEqual([sum("s2xx"), sum("s3xx"), sum("s4xx"), sum("s5xx"), sum("errors")], [5, 1, 1, 1, 0]);
     assert.strictEqual(sum("bytesIn"), 1000);
