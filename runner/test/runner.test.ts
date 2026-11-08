@@ -30,6 +30,25 @@ test("PortManager: dynamic allocation, reservation, and collision detection", as
   assert.strictEqual(pm.isPortAllocated(portA), false);
 });
 
+test("PortManager: a fast redeploy of the same job gets its own port while the old instance serves", async () => {
+  const pm = new PortManager({ rangeStart: 30100, rangeEnd: 30150 });
+  const first = await pm.allocatePort("svc_web", "build_1");
+  // Before anything binds, the same job asking again keeps its port (idempotent).
+  assert.strictEqual(await pm.allocatePort("svc_web", "build_1"), first);
+
+  const net = await import("node:net");
+  const server = net.createServer();
+  await new Promise<void>((resolve) => server.listen(first, "127.0.0.1", () => resolve()));
+  try {
+    const second = await pm.allocatePort("svc_web", "build_1");
+    assert.notStrictEqual(second, first, "old instance still listens: the redeploy needs another port");
+    assert.strictEqual(pm.isPortAllocated(first), true, "the old instance keeps its port until it is stopped");
+    assert.strictEqual(pm.getPortForService("svc_web"), second);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 test("BuildPipeline: automated build and run lifecycle", async () => {
   const mockExecutor = new MockPipelineExecutor();
   const pm = new PortManager({ rangeStart: 31000, rangeEnd: 31050 });
@@ -473,3 +492,6 @@ test("NonceCache: single-use within the window, expires with the timestamp, boun
   for (const c of ["c", "d", "e"]) cache.consume(c.repeat(32), now + SIGNATURE_TOLERANCE_MS, now + SIGNATURE_TOLERANCE_MS + 1);
   assert.strictEqual(cache.size, 3, "bounded to maxEntries");
 });
+
+// Traffic counters + POST /api/traffic/drain (runner/src/traffic.ts)
+import "./traffic.test.ts";

@@ -34,6 +34,7 @@ function resolveDaemonSecret(explicit?: string): string {
 }
 import { RunnerServices } from "./services.ts";
 import { handleMetricsRequest } from "./metrics.ts";
+import { TrafficStats, getDefaultTrafficStats, handleTrafficRequest, identityForPort } from "./traffic.ts";
 import { sanitizeVolumes } from "./volumes.ts";
 
 export interface DaemonConfig {
@@ -47,6 +48,8 @@ export interface DaemonConfig {
   tunnelConfig?: TunnelDriverConfig;
   tunnelDriver?: TunnelDriver;
   services?: RunnerServices;
+  /** Proxied-traffic counters (runner/src/traffic.ts); defaults to the process-wide store. */
+  traffic?: TrafficStats;
 }
 
 export interface JobState {
@@ -64,6 +67,9 @@ export interface JobState {
   hostnames?: string[];
   /** True when the pipeline ran with a mock executor (no real process). */
   simulated?: boolean;
+  /** Control-plane ids from the build payload (traffic attribution). */
+  deploymentId?: string;
+  serviceId?: string;
   sseClients: Set<http.ServerResponse>;
 }
 
@@ -77,6 +83,8 @@ export class RunnerDaemon {
   private readonly portManager: PortManager;
   private readonly pipeline: BuildPipeline;
   private readonly services: RunnerServices;
+  public readonly traffic: TrafficStats;
+  private readonly trafficIdentity = (port: number) => identityForPort(this.jobs.values(), port);
 
   private server: http.Server | null = null;
   private jobs: Map<string, JobState> = new Map();
@@ -98,6 +106,7 @@ export class RunnerDaemon {
     this.portManager = config.portManager || defaultPortManager;
     this.pipeline = config.pipeline || new BuildPipeline({ portManager: this.portManager });
     this.services = config.services || new RunnerServices({ portManager: this.portManager });
+    this.traffic = config.traffic || getDefaultTrafficStats();
     this.tunnelDriver = config.tunnelDriver || createTunnelDriver(config.tunnelConfig || {
       ingressUrl: `http://${this.host === "0.0.0.0" ? "127.0.0.1" : this.host}:${this.port}`,
     });
@@ -293,6 +302,9 @@ export class RunnerDaemon {
     // Resource metrics: GET /api/metrics/:containerId (runner/src/metrics.ts)
     if (await handleMetricsRequest(req, res, pathname, (p, s, t) => this.verifySignedRequest(method, pathname, p, s, t, req.headers["x-syncbay-nonce"] as string | undefined))) return;
 
+    // Traffic counters: POST /api/traffic/drain (runner/src/traffic.ts)
+    if (handleTrafficRequest(req, res, pathname, body, this.traffic, (p, s, t) => this.verifySignedRequest(method, pathname, p, s, t, req.headers["x-syncbay-nonce"] as string | undefined), this.trafficIdentity)) return;
+
     // POST /api/builds: Dispatch new build
     if (pathname === "/api/builds" && method === "POST") {
       await this.handleDispatchBuild(req, res, body);
@@ -401,13 +413,17 @@ export class RunnerDaemon {
     // remove headers that might cause issues
     delete options.headers["host"];
     delete options.headers["x-target-port"];
+    const traffic = this.traffic.track(targetPort, Buffer.byteLength(body || ""), this.trafficIdentity);
 
     const proxyReq = http.request(options, (proxyRes) => {
+      traffic.response(proxyRes.statusCode || 500);
+      proxyRes.on("data", (chunk: Buffer) => traffic.bytesOut(chunk.length));
       res.writeHead(proxyRes.statusCode || 500, proxyRes.headers);
       proxyRes.pipe(res, { end: true });
     });
 
     proxyReq.on("error", (err) => {
+      traffic.failed();
       res.writeHead(502, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Bad Gateway", message: err.message, targetPort }));
     });
@@ -473,6 +489,8 @@ export class RunnerDaemon {
       status: "BUILDING",
       logs: [`[runner] Build job ${jobId} accepted by runner daemon`],
       startedAt: new Date().toISOString(),
+      deploymentId: params.deploymentId,
+      serviceId: params.serviceId,
       sseClients: new Set(),
     };
     this.jobs.set(jobId, jobState);

@@ -14,6 +14,7 @@ import { registerServiceRouteAsync, removeServiceRouteAsync } from "@/lib/edge/s
 import { getRunnerDriver, type RestartContainerResult, type RunnerDriver, type RunnerDriverType } from "./runner-driver";
 import { cancelDeploymentJob, completeDeploymentJob } from "./job-queue";
 import { requestTunnelReload } from "@/lib/tunnel/tunnel-sync";
+import { isRemoteRunnerConfigured, isRunnerConfigError, RunnerConfigError } from "./runner-config";
 
 type Client = any;
 type PreviewState = "pending" | "success" | "failure";
@@ -48,12 +49,22 @@ export function resolveServiceHostnames(service: {
   return [...hosts];
 }
 
-/** The driver that hosts a deployment's instance (falls back to the configured default). */
+/**
+ * The driver that hosts a deployment's instance (falls back to the configured default).
+ * Falls back to the in-process driver only when no remote runner is configured and the instance
+ * did not run on one. Otherwise a configuration error (missing RUNNER_SECRET, RUNNER_URL …) is
+ * thrown as `RunnerConfigError`: acting on the wrong driver would report "stopped" while the
+ * remote instance keeps running.
+ */
 export function driverFor(runnerDriver?: string | null, fallback?: RunnerDriver): RunnerDriver {
   if (fallback && (!runnerDriver || runnerDriver === fallback.type)) return fallback;
   try {
     return getRunnerDriver((runnerDriver as RunnerDriverType) || undefined);
-  } catch {
+  } catch (err: any) {
+    const ranRemotely = Boolean(runnerDriver && runnerDriver !== "local");
+    if (isRemoteRunnerConfigured() || ranRemotely || isRunnerConfigError(err)) {
+      throw isRunnerConfigError(err) ? err : new RunnerConfigError(err?.message || String(err));
+    }
     return fallback || getRunnerDriver("local");
   }
 }
@@ -254,8 +265,12 @@ export async function stopServiceInstances(
     where: { serviceId, OR: [{ status: { in: statuses } }, ...(include.length ? [{ id: { in: include } }] : [])] },
     select: { id: true, cfContainerId: true, runnerDriver: true },
   });
+  // Resolve every hosting driver first: a runner configuration error throws here, before any
+  // deployment is marked stopped, so the caller reports the failure instead of a false "stopped".
+  const drivers = new Map<string, RunnerDriver>();
+  for (const dep of live) if (dep.cfContainerId) drivers.set(dep.id, driverFor(dep.runnerDriver));
   for (const dep of live) {
-    const res = await stopInstance(dep);
+    const res = await stopInstance(dep, drivers.get(dep.id));
     if (res.stopped) report.stopped.push(dep.id);
     else if (res.queued) report.queued.push(dep.id);
     else if (dep.cfContainerId) report.failed.push({ deploymentId: dep.id, message: res.message });
@@ -284,6 +299,24 @@ export async function stopServiceInstances(
   // Drop the stopped ports from the tunnel ingress (no-op unless a tunnel is configured; never throws).
   await requestTunnelReload(opts.reason || `${mode}:${serviceId}`);
   return report;
+}
+
+/**
+ * Throws `RunnerConfigError` when any instance of these services (live, or also sleeping for
+ * `delete`) runs on a driver the current runner configuration cannot reach. Bulk actions call it
+ * first so a misconfigured runner changes nothing instead of half the services.
+ */
+export async function assertInstancesControllable(serviceIds: string[], mode: "pause" | "delete", client: Client = db): Promise<void> {
+  if (!serviceIds.length) return;
+  const deps: Array<{ runnerDriver: string | null }> = await client.deployment.findMany({
+    where: {
+      serviceId: { in: serviceIds },
+      status: { in: mode === "pause" ? LIVE_STATUSES : [...LIVE_STATUSES, "SLEEPING"] },
+      cfContainerId: { not: null },
+    },
+    select: { runnerDriver: true },
+  });
+  for (const runnerDriver of new Set(deps.map((d) => d.runnerDriver ?? null))) driverFor(runnerDriver);
 }
 
 /** Re-runs a deployment's build as a new deployment (fast redeploy, caches kept). */

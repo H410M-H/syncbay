@@ -11,6 +11,10 @@ import { WebShell } from "@/components/dashboard/web-shell";
 import { QueryStudio } from "@/components/dashboard/query-studio";
 import { DevOpsSuite } from "@/components/dashboard/devops-suite";
 import { BackButton } from "@/components/ui/back-button";
+import { ActionMenu } from "@/components/ui/action-menu";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { ProjectSetupNotice } from "@/components/dashboard/project-setup-notice";
+import { ServiceLiveGauges, ServiceTrafficPanel } from "@/components/analytics/service-traffic";
 
 type ConsoleTab =
   | "services"
@@ -114,22 +118,8 @@ function ProjectConsoleContent() {
   const updateScalingMutation = trpc.service.updateScaling.useMutation();
   const [scalingServiceId, setScalingServiceId] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
-  const [openDeploymentMenuId, setOpenDeploymentMenuId] = useState<string | null>(null);
-
-  useEffect(() => {
-    function handleClickOutside(e: MouseEvent) {
-      if (openDeploymentMenuId) {
-        const target = e.target as HTMLElement;
-        if (!target.closest?.("[data-deployment-menu]")) {
-          setOpenDeploymentMenuId(null);
-        }
-      }
-    }
-    if (openDeploymentMenuId) {
-      document.addEventListener("mousedown", handleClickOutside);
-    }
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [openDeploymentMenuId]);
+  const [deleteProjectOpen, setDeleteProjectOpen] = useState(false);
+  const [deleteProjectError, setDeleteProjectError] = useState<string | null>(null);
 
   const handleRestartService = async (serviceId: string) => {
     try {
@@ -317,24 +307,15 @@ function ProjectConsoleContent() {
   // Compute live/historical chart points
   const chartPoints = useMemo(() => {
     if (metricsPeriod === "Live") {
-      if (liveHistory.length >= 2) return liveHistory;
-      if (liveMetric) {
-        return [
-          {
-            ...liveMetric,
-            cpuPercent: Math.max(1, liveMetric.cpuPercent - 2),
-            memoryMiB: Math.max(16, liveMetric.memoryMiB - 10),
-          },
-          liveMetric,
-        ];
-      }
-      return [];
+      // Real readings only: the line appears once two samples have arrived.
+      return liveHistory;
     } else {
       const pts = historicalMetrics?.points;
       if (pts && pts.length > 0) {
         return pts.map((p) => ({
           cpuPercent: p.cpuPercent,
           memoryMiB: p.memoryUsedMb,
+          memoryLimitMiB: p.memoryLimitMb,
           networkEgressKb: p.networkEgressKb,
           diskUsedMiB: p.diskUsedMb,
           timestamp: p.timestamp,
@@ -360,9 +341,12 @@ function ProjectConsoleContent() {
       return `${x.toFixed(1)},${y.toFixed(1)}`;
     });
 
+    // Memory axis: the reported limit when there is one, else the observed peak (+20 %).
+    const memLimit = chartPoints.reduce((m, pt) => Math.max(m, pt.memoryLimitMiB ?? 0), 0);
+    const memMax = Math.max(1, memLimit || Math.max(...chartPoints.map((pt) => pt.memoryMiB)) * 1.2);
     const memPoints = chartPoints.map((pt, idx) => {
       const x = (idx / (chartPoints.length - 1)) * width;
-      const y = height - padding - (Math.min(512, Math.max(0, pt.memoryMiB)) / 512) * usableHeight;
+      const y = height - padding - (Math.min(memMax, Math.max(0, pt.memoryMiB)) / memMax) * usableHeight;
       return `${x.toFixed(1)},${y.toFixed(1)}`;
     });
 
@@ -670,20 +654,14 @@ function ProjectConsoleContent() {
     }
   };
 
-  const handleDeleteProject = async () => {
-    const confirmation = prompt(`To permanently delete this project, type its exact name "${project.name}":`);
-    if (confirmation !== project.name) {
-      if (confirmation !== null) alert("Name does not match.");
-      return;
-    }
+  const handleDeleteProject = async (confirmName: string) => {
+    setDeleteProjectError(null);
     try {
-      await deleteProjectMutation.mutateAsync({
-        projectId: project.id,
-        confirmName: project.name,
-      });
+      await deleteProjectMutation.mutateAsync({ projectId: project.id, confirmName });
+      setDeleteProjectOpen(false);
       router.push("/dashboard/projects");
-    } catch (e: any) {
-      alert(`Failed to delete project: ${e.message}`);
+    } catch (e) {
+      setDeleteProjectError((e as Error)?.message || "Failed to delete project");
     }
   };
 
@@ -786,6 +764,8 @@ function ProjectConsoleContent() {
           </button>
         ))}
       </div>
+
+      <ProjectSetupNotice />
 
       {/* ════════════════════════════════════════════════════════════════════════
           TAB 1: SERVICES
@@ -970,62 +950,8 @@ function ProjectConsoleContent() {
                       </div>
                     </div>
 
-                    {/* Live Container Telemetry Gauges */}
-                    <div
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
-                        gap: "10px",
-                        margin: "14px 0",
-                        padding: "10px 14px",
-                        background: "rgba(10, 10, 18, 0.6)",
-                        borderRadius: "var(--radius-md)",
-                        border: "1px solid var(--border-subtle)",
-                        fontSize: "0.75rem",
-                      }}
-                    >
-                      <div>
-                        <div style={{ color: "var(--text-muted)", fontSize: "0.6875rem", textTransform: "uppercase" }}>
-                          CPU Allocation
-                        </div>
-                        <div style={{ fontWeight: 700, color: "var(--brand-accent)", marginTop: "2px" }}>
-                          {svc.isPaused ? "0.0%" : "12.4%"}
-                          <span style={{ fontWeight: 400, color: "var(--text-muted)", fontSize: "0.6875rem", marginLeft: "4px" }}>
-                            (1 vCPU)
-                          </span>
-                        </div>
-                      </div>
-
-                      <div>
-                        <div style={{ color: "var(--text-muted)", fontSize: "0.6875rem", textTransform: "uppercase" }}>
-                          Memory Limit
-                        </div>
-                        <div style={{ fontWeight: 700, color: "#38bdf8", marginTop: "2px" }}>
-                          {svc.isPaused ? "0 MB" : "142 MB"}
-                          <span style={{ fontWeight: 400, color: "var(--text-muted)", fontSize: "0.6875rem", marginLeft: "4px" }}>
-                            / 512 MB
-                          </span>
-                        </div>
-                      </div>
-
-                      <div>
-                        <div style={{ color: "var(--text-muted)", fontSize: "0.6875rem", textTransform: "uppercase" }}>
-                          Network Egress
-                        </div>
-                        <div style={{ fontWeight: 700, color: "#4ade80", marginTop: "2px" }}>
-                          {svc.isPaused ? "0 KB/s" : "42.8 KB/s"}
-                        </div>
-                      </div>
-
-                      <div>
-                        <div style={{ color: "var(--text-muted)", fontSize: "0.6875rem", textTransform: "uppercase" }}>
-                          Edge POP Ingress
-                        </div>
-                        <div style={{ fontWeight: 700, color: "#c084fc", marginTop: "2px" }}>
-                          Cloudflare Containers · iad1
-                        </div>
-                      </div>
-                    </div>
+                    {/* Live telemetry: runner reading / newest sample + proxied requests (no placeholder values) */}
+                    <ServiceLiveGauges serviceId={svc.id} isPaused={svc.isPaused} />
 
                     {/* Inline Autoscaling Drawer */}
                     {scalingServiceId === svc.id && (
@@ -1234,95 +1160,20 @@ function ProjectConsoleContent() {
                             >
                               View deployment
                             </Link>
-                            <div style={{ position: "relative" }} data-deployment-menu="true">
-                              <button
-                                type="button"
-                                className="btn btn-ghost btn-sm"
-                                aria-label={`Actions for deployment ${dep.id.slice(0, 8)}`}
-                                aria-expanded={openDeploymentMenuId === dep.id}
-                                onClick={() => setOpenDeploymentMenuId((current) => current === dep.id ? null : dep.id)}
-                              >
-                                More ▾
-                              </button>
-                              {openDeploymentMenuId === dep.id && (
-                                <div
-                                  role="menu"
-                                  aria-label={`Deployment ${dep.id.slice(0, 8)} actions`}
-                                  style={{ position: "absolute", right: 0, top: "calc(100% + 6px)", zIndex: 20, minWidth: "190px", padding: "6px", border: "1px solid var(--border-subtle)", borderRadius: "10px", background: "var(--bg-elevated)", boxShadow: "var(--shadow-lg)", textAlign: "left" }}
-                                >
-                                  <Link
-                                    href={`/dashboard/deployments/${dep.id}`}
-                                    role="menuitem"
-                                    className="btn btn-ghost btn-sm"
-                                    style={{ display: "block", width: "100%", textAlign: "left" }}
-                                    onClick={() => setOpenDeploymentMenuId(null)}
-                                  >
-                                    Overview
-                                  </Link>
-                                  <Link
-                                    href={`/dashboard/deployments/${dep.id}?view=logs`}
-                                    role="menuitem"
-                                    className="btn btn-ghost btn-sm"
-                                    style={{ display: "block", width: "100%", textAlign: "left" }}
-                                    onClick={() => setOpenDeploymentMenuId(null)}
-                                  >
-                                    View logs
-                                  </Link>
-                                  {isRunning && (
-                                    <button
-                                      type="button"
-                                      role="menuitem"
-                                      onClick={() => { setOpenDeploymentMenuId(null); handleCancelDeploy(dep.id); }}
-                                      className="btn btn-ghost btn-sm"
-                                      style={{ display: "block", width: "100%", textAlign: "left", color: "#f87171" }}
-                                    >
-                                      Cancel deployment
-                                    </button>
-                                  )}
-                                  {!isRunning && (
-                                    <>
-                                      <button
-                                        type="button"
-                                        role="menuitem"
-                                        onClick={() => { setOpenDeploymentMenuId(null); handleRedeploy(dep.id, false); }}
-                                        className="btn btn-ghost btn-sm"
-                                        style={{ display: "block", width: "100%", textAlign: "left" }}
-                                      >
-                                        Redeploy
-                                      </button>
-                                      <button
-                                        type="button"
-                                        role="menuitem"
-                                        onClick={() => { setOpenDeploymentMenuId(null); handleRedeploy(dep.id, true); }}
-                                        className="btn btn-ghost btn-sm"
-                                        style={{ display: "block", width: "100%", textAlign: "left" }}
-                                      >
-                                        Clean rebuild
-                                      </button>
-                                      <button
-                                        type="button"
-                                        role="menuitem"
-                                        onClick={() => { setOpenDeploymentMenuId(null); handleInstantRollback(dep.id); }}
-                                        className="btn btn-ghost btn-sm"
-                                        style={{ display: "block", width: "100%", textAlign: "left" }}
-                                      >
-                                        Roll back to this
-                                      </button>
-                                    </>
-                                  )}
-                                  <hr style={{ border: "none", borderTop: "1px solid var(--border-subtle)", margin: "4px 0" }} />
-                                  <button
-                                    type="button"
-                                    role="menuitem"
-                                    onClick={() => { setOpenDeploymentMenuId(null); handleDeleteDeployment(dep.id); }}
-                                    className="btn btn-ghost btn-sm"
-                                    style={{ display: "block", width: "100%", textAlign: "left", color: "#ef4444", fontWeight: 600 }}
-                                  >
-                                    🗑️ Delete deployment
-                                  </button>
-                                </div>
-                              )}
-                            </div>
+                            <ActionMenu
+                              label={`Actions for deployment ${dep.id.slice(0, 8)}`}
+                              trigger="More ▾"
+                              minWidth={190}
+                              items={[
+                                { key: "overview", label: "Overview", href: `/dashboard/deployments/${dep.id}` },
+                                { key: "logs", label: "View logs", href: `/dashboard/deployments/${dep.id}?view=logs` },
+                                isRunning && { key: "cancel", label: "Cancel deployment", danger: true, onSelect: () => handleCancelDeploy(dep.id) },
+                                !isRunning && { key: "redeploy", label: "Redeploy", onSelect: () => handleRedeploy(dep.id, false) },
+                                !isRunning && { key: "rebuild", label: "Clean rebuild", onSelect: () => handleRedeploy(dep.id, true) },
+                                !isRunning && { key: "rollback", label: "Roll back to this", onSelect: () => handleInstantRollback(dep.id) },
+                                { key: "delete", label: "Delete deployment", icon: "🗑️", danger: true, separatorBefore: true, onSelect: () => handleDeleteDeployment(dep.id) },
+                              ]}
+                            />
                           </div>
                         </td>
                       </tr>
@@ -1671,7 +1522,7 @@ function ProjectConsoleContent() {
               <div className="stat-value" style={{ color: "var(--brand-accent)" }}>
                 {liveMetric ? `${liveMetric.cpuPercent}%` : "—"}
               </div>
-              <div className="stat-change">1.0 vCPU allocation</div>
+              <div className="stat-change">percent of one core</div>
               <div style={{ width: "100%", height: "6px", background: "var(--bg-overlay)", borderRadius: "99px", marginTop: "8px", overflow: "hidden" }}>
                 <div style={{ width: `${liveMetric?.cpuPercent || 0}%`, height: "100%", background: "var(--brand-accent)" }} />
               </div>
@@ -1697,7 +1548,7 @@ function ProjectConsoleContent() {
               <div className="stat-value">
                 {liveMetric?.networkEgressKb != null ? `${liveMetric.networkEgressKb} KB/s` : "—"}
               </div>
-              <div className="stat-change">Edge CDN routing</div>
+              <div className="stat-change">{liveMetric && liveMetric.networkEgressKb == null ? "not measured for native processes" : "container network counters"}</div>
             </div>
 
             <div className="stat-card">
@@ -1705,7 +1556,7 @@ function ProjectConsoleContent() {
               <div className="stat-value">
                 {liveMetric?.diskUsedMiB != null ? `${liveMetric.diskUsedMiB} MB` : "—"}
               </div>
-              <div className="stat-change">1024 MB provisioned</div>
+              <div className="stat-change">not measured by the runner</div>
             </div>
           </div>
 
@@ -1788,6 +1639,8 @@ function ProjectConsoleContent() {
               </div>
             </div>
           </div>
+
+          {activeService && <ServiceTrafficPanel serviceId={activeService.id} serviceName={activeService.name} />}
         </div>
       )}
 
@@ -2360,11 +2213,23 @@ function ProjectConsoleContent() {
           <div className="card" style={{ borderColor: "rgba(239,68,68,0.3)" }}>
             <h3 style={{ color: "#f87171", marginBottom: "6px" }}>Danger Zone</h3>
             <p style={{ fontSize: "0.875rem", marginBottom: "16px" }}>
-              Permanently delete this project and all affiliated services, containers, and domain routing.
+              Permanently delete this project: every service&apos;s containers are stopped on the runner, its routes and custom domains are removed. There is no restore.
             </p>
-            <button onClick={handleDeleteProject} className="btn btn-danger">
+            <button onClick={() => { setDeleteProjectError(null); setDeleteProjectOpen(true); }} className="btn btn-danger">
               Delete Project &quot;{project.name}&quot;
             </button>
+            <ConfirmDialog
+              open={deleteProjectOpen}
+              danger
+              title={`Delete project "${project.name}"?`}
+              description="Every service's containers are stopped on the runner, its routes and custom domains are removed, and the project is deleted. This cannot be undone."
+              requireText={project.name}
+              confirmLabel="Delete project"
+              busy={deleteProjectMutation.isPending}
+              error={deleteProjectError}
+              onConfirm={handleDeleteProject}
+              onCancel={() => setDeleteProjectOpen(false)}
+            />
           </div>
         </div>
       )}

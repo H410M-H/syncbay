@@ -88,6 +88,7 @@ export async function GET() {
             201: { description: "Project created successfully" },
             400: { description: "Invalid project parameters" },
             403: { description: "Token lacks write scope" },
+            409: { description: "A project with this name already exists in the workspace (existingProjectId)" },
           },
         },
       },
@@ -134,6 +135,7 @@ export async function GET() {
           responses: {
             202: { description: "Deployment queued and triggered" },
             403: { description: "Token lacks DEPLOY_ONLY or FULL_ACCESS scope" },
+            412: { description: "Runner not configured (code RUNNER_NOT_CONFIGURED); the error says what to set. No deployment is created" },
           },
         },
       },

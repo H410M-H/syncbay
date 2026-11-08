@@ -12,6 +12,7 @@
 import { after } from "next/server";
 import { executeDeployment, type TriggerOptions } from "./engine";
 import { acquireOrchestratorLease, enqueueDeploymentJob } from "./job-queue";
+import { getRunnerConfigStatus } from "./runner-config";
 
 /**
  * Runs `task` after the response is sent. Outside a request scope (scripts, tests, the
@@ -35,6 +36,11 @@ export async function scheduleDeployment(
   serviceId: string,
   options: TriggerOptions = { serviceId }
 ): Promise<void> {
+  // User-facing routes preflight the runner config (assertRunnerConfigured) before creating the
+  // deployment. Webhooks and crons still schedule; the engine then fails the deployment with the
+  // same actionable message, which is also logged here.
+  const { problem } = getRunnerConfigStatus();
+  if (problem) console.warn(`[schedule] deployment ${deploymentId}: ${problem}`);
   const { serviceId: _sid, ...persisted } = options;
   await enqueueDeploymentJob({ deploymentId, buildId, serviceId, options: persisted as Record<string, unknown> });
   runAfterResponse(async () => {

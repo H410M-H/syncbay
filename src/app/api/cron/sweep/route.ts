@@ -4,6 +4,7 @@ import { sleepIdleServices } from "@/lib/scale/idle-sleeper";
 import { enforceSpendingCaps, writeUsageRecords } from "@/lib/usage/metering";
 import { purgeOldLogs } from "@/lib/telemetry/log-store";
 import { purgeOldSamples } from "@/lib/telemetry/metrics-sampler";
+import { purgeOldTraffic } from "@/lib/telemetry/traffic-sampler";
 import { runMonthlyInvoicingIfDue } from "@/lib/billing/invoicing";
 
 export const dynamic = "force-dynamic";
@@ -11,6 +12,7 @@ export const maxDuration = 300;
 
 const LOG_RETENTION_DAYS = 30;
 const METRIC_RETENTION_DAYS = 35;
+const TRAFFIC_RETENTION_DAYS = 35;
 
 async function step<T>(fn: () => Promise<T>): Promise<T | { error: string }> {
   try {
@@ -32,6 +34,7 @@ export async function GET(req: NextRequest) {
   const retention = await step(async () => ({
     logs: await purgeOldLogs(LOG_RETENTION_DAYS),
     samples: await purgeOldSamples(METRIC_RETENTION_DAYS),
+    traffic: await purgeOldTraffic(TRAFFIC_RETENTION_DAYS),
   }));
   return NextResponse.json({ ok: true, at: new Date().toISOString(), idle, usage, spendingCaps, invoicing, retention });
 }

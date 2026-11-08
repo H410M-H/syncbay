@@ -333,7 +333,7 @@ async function main() {
       assert.strictEqual(res.errorRatePercent, null);
       assert.match(res.reason, /1 CPU\/memory sample/);
       const injected = await canary.evaluateCanaryHealth(db, service.id, {
-        errorCounts: async () => ({ requests: 100, errors5xx: 10 }), // INJECTED counts (no real 5xx source exists)
+        errorCounts: async () => ({ requests: 100, errors5xx: 10 }), // INJECTED counts (overrides the default TrafficSample source; real drains are covered by test:analytics)
       });
       assert.strictEqual(injected.action, "ROLLBACK");
       assert.strictEqual(injected.errorRatePercent, 10);

@@ -1,11 +1,19 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { trpc } from "@/lib/trpc-client";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { signIn } from "next-auth/react";
 import { BackButton } from "@/components/ui/back-button";
+
+interface WizardProgress {
+  key: string;
+  workspaceId: string;
+  projectId: string;
+  environmentId: string;
+  serviceId?: string;
+}
 
 export default function NewProjectPage() {
   const router = useRouter();
@@ -39,70 +47,116 @@ export default function NewProjectPage() {
   const triggerDeploy = trpc.deployment.trigger.useMutation();
 
   const [workspaceId, setWorkspaceId] = useState<string>("");
+  const utils = trpc.useUtils();
+  const runnerStatus = trpc.deployment.runnerStatus.useQuery(undefined, { staleTime: 30_000 });
+  const runnerProblem = runnerStatus.data?.problem;
+
+  // What this wizard already created, so a retry reuses it instead of creating a duplicate project.
+  const progressRef = useRef<WizardProgress | null>(null);
+  const inFlight = useRef(false);
+  const [wizardError, setWizardError] = useState<{ message: string; existingProjectId?: string } | null>(null);
+
+  /**
+   * Preflight the runner, create (or reuse) the project and service, then trigger the first deploy.
+   * Returns false when nothing was created and the form should be re-enabled. Once the project
+   * exists, any later failure opens that project with the error instead of offering "create" again.
+   */
+  const runWizard = async (plan: {
+    key: string;
+    workspaceId: string;
+    projectName: string;
+    service: { name: string; sourceType: "github"; repoUrl: string; branch: string };
+    commitMessage: string;
+    afterProjectCreated?: () => Promise<void>;
+  }): Promise<boolean> => {
+    if (inFlight.current) return true;
+    inFlight.current = true;
+    setWizardError(null);
+    let projectId: string | null = null;
+    try {
+      // 0. Preflight: a misconfigured runner fails here, before anything is created
+      const status = await utils.deployment.runnerStatus.fetch(undefined, { staleTime: 0 });
+      if (status.problem) {
+        setWizardError({ message: status.problem });
+        return false;
+      }
+
+      // 1. Project (reused when retrying the same source into the same workspace)
+      const remembered = progressRef.current;
+      let progress = remembered && remembered.key === plan.key && remembered.workspaceId === plan.workspaceId ? remembered : null;
+      if (!progress) {
+        const project = await createProject.mutateAsync({ workspaceId: plan.workspaceId, name: plan.projectName });
+        progress = { key: plan.key, workspaceId: plan.workspaceId, projectId: project.id, environmentId: project.environments[0].id };
+        progressRef.current = progress;
+        await plan.afterProjectCreated?.();
+      }
+      projectId = progress.projectId;
+
+      // 2. Service (reused on retry)
+      if (!progress.serviceId) {
+        const service = await createService.mutateAsync({ environmentId: progress.environmentId, ...plan.service });
+        progress.serviceId = service.id;
+      }
+
+      // 3. Initial deployment
+      await triggerDeploy.mutateAsync({ serviceId: progress.serviceId, commitMessage: plan.commitMessage });
+      progressRef.current = null;
+      router.push(`/dashboard/projects/${projectId}`);
+      return true;
+    } catch (error) {
+      const err = error as { message?: string; data?: { code?: string; details?: { existingProjectId?: unknown } | null } };
+      const message = err?.message || "Deployment setup failed";
+      console.error(error);
+      if (projectId) {
+        router.push(`/dashboard/projects/${projectId}?tab=services&setupError=${encodeURIComponent(message)}`);
+        return true;
+      }
+      const existing = err?.data?.code === "CONFLICT" ? err.data.details?.existingProjectId : undefined;
+      setWizardError({ message, existingProjectId: typeof existing === "string" ? existing : undefined });
+      return false;
+    } finally {
+      inFlight.current = false;
+    }
+  };
 
   const handleDeploy = async (repoFullName: string) => {
     const targetWs = workspaceId || workspaces?.[0]?.id;
     if (!targetWs) {
-      alert("Please select a target workspace");
+      setWizardError({ message: "Please select a target workspace" });
       return;
     }
 
     const repo = repos?.find((r) => r.fullName === repoFullName);
     if (!repo) return;
 
-    try {
-      setSelectedRepo(repoFullName);
-
-      // 1. Create a Project
-      const project = await createProject.mutateAsync({
-        workspaceId: targetWs,
-        name: repo.name,
-      });
-
-      // 2. Setup GitHub Webhook (gracefully skipped if GitHub account not linked)
-      try {
+    setSelectedRepo(repoFullName);
+    const keepGoing = await runWizard({
+      key: `github:${repo.fullName}`,
+      workspaceId: targetWs,
+      projectName: repo.name,
+      service: { name: "web", sourceType: "github", repoUrl: repo.htmlUrl, branch: repo.defaultBranch || "main" },
+      commitMessage: "Initial deployment from Syncbay",
+      // Setup GitHub Webhook (gracefully skipped if GitHub account not linked)
+      afterProjectCreated: async () => {
         const [owner, repoName] = repo.fullName.split("/");
-        if (owner && repoName) {
-          await setupWebhook.mutateAsync({ owner, repo: repoName });
-        }
-      } catch (err) {
-        // Non-blocking: starter templates or unlinked accounts don't need real webhook
-      }
-
-      // 3. Create the Service
-      const service = await createService.mutateAsync({
-        environmentId: project.environments[0].id,
-        name: "web",
-        sourceType: "github",
-        repoUrl: repo.htmlUrl,
-        branch: repo.defaultBranch || "main",
-      });
-
-      // 4. Trigger initial deployment
-      await triggerDeploy.mutateAsync({
-        serviceId: service.id,
-        commitMessage: "Initial deployment from Syncbay",
-      });
-
-      // Redirect to the project page
-      router.push(`/dashboard/projects/${project.id}`);
-    } catch (error: any) {
-      console.error(error);
-      alert(`Failed to deploy: ${error.message}`);
-      setSelectedRepo(null);
-    }
+        if (!owner || !repoName) return;
+        // Non-blocking: starter templates or unlinked accounts don't need a real webhook
+        await setupWebhook.mutateAsync({ owner, repo: repoName }).catch(() => null);
+      },
+    });
+    if (!keepGoing) setSelectedRepo(null);
   };
 
   const handleDeployCustom = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!customRepoUrl) {
-      alert("Please enter a repository URL");
+      setWizardError({ message: "Please enter a repository URL" });
       return;
     }
 
     const targetWs = workspaceId || workspaces?.[0]?.id;
     if (!targetWs) {
-      alert("Please select a target workspace");
+      setWizardError({ message: "Please select a target workspace" });
       return;
     }
 
@@ -111,37 +165,18 @@ export default function NewProjectPage() {
       customProjectName.trim() ||
       customRepoUrl.replace(/\/$/, "").split("/").pop()?.replace(/\.git$/, "") ||
       "web-app";
+    const repoUrl = customRepoUrl.trim();
+    const branch = customBranch.trim() || "main";
 
-    try {
-      setIsDeployingCustom(true);
-
-      // 1. Create a Project
-      const project = await createProject.mutateAsync({
-        workspaceId: targetWs,
-        name: derivedName,
-      });
-
-      // 2. Create the Service
-      const service = await createService.mutateAsync({
-        environmentId: project.environments[0].id,
-        name: "web",
-        sourceType: "github",
-        repoUrl: customRepoUrl.trim(),
-        branch: customBranch.trim() || "main",
-      });
-
-      // 3. Trigger initial deployment
-      await triggerDeploy.mutateAsync({
-        serviceId: service.id,
-        commitMessage: "Initial deployment from custom Git URL",
-      });
-
-      router.push(`/dashboard/projects/${project.id}`);
-    } catch (error: any) {
-      console.error(error);
-      alert(`Failed to deploy custom repository: ${error.message}`);
-      setIsDeployingCustom(false);
-    }
+    setIsDeployingCustom(true);
+    const keepGoing = await runWizard({
+      key: `custom:${repoUrl}#${branch}:${derivedName}`,
+      workspaceId: targetWs,
+      projectName: derivedName,
+      service: { name: "web", sourceType: "github", repoUrl, branch },
+      commitMessage: "Initial deployment from custom Git URL",
+    });
+    if (!keepGoing) setIsDeployingCustom(false);
   };
 
   return (
@@ -179,6 +214,34 @@ export default function NewProjectPage() {
           </select>
         </div>
       </div>
+
+      {runnerProblem && (
+        <div
+          role="alert"
+          className="card"
+          style={{ marginBottom: "16px", borderColor: "rgba(239,68,68,0.45)", color: "#fca5a5", fontSize: "0.875rem", padding: "14px 18px" }}
+        >
+          <strong style={{ color: "#f87171" }}>Deploys are blocked.</strong> {runnerProblem}
+        </div>
+      )}
+
+      {wizardError && (
+        <div
+          role="alert"
+          className="card"
+          style={{ marginBottom: "16px", borderColor: "rgba(239,68,68,0.45)", padding: "14px 18px", display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}
+        >
+          <span style={{ color: "#fca5a5", fontSize: "0.875rem", flex: 1, minWidth: "200px" }}>{wizardError.message}</span>
+          {wizardError.existingProjectId && (
+            <Link href={`/dashboard/projects/${wizardError.existingProjectId}`} className="btn btn-secondary btn-sm">
+              Open existing project
+            </Link>
+          )}
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => setWizardError(null)} aria-label="Dismiss error">
+            ×
+          </button>
+        </div>
+      )}
 
       {/* Mode Tabs */}
       <div
@@ -414,7 +477,8 @@ export default function NewProjectPage() {
 
                   <button
                     onClick={() => handleDeploy(repo.fullName)}
-                    disabled={selectedRepo !== null}
+                    disabled={selectedRepo !== null || Boolean(runnerProblem)}
+                    title={runnerProblem}
                     className="btn btn-primary btn-sm"
                     style={{ minWidth: "90px", justifyContent: "center" }}
                   >
@@ -476,7 +540,8 @@ export default function NewProjectPage() {
 
             <button
               type="submit"
-              disabled={isDeployingCustom}
+              disabled={isDeployingCustom || Boolean(runnerProblem)}
+              title={runnerProblem}
               className="btn btn-primary"
               style={{ marginTop: "8px", alignSelf: "flex-start" }}
             >
