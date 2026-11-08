@@ -221,6 +221,14 @@ http.createServer((req, res) => {
     gateway530.close();
     const services = await prisma.service.findMany({ where: { environment: { project: { workspaceId: workspace.id } } }, select: { id: true } });
     const ids = services.map((s) => s.id);
+    // A failed run can leave app instances behind: stop their process groups (native proc_<pid>)
+    const instances = await prisma.deployment.findMany({ where: { serviceId: { in: ids }, cfContainerId: { startsWith: "proc_" } }, select: { cfContainerId: true } });
+    for (const { cfContainerId } of instances) {
+      const pid = Number(cfContainerId!.slice("proc_".length));
+      try {
+        process.kill(-pid, "SIGTERM");
+      } catch {}
+    }
     await prisma.deploymentJob.deleteMany({ where: { serviceId: { in: ids } } }).catch(() => null);
     await prisma.deployment.deleteMany({ where: { serviceId: { in: ids } } }).catch(() => null);
     await prisma.apiToken.deleteMany({ where: { workspaceId: workspace.id } }).catch(() => null);
