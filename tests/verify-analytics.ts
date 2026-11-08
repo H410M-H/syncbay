@@ -93,7 +93,7 @@ async function main() {
   const { db } = await import("../src/lib/db");
   const { appRouter } = await import("../src/server/root");
   const { collectTraffic, purgeOldTraffic } = await import("../src/lib/telemetry/traffic-sampler");
-  const { getRunnerConfigStatus } = await import("../src/lib/telemetry/runner-status");
+  const { getRunnerConfigStatus } = await import("../src/lib/orchestrator/runner-config");
   const canary = await import("../src/lib/devops/canary-engine");
   const { RunnerDaemon } = await import("../runner/src/index.ts");
   const { PortManager } = await import("../runner/src/port-manager.ts");
@@ -229,7 +229,7 @@ async function main() {
     });
     await step("runner card: webhook mode, host only, health from the real daemon", async () => {
       const ov = await caller(user.id).analytics.overview();
-      assert.deepStrictEqual(ov.runner.config, { mode: "webhook", urlHost: `127.0.0.1:${RUNNER_PORT}`, secretConfigured: true, problem: undefined });
+      assert.deepStrictEqual({ ...ov.runner.config, problem: ov.runner.config.problem ?? null }, { mode: "webhook", urlHost: `127.0.0.1:${RUNNER_PORT}`, secretConfigured: true, problem: null });
       assert.strictEqual(ov.runner.health.online, true);
       assert.ok(typeof ov.runner.health.uptime === "number" && typeof ov.runner.health.activeJobs === "number");
       assert.ok(!JSON.stringify(ov).includes(SECRET), "secret never exposed");

@@ -23,7 +23,7 @@ import {
 } from "@/lib/analytics/overview";
 import { trafficReport, type ServiceRef } from "@/lib/analytics/traffic";
 import { workspaceUsageTotals } from "@/lib/usage/metering";
-import { checkRunnerHealth, getRunnerConfigStatus, type RunnerHealth } from "@/lib/telemetry/runner-status";
+import { checkRunnerHealth, getRunnerConfigStatus, type RunnerHealth } from "@/lib/orchestrator/runner-config";
 
 type Db = TRPCContext["db"];
 
