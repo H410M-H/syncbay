@@ -1,5 +1,8 @@
 .dialog {
+  /* The global reset zeroes margins; a modal <dialog> is centred by margin: auto */
+  margin: auto;
   width: min(480px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
   padding: 0;
   border: 1px solid var(--border-default);
   border-radius: var(--radius-lg, 16px);

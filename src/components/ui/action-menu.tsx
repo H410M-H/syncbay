@@ -10,7 +10,7 @@
  */
 
 import Link from "next/link";
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 export interface ActionMenuItem {
@@ -85,7 +85,7 @@ export function ActionMenu({
     const left = Math.min(Math.max(8, rawLeft), Math.max(8, window.innerWidth - width - 8));
     m.style.top = `${top}px`;
     m.style.left = `${left}px`;
-    m.style.visibility = "visible";
+    m.style.opacity = "1";
   }, [align, minWidth]);
 
   useLayoutEffect(() => {
@@ -244,7 +244,9 @@ export function ActionMenu({
               position: "fixed",
               top: 0,
               left: 0,
-              visibility: "hidden", // until place() measures it
+              // Transparent (not visibility: hidden, which items would inherit through their
+              // `.btn` transition and stay unfocusable for 0.2 s) until place() positions it.
+              opacity: 0,
               zIndex: 1000,
               minWidth: `${minWidth}px`,
               padding: "6px",
@@ -258,12 +260,12 @@ export function ActionMenu({
             }}
           >
             {visible.map((item) => (
-              <div key={item.key} role="none" style={{ display: "contents" }}>
+              <Fragment key={item.key}>
                 {item.separatorBefore && (
                   <hr role="separator" style={{ border: "none", borderTop: "1px solid var(--border-subtle)", margin: "4px 0", width: "100%" }} />
                 )}
                 {renderItem(item)}
-              </div>
+              </Fragment>
             ))}
           </div>,
           document.body
