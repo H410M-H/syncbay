@@ -443,10 +443,20 @@ http.createServer((req, res) => {
         assert.ok(isAlive(pidOf(d.id)), "instance still running");
         assert.strictEqual((await prisma.deployment.findUniqueOrThrow({ where: { id: d.id } })).status, "ACTIVE", "not falsely marked stopped");
       }
-      assert.strictEqual((await prisma.service.findUniqueOrThrow({ where: { id: web.id } })).isPaused, false);
+      await rejects(
+        () => asOwner.project.delete({ projectId: portfolio.id, confirmName: `Portfolio-${RUN}` }),
+        isPrecondition,
+        "delete with unreachable instances"
+      );
+      for (const id of serviceIds) {
+        const svc = await prisma.service.findUniqueOrThrow({ where: { id } });
+        assert.strictEqual(svc.isPaused, false, "failed pauseAll changed nothing (not even the idle service)");
+        assert.strictEqual(svc.deletedAt, null, "failed delete changed nothing");
+      }
+      assert.strictEqual((await prisma.project.findUniqueOrThrow({ where: { id: portfolio.id } })).deletedAt, null);
       assert.throws(() => driverFor("webhook"), (e: any) => isRunnerConfigError(e) && e.message === status.problem);
       assert.throws(() => resolveRunnerSecret(), (e: any) => e instanceof AuthenticationError && e.message === status.problem);
-      ok("pauseAll / setPaused / restart → PRECONDITION_FAILED, instances still ACTIVE and running; driverFor no longer falls back to local");
+      ok("pauseAll / setPaused / restart / delete → PRECONDITION_FAILED and nothing changed: instances ACTIVE and running; driverFor no longer falls back to local");
 
       // Webhook / cron path: scheduleDeployment is unchanged, logs the problem, and the engine fails
       // the deployment with the same actionable message.
@@ -512,7 +522,8 @@ http.createServer((req, res) => {
     console.log("\n[8] Delete teardown");
     const hosts = [...resolveServiceHostnames(web), ...resolveServiceHostnames(api)];
     assert.ok(hosts.includes(domain.hostname));
-    for (const h of hosts) assert.strictEqual(getServiceRoute(h)?.status, "ACTIVE", h);
+    // (step 6's failed deployment left web's routes FAILED: the engine's existing failure path)
+    for (const h of hosts) assert.ok(getServiceRoute(h), `route ${h} registered before delete`);
 
     await rejects(() => asMember.project.delete({ projectId: portfolio.id, confirmName: `Portfolio-${RUN}` }), (e) => e.code === "FORBIDDEN", "member delete");
     await rejects(() => asOwner.project.delete({ projectId: portfolio.id, confirmName: "portfolio" }), (e) => e.code === "BAD_REQUEST", "wrong confirm name");

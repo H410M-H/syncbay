@@ -2,7 +2,7 @@ import { z } from "zod";
 import { createTRPCRouter, protectedProcedure } from "@/server/trpc";
 import { TRPCError } from "@trpc/server";
 import { logEventBus } from "@/lib/telemetry/event-bus";
-import { stopServiceInstances } from "@/lib/orchestrator/lifecycle";
+import { assertInstancesControllable, stopServiceInstances } from "@/lib/orchestrator/lifecycle";
 import { needsRebuild, redeployFromDeployment, setServicePaused } from "@/lib/orchestrator/service-actions";
 import { isRunnerConfigError } from "@/lib/orchestrator/runner-config";
 import { requestTunnelReload } from "@/lib/tunnel/tunnel-sync";
@@ -319,9 +319,12 @@ export const projectRouter = createTRPCRouter({
     .input(z.object({ projectId: z.string() }))
     .mutation(async ({ ctx, input }) => {
       await loadProjectForAction(ctx.db, ctx.session.user.id, input.projectId, OPS_ROLES, "Viewers cannot pause projects");
+      const services = await projectServices(ctx.db, input.projectId);
+      // A runner that cannot be reached with this configuration: PRECONDITION_FAILED, nothing changes
+      await surfaceRunnerConfigErrors(() => assertInstancesControllable(services.map((s) => s.id), "pause", ctx.db));
       const results: ServiceActionResult[] = [];
       let configError: Error | null = null;
-      for (const svc of await projectServices(ctx.db, input.projectId)) {
+      for (const svc of services) {
         const base = { serviceId: svc.id, serviceName: svc.name };
         if (svc.isPaused) {
           results.push({ ...base, status: "skipped", reason: "Already paused" });
@@ -403,9 +406,11 @@ export const projectRouter = createTRPCRouter({
       }
 
       const reason = `project-delete:${project.id}`;
+      const services = await projectServices(ctx.db, project.id);
+      // Instances on a runner this configuration cannot reach would be orphaned: refuse, delete nothing
+      await surfaceRunnerConfigErrors(() => assertInstancesControllable(services.map((s) => s.id), "delete", ctx.db));
       const teardown: Array<{ serviceId: string; serviceName: string; stopped: number; cancelled: number; stopFailures: number }> = [];
-      for (const svc of await projectServices(ctx.db, project.id)) {
-        // A runner configuration error stops the delete (PRECONDITION_FAILED) before this service changes
+      for (const svc of services) {
         const report = await surfaceRunnerConfigErrors(() => stopServiceInstances(svc.id, "delete", ctx.db, { reason }));
         const domains = await ctx.db.domain.findMany({ where: { serviceId: svc.id }, select: { id: true, cfRecordId: true } });
         for (const d of domains) if (d.cfRecordId) await cloudflareApiClient.deleteCustomHostname(d.cfRecordId).catch(() => null);

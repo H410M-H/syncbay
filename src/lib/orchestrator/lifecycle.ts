@@ -301,6 +301,24 @@ export async function stopServiceInstances(
   return report;
 }
 
+/**
+ * Throws `RunnerConfigError` when any instance of these services (live, or also sleeping for
+ * `delete`) runs on a driver the current runner configuration cannot reach. Bulk actions call it
+ * first so a misconfigured runner changes nothing instead of half the services.
+ */
+export async function assertInstancesControllable(serviceIds: string[], mode: "pause" | "delete", client: Client = db): Promise<void> {
+  if (!serviceIds.length) return;
+  const deps: Array<{ runnerDriver: string | null }> = await client.deployment.findMany({
+    where: {
+      serviceId: { in: serviceIds },
+      status: { in: mode === "pause" ? LIVE_STATUSES : [...LIVE_STATUSES, "SLEEPING"] },
+      cfContainerId: { not: null },
+    },
+    select: { runnerDriver: true },
+  });
+  for (const runnerDriver of new Set(deps.map((d) => d.runnerDriver ?? null))) driverFor(runnerDriver);
+}
+
 /** Re-runs a deployment's build as a new deployment (fast redeploy, caches kept). */
 async function redeployBuild(
   source: { id: string; serviceId: string; buildId: string; build?: { commitSha?: string | null } | null },

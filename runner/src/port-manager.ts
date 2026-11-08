@@ -121,7 +121,11 @@ export class PortManager {
       const existing = this.serviceToPort.get(serviceId)!;
       const alloc = this.allocatedPorts.get(existing);
       if (alloc && (!jobId || !alloc.jobId || alloc.jobId === jobId)) {
-        return existing;
+        // The same job asking again while its previous instance still listens on the port is a
+        // fast redeploy of the same build (the control plane's job id is the build id): it needs
+        // its own port too, or the new process cannot bind and the old one is then superseded.
+        const sameJobStillServing = Boolean(jobId && alloc.jobId === jobId) && !(await this.isSocketAvailable(existing));
+        if (!sameJobStillServing) return existing;
       }
     }
 

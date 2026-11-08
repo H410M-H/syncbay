@@ -60,6 +60,10 @@ function summarize(verb: string, done: number, results: ServiceResult[]): string
     .join(" · ");
 }
 
+/** Any failed service (or instance that could not be stopped) makes the toast an error. */
+const toneOf = (done: number, results: ServiceResult[]): "success" | "info" | "error" =>
+  results.some((r) => r.status === "failed" || (r.stopFailures || 0) > 0) ? "error" : done ? "success" : "info";
+
 export default function ProjectsPage() {
   const { data: workspaces, isLoading: wsLoading } = trpc.workspace.list.useQuery();
   const [activeWorkspace, setActiveWorkspace] = useState<string | null>(null);
@@ -94,7 +98,7 @@ export default function ProjectsPage() {
 
   const runnerProblem = runner.data?.problem;
 
-  const runBulk = async (projectId: string, action: () => Promise<{ text: string; tone: "success" | "info" }>) => {
+  const runBulk = async (projectId: string, action: () => Promise<{ text: string; tone: "success" | "info" | "error" }>) => {
     setBusyProjectId(projectId);
     try {
       const { text, tone } = await action();
@@ -111,19 +115,19 @@ export default function ProjectsPage() {
     runBulk(projectId, async () => {
       const res = await redeployAll.mutateAsync({ projectId, rebuild });
       const verb = rebuild ? `${name}: clean rebuild started for` : `${name}: redeploying`;
-      return { text: summarize(verb, res.scheduled, res.results), tone: res.scheduled ? "success" : "info" };
+      return { text: summarize(verb, res.scheduled, res.results), tone: toneOf(res.scheduled, res.results) };
     });
 
   const onPause = (projectId: string, name: string) =>
     runBulk(projectId, async () => {
       const res = await pauseAll.mutateAsync({ projectId });
-      return { text: summarize(`${name}: paused`, res.paused, res.results), tone: res.paused ? "success" : "info" };
+      return { text: summarize(`${name}: paused`, res.paused, res.results), tone: toneOf(res.paused, res.results) };
     });
 
   const onResume = (projectId: string, name: string) =>
     runBulk(projectId, async () => {
       const res = await resumeAll.mutateAsync({ projectId });
-      return { text: summarize(`${name}: resumed`, res.resumed, res.results), tone: res.resumed ? "success" : "info" };
+      return { text: summarize(`${name}: resumed`, res.resumed, res.results), tone: toneOf(res.resumed, res.results) };
     });
 
   const closeDialogs = () => {
