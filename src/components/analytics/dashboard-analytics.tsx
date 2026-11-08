@@ -18,6 +18,7 @@ import {
   formatBytes,
   formatCents,
   formatCount,
+  formatMb,
   formatMs,
   formatPercent,
   timeAgo,
@@ -249,8 +250,8 @@ export function DashboardAnalytics({ workspaces }: { workspaces: Array<{ id: str
             <span style={{ color: "var(--text-secondary)", fontSize: "0.875rem" }}>avg CPU</span>
           </div>
           <div style={{ fontSize: "0.8rem", color: "var(--text-secondary)" }}>
-            Memory <strong style={{ color: "var(--text-primary)" }}>{ov?.resources.memoryUsedMb != null ? `${formatCount(ov.resources.memoryUsedMb)} MB` : DASH}</strong>
-            {ov?.resources.memoryLimitMb != null ? ` / ${formatCount(ov.resources.memoryLimitMb)} MB` : ""}
+            Memory <strong style={{ color: "var(--text-primary)" }}>{formatMb(ov?.resources.memoryUsedMb)}</strong>
+            {ov?.resources.memoryLimitMb != null ? ` / ${formatMb(ov.resources.memoryLimitMb)}` : ""}
           </div>
         </Card>
 
@@ -284,7 +285,7 @@ export function DashboardAnalytics({ workspaces }: { workspaces: Array<{ id: str
 
       {/* Charts */}
       <div className="grid-2">
-        <section className="card" aria-labelledby="deploys-chart-title">
+        <section className="card" aria-labelledby="deploys-chart-title" style={{ minWidth: 0 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", gap: 8, flexWrap: "wrap" }}>
             <div>
               <h3 id="deploys-chart-title" style={{ fontSize: "1rem" }}>Deploys per day</h3>
@@ -306,7 +307,7 @@ export function DashboardAnalytics({ workspaces }: { workspaces: Array<{ id: str
           />
         </section>
 
-        <section className="card" aria-labelledby="traffic-chart-title">
+        <section className="card" aria-labelledby="traffic-chart-title" style={{ minWidth: 0 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", gap: 8, flexWrap: "wrap" }}>
             <div>
               <h3 id="traffic-chart-title" style={{ fontSize: "1rem" }}>Requests over time</h3>
@@ -332,7 +333,7 @@ export function DashboardAnalytics({ workspaces }: { workspaces: Array<{ id: str
       </div>
 
       <div className="grid-2">
-        <section className="card" aria-labelledby="top-services-title">
+        <section className="card" aria-labelledby="top-services-title" style={{ minWidth: 0 }}>
           <h3 id="top-services-title" style={{ fontSize: "1rem", marginBottom: "12px" }}>
             Top services by requests ({period})
           </h3>
@@ -357,10 +358,10 @@ export function DashboardAnalytics({ workspaces }: { workspaces: Array<{ id: str
                         </Link>
                         <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>{s.projectName}</div>
                       </td>
-                      <td style={{ padding: "8px 12px", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{formatCount(s.requests)}</td>
-                      <td style={{ padding: "8px 12px", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{formatPercent(s.errorRatePercent, 2)}</td>
-                      <td style={{ padding: "8px 12px", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{formatMs(s.latencyAvgMs)}</td>
-                      <td style={{ padding: "8px 12px", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{formatBytes(s.bytesOut)}</td>
+                      <td style={{ padding: "8px 12px", textAlign: "right", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{formatCount(s.requests)}</td>
+                      <td style={{ padding: "8px 12px", textAlign: "right", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{formatPercent(s.errorRatePercent, 2)}</td>
+                      <td style={{ padding: "8px 12px", textAlign: "right", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{formatMs(s.latencyAvgMs)}</td>
+                      <td style={{ padding: "8px 12px", textAlign: "right", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{formatBytes(s.bytesOut)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -371,7 +372,7 @@ export function DashboardAnalytics({ workspaces }: { workspaces: Array<{ id: str
           )}
         </section>
 
-        <section className="card" aria-labelledby="activity-title">
+        <section className="card" aria-labelledby="activity-title" style={{ minWidth: 0 }}>
           <h3 id="activity-title" style={{ fontSize: "1rem", marginBottom: "12px" }}>
             Recent activity
           </h3>

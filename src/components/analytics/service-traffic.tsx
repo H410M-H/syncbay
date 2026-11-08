@@ -12,7 +12,7 @@ import { BarChart } from "@/components/charts/bar-chart";
 import { LineChart } from "@/components/charts/line-chart";
 import { SERIES_BLUE, SERIES_ORANGE } from "@/components/charts/chart-utils";
 import { TRAFFIC_SERIES } from "./dashboard-analytics";
-import { DASH, bucketLabel, formatBytes, formatCount, formatMs, formatPercent, timeAgo, useDocumentVisible, useNow } from "./format";
+import { DASH, bucketLabel, formatBytes, formatCount, formatMb, formatMs, formatPercent, timeAgo, useDocumentVisible, useNow } from "./format";
 
 const POLL_MS = 15_000;
 
@@ -48,14 +48,14 @@ export function ServiceLiveGauges({ serviceId, isPaused }: { serviceId: string; 
         <div style={gaugeLabel}>CPU</div>
         <div style={gaugeValue}>
           {point ? formatPercent(point.cpuPercent) : DASH}
-          <span style={gaugeSub}>of one core</span>
+          {point && <span style={gaugeSub}>of one core</span>}
         </div>
       </div>
       <div>
         <div style={gaugeLabel}>Memory</div>
         <div style={gaugeValue}>
-          {point ? `${formatCount(point.memoryUsedMb)} MB` : DASH}
-          <span style={gaugeSub}>{point?.memoryLimitMb ? `/ ${formatCount(point.memoryLimitMb)} MB` : point ? "no limit reported" : ""}</span>
+          {point ? formatMb(point.memoryUsedMb) : DASH}
+          <span style={gaugeSub}>{point?.memoryLimitMb ? `/ ${formatMb(point.memoryLimitMb)}` : point ? "no limit reported" : ""}</span>
         </div>
       </div>
       <div>

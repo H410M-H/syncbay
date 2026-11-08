@@ -23,6 +23,12 @@ export function formatBytes(n: number | null | undefined): string {
   return `${v >= 100 || u === 0 ? Math.round(v) : v.toFixed(1)} ${units[u]}`;
 }
 
+/** Megabytes, switching to GB from 1024 MB. */
+export function formatMb(mb: number | null | undefined): string {
+  if (mb === null || mb === undefined || !Number.isFinite(mb)) return DASH;
+  return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.round(mb)} MB`;
+}
+
 export function formatMs(n: number | null | undefined): string {
   if (n === null || n === undefined || !Number.isFinite(n)) return DASH;
   if (n >= 60_000) return `${(n / 60_000).toFixed(1)} min`;
