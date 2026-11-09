@@ -51,7 +51,11 @@ cd /opt/syncbay && git pull && docker compose -f deploy/alibaba-ecs/docker-compo
 docker compose -f deploy/alibaba-ecs/docker-compose.yml exec runner docker buildx version   # must print a version
 ```
 - The image bundles the Docker CLI with the **buildx** plugin. Without buildx, every Docker or Nixpacks build fails with "BuildKit is enabled but the buildx component is missing".
-- At startup the runner logs whether buildx is available, so check `docker compose ... logs runner` after an update.
+- Two more safeguards cover an old or broken image:
+  - Compose also mounts the host's plugin directory, `/usr/libexec/docker/cli-plugins`, read-only. Docker from `get.docker.com` (which `setup.sh` uses) puts `docker-buildx-plugin` there.
+  - At startup, and again before each build, the runner checks `docker buildx version`. If buildx is missing, it downloads the plugin (`RUNNER_BUILDX_VERSION`, default 0.17.1) into `~/.docker/cli-plugins`. Set `RUNNER_AUTO_INSTALL_BUILDX=false` to turn this off.
+- `curl -fsS https://runner.syncbay.app/health` reports `toolchain: { docker, buildx, nixpacks }`. The dashboard's runner card warns when buildx is missing.
+- If `up -d --build` fails, compose keeps the **old** container running. Check the end of its output (GitHub release downloads sometimes time out; the Dockerfile retries them), then run it again.
 - App containers the runner started keep running across a runner restart. Redeploy a service to re-register it with the new runner process.
 
 ## Operations

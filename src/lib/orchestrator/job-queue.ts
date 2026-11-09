@@ -18,6 +18,7 @@
 import { db } from "@/lib/db";
 import { logEventBus } from "@/lib/telemetry/event-bus";
 import { classifyLogLine, type BuildDispatchParams, type BuildStatusResult, type RunnerBuildStatus } from "./runner-driver";
+import { redactSecrets } from "@/lib/telemetry/redact";
 
 type Client = any;
 
@@ -180,7 +181,7 @@ export async function completeDeploymentJob(
         data: {
           status,
           exitCode: info.exitCode ?? null,
-          errorMessage: info.errorMessage?.slice(0, 4000) ?? null,
+          errorMessage: info.errorMessage ? redactSecrets(info.errorMessage).slice(0, 4000) : null,
           ...(info.result ? { result: JSON.parse(JSON.stringify(info.result)) } : {}),
           payload: null,
           leaseOwner: null,
@@ -409,7 +410,7 @@ export async function recordRunnerEvents(
           status: body.status,
           result,
           exitCode: typeof body.result?.exitCode === "number" ? body.result.exitCode : body.status === "SUCCEEDED" ? 0 : 1,
-          errorMessage: body.result?.error ? String(body.result.error).slice(0, 4000) : null,
+          errorMessage: body.result?.error ? redactSecrets(String(body.result.error)).slice(0, 4000) : null,
           payload: null,
           leaseExpiresAt: null,
           heartbeatAt: now,

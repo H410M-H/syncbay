@@ -19,6 +19,7 @@ import {
 } from "@/lib/orchestrator/runner-driver";
 import { onDeploymentActive, onDeploymentFailed, resolveProbeTargets } from "@/lib/orchestrator/lifecycle";
 import { deployPollBudgetMs, markJobDispatched, releaseOrchestratorLease, renewOrchestratorLease } from "@/lib/orchestrator/job-queue";
+import { redactSecrets } from "@/lib/telemetry/redact";
 
 export interface TriggerOptions {
   serviceId: string;
@@ -469,7 +470,7 @@ export async function executeDeployment(
 
     await db.deployment.update({
       where: { id: deploymentId },
-      data: { status: "FAILED", completedAt: new Date(), errorMessage: String(error?.message || error).slice(0, 4000) },
+      data: { status: "FAILED", completedAt: new Date(), errorMessage: redactSecrets(String(error?.message || error)).slice(0, 4000) },
     }).catch(() => null);
 
     await onDeploymentFailed({ deploymentId, error: String(error?.message || error) });

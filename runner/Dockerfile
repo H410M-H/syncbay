@@ -18,7 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install Nixpacks binary
 ARG NIXPACKS_VERSION=1.30.0
 RUN case "$TARGETARCH" in arm64) A=aarch64 ;; *) A=x86_64 ;; esac && \
-    curl -fsSL -o /tmp/nixpacks.tar.gz "https://github.com/railwayapp/nixpacks/releases/download/v${NIXPACKS_VERSION}/nixpacks-v${NIXPACKS_VERSION}-${A}-unknown-linux-musl.tar.gz" \
+    curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -o /tmp/nixpacks.tar.gz "https://github.com/railwayapp/nixpacks/releases/download/v${NIXPACKS_VERSION}/nixpacks-v${NIXPACKS_VERSION}-${A}-unknown-linux-musl.tar.gz" \
     && tar -xzf /tmp/nixpacks.tar.gz -C /usr/local/bin/ \
     && chmod +x /usr/local/bin/nixpacks \
     && rm -f /tmp/nixpacks.tar.gz
@@ -26,7 +26,7 @@ RUN case "$TARGETARCH" in arm64) A=aarch64 ;; *) A=x86_64 ;; esac && \
 # Install Docker CLI static binary
 ARG DOCKER_VERSION=26.1.4
 RUN case "$TARGETARCH" in arm64) A=aarch64 ;; *) A=x86_64 ;; esac && \
-    curl -fsSL "https://download.docker.com/linux/static/stable/${A}/docker-${DOCKER_VERSION}.tgz" -o /tmp/docker.tgz \
+    curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 "https://download.docker.com/linux/static/stable/${A}/docker-${DOCKER_VERSION}.tgz" -o /tmp/docker.tgz \
     && tar -xzf /tmp/docker.tgz -C /tmp/ \
     && mv /tmp/docker/docker /usr/local/bin/docker \
     && chmod +x /usr/local/bin/docker \
@@ -37,12 +37,12 @@ RUN case "$TARGETARCH" in arm64) A=aarch64 ;; *) A=x86_64 ;; esac && \
 # "BuildKit is enabled but the buildx component is missing or broken".
 ARG BUILDX_VERSION=0.17.1
 RUN mkdir -p /usr/local/lib/docker/cli-plugins \
-    && curl -fsSL "https://github.com/docker/buildx/releases/download/v${BUILDX_VERSION}/buildx-v${BUILDX_VERSION}.linux-${TARGETARCH:-amd64}" \
+    && curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 "https://github.com/docker/buildx/releases/download/v${BUILDX_VERSION}/buildx-v${BUILDX_VERSION}.linux-${TARGETARCH:-amd64}" \
        -o /usr/local/lib/docker/cli-plugins/docker-buildx \
     && chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
 
 # Install Cloudflare Tunnel agent (cloudflared)
-RUN curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${TARGETARCH:-amd64}" -o /usr/local/bin/cloudflared \
+RUN curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${TARGETARCH:-amd64}" -o /usr/local/bin/cloudflared \
     && chmod +x /usr/local/bin/cloudflared
 
 # ─── Stage 2: Production Runner Runtime ───────────────────────────────────────

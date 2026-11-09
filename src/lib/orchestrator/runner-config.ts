@@ -29,6 +29,21 @@ export interface RunnerHealth {
   uptime?: number;
   activeJobs?: number;
   error?: string;
+  /** Build toolchain the runner reports on /health (absent on runners older than the buildx self-install). */
+  toolchain?: RunnerToolchain;
+}
+
+export interface RunnerToolchain {
+  docker: boolean;
+  buildx: string | null;
+  nixpacks: string | null;
+}
+
+function parseToolchain(raw: unknown): RunnerToolchain | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const t = raw as Record<string, unknown>;
+  const str = (v: unknown) => (typeof v === "string" && v ? v.slice(0, 120) : null);
+  return { docker: t.docker === true, buildx: str(t.buildx), nixpacks: str(t.nixpacks) };
 }
 
 const RUNNER_NOT_CONFIGURED = "RUNNER_NOT_CONFIGURED";
@@ -218,7 +233,7 @@ export async function checkRunnerHealth(): Promise<RunnerHealth> {
     }
     const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;
     if (!body || body.status !== "ok") return { online: false, latencyMs, error: "Runner /health did not answer like a Syncbay runner" };
-    return { online: true, latencyMs, uptime: finite(body.uptime), activeJobs: finite(body.activeJobs) };
+    return { online: true, latencyMs, uptime: finite(body.uptime), activeJobs: finite(body.activeJobs), toolchain: parseToolchain(body.toolchain) };
   } catch (err) {
     const e = err as { name?: string; message?: string; cause?: { code?: string } };
     const timedOut = e?.name === "TimeoutError" || e?.name === "AbortError";

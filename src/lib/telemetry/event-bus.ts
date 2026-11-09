@@ -9,6 +9,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { redactSecrets } from "./redact";
 
 export interface LogEntry {
   id: string;
@@ -143,7 +144,7 @@ export class LogEventBus {
       deploymentId,
       timestamp: logLine.timestamp || new Date().toISOString(),
       stream: logLine.stream,
-      message: logLine.message,
+      message: redactSecrets(logLine.message),
     };
 
     let buffer = this.ringBuffers.get(deploymentId);
@@ -176,7 +177,7 @@ export class LogEventBus {
 
   /** In-process error cache; the durable copy is `Deployment.errorMessage` (written by the engine). */
   recordError(deploymentId: string, error: string): void {
-    this.errors.set(deploymentId, error);
+    this.errors.set(deploymentId, redactSecrets(error));
   }
 
   getError(deploymentId: string): string | null {

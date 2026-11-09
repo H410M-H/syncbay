@@ -75,6 +75,8 @@ All five gates (prisma generate, typecheck, knip, lint, build) must pass before 
   - `src/metrics.ts` serves `/api/metrics/:id` (verified by `verifySignedRequest()`, GET payload = pathname, like `services.ts`): `docker stats --no-stream` for containers, `/proc/<pid>/stat` + `status` summed over the process group for `proc_<pid>` native apps (no network counters for those).
   - `GET /api/builds/:id` returns `exitCode` and `simulated`.
   - The secret comes from `RUNNER_SECRET`. In production the daemon refuses to start without one.
+  - `src/build-hints.ts` → `ensureBuildx()` (at startup and before each build): if `docker buildx version` fails, it downloads buildx (`RUNNER_BUILDX_VERSION`) into `~/.docker/cli-plugins`, unless `RUNNER_AUTO_INSTALL_BUILDX=false`. `/health` reports `toolchain: { docker, buildx, nixpacks }`; `checkRunnerHealth()` passes it through and the dashboard warns when buildx is missing.
+  - `src/redact.ts` → `redactSecrets()` strips URL userinfo and GitHub tokens from every log line and error. The control plane mirrors it in `src/lib/telemetry/redact.ts` (`logEventBus.publish`/`recordError`, engine and job-queue `errorMessage`).
   - Any other request is reverse-proxied to the service port in `x-target-port`.
   - After a deploy it registers routes back to the control plane (`/api/v1/services/edge-register`) and adds `<host> → http://127.0.0.1:<port>` tunnel ingress. A stop removes it.
 - `src/pipeline.ts`:

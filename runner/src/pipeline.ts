@@ -14,7 +14,8 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { promisify } from "node:util";
 import { PortManager, defaultPortManager } from "./port-manager.ts";
-import { withBuildToolHint } from "./build-hints.ts";
+import { ensureBuildx, withBuildToolHint } from "./build-hints.ts";
+import { redactSecrets } from "./redact.ts";
 import { dockerVolumeFlags, prepareNativeVolumes, type VolumeMount } from "./volumes.ts";
 
 const execAsync = promisify(exec);
@@ -433,7 +434,7 @@ export class BuildPipeline {
     containerId: string,
     onLog?: (line: string) => void
   ): Promise<{ restarted: boolean; containerId: string; port?: number; error?: string; exitCode?: number }> {
-    const log = (msg: string) => onLog?.(`[pipeline] ${msg}`);
+    const log = (msg: string) => onLog?.(`[pipeline] ${redactSecrets(msg)}`);
     const spec = this.launchSpecs.get(containerId);
     if (!spec) {
       if (containerId.startsWith("proc_") || !/^[a-zA-Z0-9_.-]+$/.test(containerId)) {
@@ -533,7 +534,7 @@ export class BuildPipeline {
     const startTime = Date.now();
     const logs: string[] = [];
     const log = (msg: string) => {
-      const entry = `[pipeline] ${msg}`;
+      const entry = `[pipeline] ${redactSecrets(msg)}`;
       logs.push(entry);
       if (options.onLog) {
         options.onLog(entry);
@@ -700,6 +701,10 @@ server.listen(port, "0.0.0.0", () => {
       const isMockExecutor = !(this.executor instanceof DefaultPipelineExecutor);
       const hasDocker = isMockExecutor || (await this.executor.execute("docker info")).exitCode === 0;
       const hasNixpacks = isMockExecutor || (await this.executor.execute("nixpacks --version")).exitCode === 0;
+      if (hasDocker && !isMockExecutor) {
+        // BuildKit (Docker CLI 23+ default, required by Nixpacks) needs the buildx plugin; install it if missing.
+        await ensureBuildx((line) => log(line.replace(/^\[runner-daemon\] /, "")));
+      }
 
       if (hasDockerfile && hasDocker) {
         strategy = "dockerfile";
@@ -1201,7 +1206,7 @@ server.listen(port, "0.0.0.0");
       };
     } catch (err: any) {
       const durationMs = Date.now() - startTime;
-      const errMsg = err.message || String(err);
+      const errMsg = redactSecrets(err.message || String(err));
       const exitCode = err instanceof PipelineStepError ? err.exitCode : (childExitCode ?? 1);
       log(`Pipeline failed (exit code ${exitCode}): ${errMsg}`);
 
