@@ -14,6 +14,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { promisify } from "node:util";
 import { PortManager, defaultPortManager } from "./port-manager.ts";
+import { withBuildToolHint } from "./build-hints.ts";
 import { dockerVolumeFlags, prepareNativeVolumes, type VolumeMount } from "./volumes.ts";
 
 const execAsync = promisify(exec);
@@ -717,7 +718,7 @@ server.listen(port, "0.0.0.0", () => {
         if (buildRes.exitCode !== 0) {
           const errMsg = buildRes.stderr || buildRes.stdout || `Docker build exited with code ${buildRes.exitCode}`;
           log(`[build:error] ${errMsg}`);
-          throw new PipelineStepError(`Docker build failed: ${errMsg}`, buildRes.exitCode);
+          throw new PipelineStepError(withBuildToolHint(`Docker build failed: ${errMsg}`), buildRes.exitCode);
         }
         log(`Docker build succeeded for image ${imageTag}`);
 
@@ -776,7 +777,7 @@ server.listen(port, "0.0.0.0", () => {
         if (nixRes.exitCode !== 0) {
           const errMsg = nixRes.stderr || nixRes.stdout || `Nixpacks build exited with code ${nixRes.exitCode}`;
           log(`[build:error] ${errMsg}`);
-          throw new PipelineStepError(`Nixpacks build failed: ${errMsg}`, nixRes.exitCode);
+          throw new PipelineStepError(withBuildToolHint(`Nixpacks build failed: ${errMsg}`), nixRes.exitCode);
         }
         log(`Nixpacks compilation succeeded for image ${imageTag}`);
 
