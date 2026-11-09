@@ -44,6 +44,16 @@ In Vercel → Project → Settings → Environment Variables (Production):
 
 Then redeploy. New deployments are dispatched to the ECS runner, and requests to their `*.syncbay.app` hosts are proxied to it.
 
+## Updating the runner
+Run this on the server after new runner changes land on `main`:
+```bash
+cd /opt/syncbay && git pull && docker compose -f deploy/alibaba-ecs/docker-compose.yml up -d --build
+docker compose -f deploy/alibaba-ecs/docker-compose.yml exec runner docker buildx version   # must print a version
+```
+- The image bundles the Docker CLI with the **buildx** plugin. Without buildx, every Docker or Nixpacks build fails with "BuildKit is enabled but the buildx component is missing".
+- At startup the runner logs whether buildx is available, so check `docker compose ... logs runner` after an update.
+- App containers the runner started keep running across a runner restart. Redeploy a service to re-register it with the new runner process.
+
 ## Operations
 - **Logs:** `docker compose -f deploy/alibaba-ecs/docker-compose.yml logs -f runner`
 - **Update:** `git pull && sudo docker compose -f deploy/alibaba-ecs/docker-compose.yml up -d --build`
