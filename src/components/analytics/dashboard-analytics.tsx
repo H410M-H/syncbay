@@ -120,6 +120,8 @@ export function DashboardAnalytics({ workspaces }: { workspaces: Array<{ id: str
   const runner = ov?.runner;
   const runnerProblem = runner?.config.problem;
   const runnerOffline = runner && !runnerProblem && !runner.health.online;
+  const toolchain = runner?.health.online ? runner.health.toolchain : undefined;
+  const buildxMissing = toolchain?.docker === true && !toolchain.buildx;
   const d24 = ov?.deploys["24h"];
   const cap = ov?.usage.nearestCap;
 
@@ -164,6 +166,15 @@ export function DashboardAnalytics({ workspaces }: { workspaces: Array<{ id: str
         <div role="alert" className="card" style={{ borderColor: "rgba(245,158,11,0.45)", background: "rgba(245,158,11,0.08)", padding: "14px 18px" }}>
           <strong style={{ color: "#fbbf24" }}>⚠ Runner offline{runner.config.urlHost ? ` (${runner.config.urlHost})` : ""}: {runner.health.error || "no response"}</strong>
           <p style={{ fontSize: "0.8125rem", marginTop: "4px" }}>New deployments will fail until the runner answers its /health endpoint.</p>
+        </div>
+      )}
+      {buildxMissing && (
+        <div role="alert" className="card" style={{ borderColor: "rgba(245,158,11,0.45)", background: "rgba(245,158,11,0.08)", padding: "14px 18px" }}>
+          <strong style={{ color: "#fbbf24" }}>⚠ Runner cannot build images: docker buildx is missing</strong>
+          <p style={{ fontSize: "0.8125rem", marginTop: "4px" }}>
+            Docker and Nixpacks builds will fail. Update the runner on its host:{" "}
+            <code>cd /opt/syncbay &amp;&amp; git pull &amp;&amp; docker compose -f deploy/alibaba-ecs/docker-compose.yml up -d --build</code>
+          </p>
         </div>
       )}
 
@@ -278,6 +289,11 @@ export function DashboardAnalytics({ workspaces }: { workspaces: Array<{ id: str
               Latency <strong style={{ color: "var(--text-primary)" }}>{runner.health.latencyMs != null ? `${runner.health.latencyMs} ms` : DASH}</strong> · active jobs{" "}
               <strong style={{ color: "var(--text-primary)" }}>{runner.health.activeJobs ?? DASH}</strong>
               {runner.health.uptime != null && <> · up {formatMs(runner.health.uptime * 1000)}</>}
+              {toolchain && (
+                <>
+                  {" "}· buildx <strong style={{ color: toolchain.buildx ? "var(--text-primary)" : "#fbbf24" }}>{toolchain.buildx ? "ok" : "missing"}</strong>
+                </>
+              )}
             </div>
           )}
         </Card>

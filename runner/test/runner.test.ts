@@ -496,3 +496,4 @@ test("NonceCache: single-use within the window, expires with the timestamp, boun
 // Traffic counters + POST /api/traffic/drain (runner/src/traffic.ts)
 import "./traffic.test.ts";
 import "./build-hints.test.ts";
+import "./redact.test.ts";

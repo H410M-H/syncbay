@@ -22,6 +22,9 @@ services:
     volumes:
       # The runner drives the host Docker daemon to build and run customer containers.
       - /var/run/docker.sock:/var/run/docker.sock
+      # The host's Docker CLI plugins (docker-ce installs buildx here). BuildKit builds, which Nixpacks
+      # requires, need buildx; this keeps builds working even if the image's own copy is missing.
+      - /usr/libexec/docker/cli-plugins:/usr/libexec/docker/cli-plugins:ro
       - runner-state:/var/lib/syncbay-runner
       - runner-workspace:/app/.runner_workspace
 

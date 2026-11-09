@@ -36,7 +36,7 @@ import { RunnerServices } from "./services.ts";
 import { handleMetricsRequest } from "./metrics.ts";
 import { TrafficStats, getDefaultTrafficStats, handleTrafficRequest, identityForPort } from "./traffic.ts";
 import { sanitizeVolumes } from "./volumes.ts";
-import { logBuildToolchain } from "./build-hints.ts";
+import { ensureBuildx, getToolchainStatus } from "./build-hints.ts";
 
 export interface DaemonConfig {
   port?: number;
@@ -181,7 +181,7 @@ export class RunnerDaemon {
         const addr = this.server?.address();
         const actualPort = typeof addr === "object" && addr ? addr.port : this.port;
         console.log(`[runner-daemon] Listening on http://${this.host}:${actualPort}`);
-        logBuildToolchain();
+        void ensureBuildx();
 
         // Launch edge tunnel driver
         this.tunnelDriver.start().then(() => {
@@ -271,6 +271,7 @@ export class RunnerDaemon {
           uptime: process.uptime(),
           activeJobs: Array.from(this.jobs.values()).filter((j) => j.status === "BUILDING").length,
           allocatedPorts: this.portManager.getAllocatedPorts(),
+          toolchain: getToolchainStatus(),
           tunnel: {
             driver: this.tunnelDriver.driverType,
             status: this.tunnelDriver.getStatus(),
