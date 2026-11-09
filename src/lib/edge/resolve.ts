@@ -73,7 +73,7 @@ export async function resolveServiceRouteFromDb(
 
   const latest = service.deployments?.[0];
   const status = service.isPaused ? "SLEEPING" : latest?.status || "NOT_FOUND";
-  const targetPort = service.port || 3000;
+  const targetPort = latest?.assignedPort || service.port || 3000;
   const isLocal = Boolean(
     latest?.cfContainerId?.startsWith("c_local_") ||
       latest?.cfContainerId?.startsWith("proc_") ||

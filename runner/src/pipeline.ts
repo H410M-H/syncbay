@@ -776,6 +776,26 @@ server.listen(port, "0.0.0.0", () => {
         if (options.startCommand) {
           nixpacksCmd += ` --start-cmd "${options.startCommand}"`;
         }
+        if (options.environmentVariables) {
+          for (const [k, v] of Object.entries(options.environmentVariables)) {
+            const safeKey = k.replace(/[^a-zA-Z0-9_]/g, "");
+            if (!safeKey) continue;
+            nixpacksCmd += ` --env ${safeKey}="${String(v).replace(/"/g, '\\"')}"`;
+          }
+        }
+        // Auto-detect Next.js apps needing Node >= 20 when engines.node is not pinned
+        try {
+          const pkgRaw = await fs.readFile(path.join(sourceDir, "package.json"), "utf-8");
+          const pkg = JSON.parse(pkgRaw);
+          const nextVer = pkg.dependencies?.next || pkg.devDependencies?.next;
+          const hasNodeEngine = pkg.engines?.node;
+          const userSpecifiedNode =
+            options.environmentVariables?.NIXPACKS_NODE_VERSION ||
+            options.environmentVariables?.NODE_VERSION;
+          if (nextVer && !hasNodeEngine && !userSpecifiedNode) {
+            nixpacksCmd += ` --env NIXPACKS_NODE_VERSION=20`;
+          }
+        } catch {}
 
         log(`Compiling container image via Nixpacks: ${nixpacksCmd}`);
         const nixRes = await this.executor.execute(nixpacksCmd, { cwd: sourceDir, onLog: log });

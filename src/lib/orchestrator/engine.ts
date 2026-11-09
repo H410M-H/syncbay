@@ -427,6 +427,7 @@ export async function executeDeployment(
       data: {
         status: "ACTIVE",
         cfContainerId: containerId,
+        assignedPort: targetPort,
         completedAt: new Date(),
         errorMessage: null,
       },
