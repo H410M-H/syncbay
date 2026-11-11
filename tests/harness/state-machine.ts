@@ -1,7 +1,7 @@
 /**
  * Syncbay PaaS — Deployment State Machine & Dual-Driver Reference Oracle (F9, F10, F11)
  * Strictly verifies the deployment lifecycle state transitions, dual-driver execution,
- * health checks, and blue/green auto-rollback contracts from PROJECT.md and ORIGINAL_REQUEST.md.
+ * health checks, and blue/green auto-rollback contracts from PROJECT.md.
  */
 
 export type DeploymentStatus =

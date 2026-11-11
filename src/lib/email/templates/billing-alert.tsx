@@ -11,13 +11,13 @@ export interface BillingAlertEmailProps {
 export const BillingAlertEmail = ({ 
   amount = '$49.00',
   invoiceUrl = 'https://syncbay.app/billing/invoices/123',
-  description = 'SyncBay Pro Plan - Monthly',
+  description = 'Syncbay Pro Plan - Monthly',
   date = 'Oct 1, 2026'
 }: BillingAlertEmailProps) => {
   return (
     <Html>
       <Head />
-      <Preview>{`Your recent invoice from SyncBay: ${amount}`}</Preview>
+      <Preview>{`Your recent invoice from Syncbay: ${amount}`}</Preview>
       <Tailwind>
         <Body className="bg-[#09090b] text-[#fafafa] font-sans">
           <Container className="mx-auto p-4 max-w-2xl">

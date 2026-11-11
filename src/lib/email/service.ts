@@ -38,7 +38,7 @@ export class EmailService {
   static async sendWelcome(params: { to: string } & WelcomeEmailProps) {
     return this.sendEmail({
       to: params.to,
-      subject: 'Welcome to SyncBay!',
+      subject: 'Welcome to Syncbay!',
       react: createElement(WelcomeEmail, params),
     });
   }
@@ -46,7 +46,7 @@ export class EmailService {
   static async sendInvitation(params: { to: string } & InvitationEmailProps) {
     return this.sendEmail({
       to: params.to,
-      subject: `You've been invited to join ${params.teamName} on SyncBay`,
+      subject: `You've been invited to join ${params.teamName} on Syncbay`,
       react: createElement(InvitationEmail, params),
     });
   }
@@ -63,7 +63,7 @@ export class EmailService {
   static async sendPasswordReset(params: { to: string } & PasswordResetEmailProps) {
     return this.sendEmail({
       to: params.to,
-      subject: 'Reset your SyncBay password',
+      subject: 'Reset your Syncbay password',
       react: createElement(PasswordResetEmail, params),
     });
   }
@@ -71,7 +71,7 @@ export class EmailService {
   static async sendBillingAlert(params: { to: string | string[] } & BillingAlertEmailProps) {
     return this.sendEmail({
       to: params.to,
-      subject: 'SyncBay Billing Alert',
+      subject: 'Syncbay Billing Alert',
       react: createElement(BillingAlertEmail, params),
     });
   }
@@ -79,7 +79,7 @@ export class EmailService {
   static async sendUsageWarning(params: { to: string | string[] } & UsageWarningEmailProps) {
     return this.sendEmail({
       to: params.to,
-      subject: `Usage Warning: ${params.percentage}% reached on SyncBay`,
+      subject: `Usage Warning: ${params.percentage}% reached on Syncbay`,
       react: createElement(UsageWarningEmail, params),
     });
   }
