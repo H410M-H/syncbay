@@ -28,6 +28,7 @@ import * as path from "node:path";
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { PortManager, defaultPortManager } from "./port-manager.ts";
 import { NativeDatabaseManager } from "./native-db.ts";
+import { parsePortRange, rewriteDatabaseUrls, type DatabaseTarget } from "./db-network.ts";
 
 export type SignatureVerifier = (
   payload: string,
@@ -41,8 +42,10 @@ export interface RunnerServicesOptions {
   mode?: "auto" | "docker" | "native" | "mock";
   /** Native database manager (state dir override in tests). */
   native?: NativeDatabaseManager;
-  /** Hostname written into connection URLs (as seen by services on this runner). */
+  /** Hostname written into connection URLs (the runner's address for external clients). */
   dbHost?: string;
+  /** Allocator for database host ports; defaults to `RUNNER_DB_PORT_RANGE`, else the shared app range. */
+  dbPortManager?: PortManager;
   terminalIdleMs?: number;
   workspaceRoot?: string;
 }
@@ -113,6 +116,10 @@ export class RunnerServices {
   private readonly mode: "auto" | "docker" | "native" | "mock";
   private readonly native: NativeDatabaseManager;
   private readonly dbHost: string;
+  /** Database ports come from their own range when one is configured, so only it needs opening in a firewall. */
+  private readonly dbPortManager: PortManager;
+  private bridgeGateway: Promise<string | null> | null = null;
+  private recovery: Promise<void> | null = null;
   private readonly terminalIdleMs: number;
   private readonly workspaceRoot: string;
   private readonly databases = new Map<string, ManagedDbRecord>();
@@ -126,6 +133,8 @@ export class RunnerServices {
     this.mode = options.mode || (process.env.RUNNER_DRIVER === "mock" ? "mock" : envMode && ["auto", "docker", "native", "mock"].includes(envMode) ? envMode : "auto");
     this.native = options.native || new NativeDatabaseManager();
     this.dbHost = options.dbHost || process.env.RUNNER_DB_HOST || "127.0.0.1";
+    const dbRange = parsePortRange(process.env.RUNNER_DB_PORT_RANGE);
+    this.dbPortManager = options.dbPortManager || (dbRange ? new PortManager({ rangeStart: dbRange.start, rangeEnd: dbRange.end }) : this.portManager);
     this.terminalIdleMs = options.terminalIdleMs ?? 10 * 60 * 1000;
     this.workspaceRoot = options.workspaceRoot || path.join(process.cwd(), ".runner_workspace");
   }
@@ -156,6 +165,7 @@ export class RunnerServices {
 
     try {
       if (isDb) {
+        await this.recoverDockerDatabases();
         if (method === "POST" && segments.length === 0) return await this.createDatabase(res, body), true;
         if (method === "DELETE" && segments.length === 1) return await this.deleteDatabase(res, id), true;
         if (method === "GET" && segments.length === 2 && action === "health") return await this.databaseHealth(res, id), true;
@@ -213,6 +223,99 @@ export class RunnerServices {
     return null;
   }
 
+  /** Gateway address of Docker's default bridge: where a container reaches ports published on this host. */
+  private dockerBridgeGateway(): Promise<string | null> {
+    if (!this.bridgeGateway) {
+      this.bridgeGateway = run("docker", ["network", "inspect", "bridge", "-f", "{{(index .IPAM.Config 0).Gateway}}"], undefined, 5000).then((r) => {
+        const ip = r.stdout.trim();
+        return r.code === 0 && /^[0-9a-f.:]+$/i.test(ip) ? ip : null;
+      });
+    }
+    return this.bridgeGateway;
+  }
+
+  /**
+   * Rebuilds the registry of Docker databases after a daemon restart: the containers (labelled
+   * `syncbay.managed-db`) keep running, and their port and password are read back from Docker.
+   */
+  private recoverDockerDatabases(): Promise<void> {
+    if (!this.recovery) {
+      this.recovery = (async () => {
+        if (!(await this.useDocker())) return;
+        const list = await run("docker", ["ps", "-a", "--filter", "label=syncbay.managed-db", "--format", "{{.Names}}"], undefined, 10000);
+        if (list.code !== 0) return;
+        for (const name of list.stdout.split("\n").map((n) => n.trim()).filter(Boolean)) {
+          const inspect = await run("docker", ["inspect", name], undefined, 10000);
+          if (inspect.code !== 0) continue;
+          try {
+            const info = JSON.parse(inspect.stdout)[0];
+            const id = String(info.Config?.Labels?.["syncbay.managed-db"] || "").toLowerCase();
+            if (!id || this.databases.has(id)) continue;
+            const image = String(info.Config?.Image || "");
+            const provider: ManagedDbProvider = image.includes("redis") ? "REDIS" : image.includes("mysql") ? "MYSQL" : "POSTGRES";
+            const bindings = Object.values(info.HostConfig?.PortBindings || {}) as Array<Array<{ HostPort?: string }> | null>;
+            const port = Number(bindings[0]?.[0]?.HostPort);
+            const envList: string[] = info.Config?.Env || [];
+            const passwordKey = provider === "POSTGRES" ? "POSTGRES_PASSWORD" : provider === "MYSQL" ? "MYSQL_ROOT_PASSWORD" : "REDIS_PASSWORD";
+            const password = envList.find((e) => e.startsWith(`${passwordKey}=`))?.slice(passwordKey.length + 1);
+            if (!Number.isInteger(port) || port <= 0 || !password) continue;
+            const encoded = encodeURIComponent(password);
+            const host = this.dbHost;
+            this.databases.set(id, {
+              id,
+              provider,
+              containerName: name,
+              containerId: String(info.Id || name).slice(0, 12),
+              host,
+              port,
+              connectionUrl:
+                provider === "POSTGRES"
+                  ? `postgresql://postgres:${encoded}@${host}:${port}/main`
+                  : provider === "MYSQL"
+                  ? `mysql://root:${encoded}@${host}:${port}/main`
+                  : `redis://default:${encoded}@${host}:${port}`,
+              backend: "docker",
+              createdAt: String(info.Created || new Date().toISOString()),
+            });
+            try {
+              this.dbPortManager.reservePortSync(port, `db:${id}`);
+            } catch {
+              // Outside the configured range or already reserved: the socket check still protects it.
+            }
+          } catch {
+            // Unreadable inspect output: leave this container to the name-based health/delete paths.
+          }
+        }
+      })();
+    }
+    return this.recovery;
+  }
+
+  /**
+   * Points database URLs in a service's environment at the address the database answers on from
+   * this host. `runtime` says whether the app will run in a Docker container or as a host process.
+   */
+  public async rewriteEnv(env: Record<string, string>, runtime: "docker" | "process"): Promise<{ env: Record<string, string>; notes: string[] }> {
+    await this.recoverDockerDatabases().catch(() => null);
+    const records = [...this.databases.values()].filter((r) => r.backend !== "mock");
+    if (records.length === 0) return { env, notes: [] };
+    const override = process.env.RUNNER_DB_INTERNAL_HOST?.trim();
+    const gateway = runtime === "docker" ? await this.dockerBridgeGateway() : null;
+    const internalHost = override || (runtime === "docker" ? gateway : "127.0.0.1");
+    if (!internalHost) return { env, notes: [] };
+    // An older daemon (or a changed RUNNER_DB_HOST) may have issued URLs with another host.
+    const publicHosts = new Set([this.dbHost, ...records.map((r) => r.host)]);
+    const targets: DatabaseTarget[] = [];
+    for (const record of records) {
+      for (const publicHost of publicHosts) targets.push({ publicHost, port: record.port, internalHost });
+    }
+    const result = rewriteDatabaseUrls(env, targets);
+    const notes = result.rewritten.length
+      ? [`Database on this runner: ${result.rewritten.join(", ")} now use${result.rewritten.length === 1 ? "s" : ""} the private address ${internalHost}`]
+      : [];
+    return { env: result.env, notes };
+  }
+
   private async createDatabase(res: http.ServerResponse, body: string): Promise<void> {
     const params = parseJson(body);
     if (!params) return sendJson(res, 400, { error: "Invalid JSON body" });
@@ -235,7 +338,7 @@ export class RunnerServices {
 
     const password = crypto.randomBytes(18).toString("base64url");
     const containerName = `syncbay-db-${id}`;
-    const port = await this.portManager.allocatePort(`db:${id}`);
+    const port = await this.dbPortManager.allocatePort(`db:${id}`);
     const host = this.dbHost;
     let containerId = `mock-${crypto.randomBytes(6).toString("hex")}`;
 
@@ -254,7 +357,7 @@ export class RunnerServices {
       // Passwords travel via the docker client's environment (`-e NAME` without value), never argv.
       const result = await run("docker", args, env, 300000);
       if (result.code !== 0) {
-        this.portManager.releasePort(port);
+        this.dbPortManager.releasePort(port);
         return sendJson(res, 500, { error: `docker run failed: ${result.stderr.trim().slice(0, 500)}` });
       }
       containerId = result.stdout.trim().split("\n").pop()!.slice(0, 12) || containerName;
@@ -263,7 +366,7 @@ export class RunnerServices {
       try {
         await this.native.provision({ id, provider: provider as "POSTGRES" | "REDIS", port, host, listen, password });
       } catch (err: any) {
-        this.portManager.releaseServicePort(`db:${id}`);
+        this.dbPortManager.releaseServicePort(`db:${id}`);
         await this.native.destroy(id).catch(() => null);
         return sendJson(res, 500, { error: `native provisioning failed: ${String(err?.message || err).slice(0, 600)}` });
       }
@@ -345,7 +448,7 @@ export class RunnerServices {
         return sendJson(res, 500, { error: `Volume teardown failed: ${volume.stderr.trim().slice(0, 500)}` });
       }
     }
-    this.portManager.releaseServicePort(`db:${id}`);
+    this.dbPortManager.releaseServicePort(`db:${id}`);
     this.databases.delete(id);
     sendJson(res, 200, { id, deleted: true, existed: Boolean(record) });
   }

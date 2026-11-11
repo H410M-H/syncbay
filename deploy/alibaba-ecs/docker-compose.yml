@@ -18,6 +18,9 @@ services:
       RUNNER_PORT: "8080"
       TUNNEL_DRIVER: local
       RUNNER_DB_MODE: ${RUNNER_DB_MODE:-docker}
+      # New managed databases get a host port from this range. Open it in the security group only
+      # if pgAdmin, psql or Query Studio must connect from outside; apps on this host never need it.
+      RUNNER_DB_PORT_RANGE: ${RUNNER_DB_PORT_RANGE:-54320-54399}
       RUNNER_STATE_DIR: /var/lib/syncbay-runner
     volumes:
       # The runner drives the host Docker daemon to build and run customer containers.

@@ -314,6 +314,13 @@ export default function DatabasesPage() {
         </div>
       )}
 
+      <div className="card" style={{ marginTop: "20px", padding: "16px 20px", fontSize: "0.8125rem", color: "var(--text-secondary)" }}>
+        <strong style={{ color: "var(--text-primary)" }}>How connections work.</strong> Services deployed on the same runner as a database reach it
+        over the runner&apos;s private network automatically; nothing needs opening. External tools (pgAdmin, <code>psql</code> on your laptop,
+        Query Studio) use the address shown above, so the database port must be open in the runner host&apos;s firewall or security group. Set{" "}
+        <code>RUNNER_DB_PORT_RANGE</code> on the runner (for example <code>54320-54399</code>) to keep database ports in one small range you can open.
+      </div>
+
       {/* Code Connection Snippets Card */}
       <div className="card" style={{ marginTop: "32px", padding: "24px" }}>
         <h3 style={{ fontSize: "1rem", fontWeight: 700, marginBottom: "8px" }}>

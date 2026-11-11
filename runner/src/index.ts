@@ -68,6 +68,8 @@ export interface JobState {
   hostnames?: string[];
   /** True when the pipeline ran with a mock executor (no real process). */
   simulated?: boolean;
+  /** Port the app listens on inside its container, when the pipeline had to detect it. */
+  containerPort?: number;
   /** Control-plane ids from the build payload (traffic attribution). */
   deploymentId?: string;
   serviceId?: string;
@@ -613,6 +615,7 @@ export class RunnerDaemon {
         cleanBuild: params.cleanBuild,
         environmentVariables: params.environmentVariables,
         volumes: sanitizeVolumes(params.volumes),
+        rewriteEnv: (env, runtime) => this.services.rewriteEnv(env, runtime),
         onLog: log,
       });
 
@@ -622,6 +625,7 @@ export class RunnerDaemon {
         job.status = "ACTIVE";
         job.containerId = result.containerId;
         job.assignedPort = result.assignedPort;
+        job.containerPort = result.containerPort;
         job.strategy = result.strategy;
         job.simulated = Boolean(result.simulated);
         log(`[runner] Job ${jobId} succeeded. Container: ${result.containerId}, Port: ${result.assignedPort}`);
@@ -678,7 +682,7 @@ export class RunnerDaemon {
         errorMessage: job.error,
         exitCode: job.exitCode,
         simulated: Boolean(job.simulated),
-        metadata: { simulated: Boolean(job.simulated) },
+        metadata: { simulated: Boolean(job.simulated), ...(job.containerPort ? { containerPort: job.containerPort } : {}) },
         logs: job.logs,
       })
     );
