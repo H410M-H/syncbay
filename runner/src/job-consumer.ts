@@ -20,6 +20,7 @@ interface ConsumerJobState {
   logs: string[];
   containerId?: string;
   assignedPort?: number;
+  containerPort?: number;
   error?: string;
   exitCode?: number;
   simulated?: boolean;
@@ -215,6 +216,7 @@ export class JobPullConsumer {
         exitCode: state.exitCode ?? (ok ? 0 : 1),
         error: state.error,
         simulated: Boolean(state.simulated),
+        ...(state.containerPort ? { containerPort: state.containerPort } : {}),
       },
     });
     // Cancelled while finishing: do not leave an orphaned instance running.

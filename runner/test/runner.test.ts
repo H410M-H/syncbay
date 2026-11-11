@@ -497,3 +497,4 @@ test("NonceCache: single-use within the window, expires with the timestamp, boun
 import "./traffic.test.ts";
 import "./build-hints.test.ts";
 import "./redact.test.ts";
+import "./launch.test.ts";

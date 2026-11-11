@@ -17,6 +17,7 @@ import { PortManager, defaultPortManager } from "./port-manager.ts";
 import { ensureBuildx, withBuildToolHint } from "./build-hints.ts";
 import { redactSecrets } from "./redact.ts";
 import { dockerVolumeFlags, prepareNativeVolumes, type VolumeMount } from "./volumes.ts";
+import { COMMON_APP_PORTS, Semaphore, containerEnv, parseListeningPorts, pickNodeVersion, shq, tailText } from "./launch.ts";
 
 const execAsync = promisify(exec);
 
@@ -57,6 +58,11 @@ export interface PipelineOptions {
   cleanBuild?: boolean;
   /** Persistent volumes (Volume rows) mounted into the container or bound for native processes. */
   volumes?: VolumeMount[];
+  /**
+   * Adjusts the environment for where the app will run (a Docker container or a host process).
+   * The daemon uses it to point database URLs at the address reachable from this host.
+   */
+  rewriteEnv?: (env: Record<string, string>, runtime: "docker" | "process") => Promise<{ env: Record<string, string>; notes: string[] }>;
   onLog?: (line: string) => void;
 }
 
@@ -66,6 +72,8 @@ export interface PipelineResult {
   strategy: "dockerfile" | "nixpacks";
   containerId?: string;
   assignedPort?: number;
+  /** Port the app listens on inside its container (may differ from the requested one after auto-detection). */
+  containerPort?: number;
   imageTag: string;
   logs: string[];
   durationMs: number;
@@ -97,6 +105,17 @@ const STARTUP_STDERR_LINES = 25;
 
 /** Build artifacts and caches removed by a clean rebuild (cleanBuild: true). */
 const CLEAN_BUILD_PURGE_PATHS = ["node_modules", "dist", ".next", "build", "out", ".turbo", ".cache"];
+
+function envInt(name: string, fallback: number, min = 1): number {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value >= min ? Math.floor(value) : fallback;
+}
+
+/** How long a new instance may take to answer HTTP before the deploy fails (default 120 s). */
+const healthTimeoutMs = () => envInt("RUNNER_HEALTH_TIMEOUT_MS", 120_000, 1000);
+
+/** Image builds running at once; more would exhaust a small host's memory (default 2). */
+const buildSlots = new Semaphore(envInt("RUNNER_MAX_CONCURRENT_BUILDS", 2));
 
 /** Error carrying the exit code of the pipeline step that failed. */
 class PipelineStepError extends Error {
@@ -394,6 +413,68 @@ export class BuildPipeline {
     return { stopped, releasedPort };
   }
 
+  /**
+   * State and bridge IP of a Docker container; null when it cannot be inspected. `crashed` covers
+   * an exited container and one caught in a restart loop (the restart policy keeps reviving it).
+   */
+  private async inspectContainer(
+    containerId: string
+  ): Promise<{ running: boolean; crashed: boolean; exitCode: number; ip: string; exposed: number[] } | null> {
+    const res = await this.executor.execute(
+      `docker inspect -f '{{.State.Status}}|{{.State.ExitCode}}|{{.RestartCount}}|{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}|{{json .Config.ExposedPorts}}' ${containerId}`
+    );
+    const parts = res.stdout.trim().split("|");
+    if (res.exitCode !== 0 || parts.length < 5) return null;
+    const status = parts[0];
+    const restarts = Number(parts[2]) || 0;
+    const exposed = [...parts.slice(4).join("|").matchAll(/"(\d+)\/tcp"/g)].map((m) => Number(m[1]));
+    return {
+      running: status === "running",
+      crashed: status === "exited" || status === "dead" || restarts >= 2,
+      exitCode: Number(parts[1]) || 0,
+      ip: parts[3].trim().split(/\s+/)[0] || "",
+      exposed,
+    };
+  }
+
+  /** Last lines the container wrote (stdout + stderr), with secrets redacted. */
+  private async containerLogs(containerId: string, lines = 40): Promise<string> {
+    const res = await this.executor.execute(`docker logs --tail ${lines} ${containerId}`);
+    return redactSecrets(tailText(`${res.stdout}\n${res.stderr}`, lines, 3000));
+  }
+
+  /**
+   * Finds the port the app answers on when it ignores `PORT`. Reads the container's listening
+   * sockets (`/proc/net/tcp`); images without a shell fall back to EXPOSEd and common ports.
+   * A candidate is accepted only if it answers HTTP on the container's bridge address.
+   */
+  private async detectContainerPort(
+    containerId: string,
+    state: { ip: string; exposed: number[] },
+    currentPort: number
+  ): Promise<{ port: number | null; hint: string }> {
+    let candidates: number[] = [];
+    let hint = "";
+    const sockets = await this.executor.execute(`docker exec ${containerId} sh -c 'cat /proc/net/tcp /proc/net/tcp6 2>/dev/null; true'`);
+    if (sockets.exitCode === 0 && sockets.stdout.includes(":")) {
+      const listening = parseListeningPorts(sockets.stdout);
+      if (listening.some((l) => l.port === currentPort && !l.loopbackOnly)) return { port: null, hint: "" };
+      candidates = listening.filter((l) => !l.loopbackOnly).map((l) => l.port);
+      const loopback = listening.filter((l) => l.loopbackOnly).map((l) => l.port);
+      if (candidates.length === 0 && loopback.length > 0) {
+        hint = `The app listens on 127.0.0.1:${loopback.join(", ")} inside its container, which cannot be reached from outside. Bind it to 0.0.0.0 (for example \`--host 0.0.0.0\`, or read the HOST variable).`;
+      }
+    } else {
+      candidates = [...new Set([...state.exposed, ...COMMON_APP_PORTS])];
+    }
+    if (!state.ip) return { port: null, hint };
+    for (const port of candidates) {
+      if (port === currentPort) continue;
+      if (await this.executor.probeHealth(`http://${state.ip}:${port}/`, 800)) return { port, hint };
+    }
+    return { port: null, hint };
+  }
+
   private rememberLaunch(instanceId: string, spec: LaunchSpec): void {
     this.launchSpecs.delete(instanceId);
     this.launchSpecs.set(instanceId, spec);
@@ -495,7 +576,7 @@ export class BuildPipeline {
         this.activeProcessPorts.delete(newId);
       });
     } else {
-      const res = await this.executor.execute(spec.runCmd.replace("{{PORT}}", String(port)));
+      const res = await this.executor.execute(spec.runCmd.replace("{{PORT}}", String(port)), { env: spec.env });
       if (res.exitCode !== 0) {
         this.portManager.releasePort(port);
         return { restarted: false, containerId, error: `docker run failed: ${res.stderr || res.stdout}`, exitCode: res.exitCode };
@@ -505,7 +586,7 @@ export class BuildPipeline {
     this.activeProcessPorts.set(newId, port);
     this.activeProcessPorts.set(spec.jobId, port);
 
-    const deadline = Date.now() + 10000;
+    const deadline = Date.now() + healthTimeoutMs();
     let healthy = false;
     while (Date.now() < deadline) {
       if (exitCode !== null) break;
@@ -544,13 +625,26 @@ export class BuildPipeline {
     const jobId = options.jobId;
     const serviceName = (options.serviceName || "service").toLowerCase().replace(/[^a-z0-9_-]/g, "-");
     const imageTag = `syncbay-${serviceName}:${jobId.slice(0, 8)}`;
-    const containerName = `syncbay-${serviceName}-${jobId.slice(0, 8)}`;
+    // One container per deployment: a fast redeploy reuses the build id as job id, and its new
+    // container must start beside the live one (which is only stopped after this one is healthy).
+    const deployTag = (options.deploymentId || "").replace(/[^a-zA-Z0-9]/g, "").slice(-6).toLowerCase();
+    const containerName = `syncbay-${serviceName}-${jobId.slice(0, 8)}${deployTag ? `-${deployTag}` : ""}`;
     const targetPort = options.targetPort || 3000;
     const baseWorkDir = options.workDir || path.join(process.cwd(), ".runner_workspace", jobId);
 
     log(`Initiating automated build pipeline for job ${jobId} (Service: ${serviceName})`);
 
     let assignedPort: number | undefined;
+    let containerPort: number | undefined;
+    /** (Re)creates the Docker container with the host port mapped to `appPort`; set by the Docker strategies. */
+    let dockerLaunch: ((appPort: number) => Promise<string>) | null = null;
+    const runtimeEnv = async (runtime: "docker" | "process"): Promise<Record<string, string>> => {
+      const base = { ...(options.environmentVariables || {}) };
+      if (!options.rewriteEnv) return base;
+      const { env, notes } = await options.rewriteEnv(base, runtime);
+      for (const note of notes) log(note);
+      return env;
+    };
     let containerId: string | undefined;
     let strategy: "dockerfile" | "nixpacks" = "nixpacks";
     let childExitCode: number | null = null;
@@ -594,11 +688,9 @@ export class BuildPipeline {
           }
         }
 
-        const gitEnv: NodeJS.ProcessEnv = {
-          ...process.env,
-          GIT_TERMINAL_PROMPT: "0",
-          ...options.environmentVariables,
-        };
+        // Customer variables are for the app, not for git on the runner host: GIT_CONFIG_* or
+        // GIT_SSH_COMMAND from a service's environment would execute on this machine.
+        const gitEnv: NodeJS.ProcessEnv = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
 
         // Fast redeploy (cleanBuild false): reuse the existing clone so dependency and build
         // caches survive — fetch the latest refs and force-checkout instead of re-cloning.
@@ -706,141 +798,94 @@ server.listen(port, "0.0.0.0", () => {
         await ensureBuildx((line) => log(line.replace(/^\[runner-daemon\] /, "")));
       }
 
-      if (hasDockerfile && hasDocker) {
-        strategy = "dockerfile";
-        log(`Dockerfile detected at ${dockerfilePath} — using Docker build strategy`);
+      if (hasDocker && (hasDockerfile || hasNixpacks)) {
+        strategy = hasDockerfile ? "dockerfile" : "nixpacks";
+        const label = hasDockerfile ? "Docker" : "Nixpacks";
+        const appEnv = await runtimeEnv("docker");
 
-        let buildCmd = `docker build -t ${imageTag} -f "${dockerfilePath}" "${sourceDir}"`;
-        if (options.cleanBuild) {
-          buildCmd += " --no-cache";
-        }
-        if (options.buildCommand) {
-          buildCmd += ` --build-arg BUILD_CMD="${options.buildCommand}"`;
+        // Values travel in the CLI's process environment (`-e KEY`, `--env KEY`), never on the
+        // command line, so they cannot inject shell syntax and are not written to the build log.
+        let buildCmd: string;
+        let buildProcEnv: Record<string, string> = {};
+        if (hasDockerfile) {
+          log(`Dockerfile detected at ${dockerfilePath} — using Docker build strategy`);
+          buildCmd = `docker build -t ${imageTag} -f ${shq(dockerfilePath)}`;
+          if (options.cleanBuild) buildCmd += " --no-cache";
+          if (options.buildCommand) buildCmd += ` --build-arg BUILD_CMD=${shq(options.buildCommand)}`;
+          buildCmd += ` ${shq(sourceDir)}`;
+        } else {
+          log(`Using Nixpacks automated runtime detection & Docker containerization`);
+          const nixEnv = containerEnv(appEnv);
+          buildProcEnv = nixEnv.env;
+          buildCmd = `nixpacks build ${shq(sourceDir)} --name ${imageTag}`;
+          if (options.cleanBuild) buildCmd += " --no-cache";
+          if (options.buildCommand) buildCmd += ` --build-cmd ${shq(options.buildCommand)}`;
+          if (options.startCommand) buildCmd += ` --start-cmd ${shq(options.startCommand)}`;
+          if (nixEnv.nixpacksFlags.length > 0) buildCmd += ` ${nixEnv.nixpacksFlags.join(" ")}`;
+
+          // Nixpacks would pick Node 18 (end-of-life) for a project that pins nothing.
+          const pkg = await fs.readFile(path.join(sourceDir, "package.json"), "utf-8").then(JSON.parse, () => null);
+          const nodeMajor = pickNodeVersion({
+            packageJson: pkg,
+            hasNvmrc: await this.executor.fileExists(path.join(sourceDir, ".nvmrc")),
+            nodeVersionFile: await fs.readFile(path.join(sourceDir, ".node-version"), "utf-8").catch(() => null),
+            userEnv: appEnv,
+            fallback: process.env.RUNNER_DEFAULT_NODE_VERSION,
+          });
+          if (nodeMajor && /^\d+$/.test(nodeMajor)) {
+            buildCmd += ` --env NIXPACKS_NODE_VERSION=${nodeMajor}`;
+            log(`Building with Node ${nodeMajor} (set NIXPACKS_NODE_VERSION or engines.node to choose another version)`);
+          }
         }
 
         log(`Compiling container image: ${buildCmd}`);
-        const buildRes = await this.executor.execute(buildCmd, { cwd: sourceDir, onLog: log });
+        const buildRes = await buildSlots.run(
+          () => this.executor.execute(buildCmd, { cwd: sourceDir, env: buildProcEnv as NodeJS.ProcessEnv, onLog: log }),
+          (ahead) => log(`Waiting for a build slot (${ahead} build(s) ahead on this runner)`)
+        );
         if (buildRes.exitCode !== 0) {
-          const errMsg = buildRes.stderr || buildRes.stdout || `Docker build exited with code ${buildRes.exitCode}`;
-          log(`[build:error] ${errMsg}`);
-          throw new PipelineStepError(withBuildToolHint(`Docker build failed: ${errMsg}`), buildRes.exitCode);
+          // The cause is at the end of the output; the full log was already streamed line by line.
+          const detail = tailText(`${buildRes.stdout}\n${buildRes.stderr}`) || `no output`;
+          log(`[build:error] ${label} build failed (exit code ${buildRes.exitCode})`);
+          throw new PipelineStepError(withBuildToolHint(`${label} build failed (exit code ${buildRes.exitCode}). Last output:\n${detail}`), buildRes.exitCode);
         }
-        log(`Docker build succeeded for image ${imageTag}`);
+        log(`${label} build succeeded for image ${imageTag}`);
 
         assignedPort = await this.portManager.allocatePort(options.serviceId, jobId);
         log(`Assigned dynamic host port: ${assignedPort} (target container port: ${targetPort})`);
 
-        const envFlags: string[] = [];
-        if (options.environmentVariables) {
-          for (const [k, v] of Object.entries(options.environmentVariables)) {
-            const safeKey = k.replace(/[^a-zA-Z0-9_]/g, "");
-            if (!safeKey) continue;
-            envFlags.push(`-e ${safeKey}="${String(v).replace(/"/g, '\\"')}"`);
+        // A Dockerfile image gets a custom start command as its CMD; a Nixpacks image already has
+        // it baked in (--start-cmd), and its bash entrypoint would mis-parse extra arguments.
+        const startArgs = hasDockerfile && options.startCommand ? ` sh -c ${shq(options.startCommand)}` : "";
+        dockerLaunch = async (appPort: number) => {
+          const runEnv = containerEnv(appEnv, { PORT: String(appPort) }, { HOST: "0.0.0.0" });
+          const runCmd = `docker run -d --name ${containerName} --restart unless-stopped -p {{PORT}}:${appPort} ${dockerVolumeFlags(options.volumes)} ${runEnv.dockerFlags.join(" ")} ${imageTag}${startArgs}`
+            .replace(/\s+/g, " ")
+            .trim();
+          log(`Launching application container: ${runCmd.replace("{{PORT}}", String(assignedPort))}`);
+          await this.executor.execute(`docker rm -f ${containerName}`).catch(() => null);
+          const runRes = await this.executor.execute(runCmd.replace("{{PORT}}", String(assignedPort)), { env: runEnv.env as NodeJS.ProcessEnv });
+          if (runRes.exitCode !== 0) {
+            throw new PipelineStepError(`Docker run failed: ${tailText(runRes.stderr || runRes.stdout, 10)}`, runRes.exitCode);
           }
-        }
-        envFlags.push(`-e PORT=${targetPort}`);
-
-        const startCmd = options.startCommand ? ` ${options.startCommand}` : "";
-        const runCmd = `docker run -d --name ${containerName} --restart unless-stopped -p ${assignedPort}:${targetPort} ${dockerVolumeFlags(options.volumes)} ${envFlags.join(" ")} ${imageTag}${startCmd}`.trim();
-
-        log(`Launching application container: ${runCmd}`);
-        const runRes = await this.executor.execute(runCmd);
-        if (runRes.exitCode !== 0) {
-          throw new PipelineStepError(`Docker run failed: ${runRes.stderr || runRes.stdout}`, runRes.exitCode);
-        }
-
-        containerId = runRes.stdout.trim().split("\n").pop() || containerName;
-        this.rememberLaunch(containerId, {
-          kind: "docker",
-          jobId,
-          serviceId: options.serviceId,
-          containerName,
-          port: assignedPort!,
-          runCmd: runCmd.replace(`-p ${assignedPort}:`, "-p {{PORT}}:"),
-          healthPath: options.healthCheckPath || "/health",
-        });
-        this.activeProcessPorts.set(containerId, assignedPort!);
-        this.activeProcessPorts.set(jobId, assignedPort!);
-        log(`Container launched successfully with ID: ${containerId}`);
-      } else if (hasNixpacks && hasDocker) {
-        strategy = "nixpacks";
-        log(`Using Nixpacks automated runtime detection & Docker containerization`);
-
-        let nixpacksCmd = `nixpacks build "${sourceDir}" --name ${imageTag}`;
-        if (options.cleanBuild) {
-          nixpacksCmd += " --no-cache";
-        }
-        if (options.buildCommand) {
-          nixpacksCmd += ` --build-cmd "${options.buildCommand}"`;
-        }
-        if (options.startCommand) {
-          nixpacksCmd += ` --start-cmd "${options.startCommand}"`;
-        }
-        if (options.environmentVariables) {
-          for (const [k, v] of Object.entries(options.environmentVariables)) {
-            const safeKey = k.replace(/[^a-zA-Z0-9_]/g, "");
-            if (!safeKey) continue;
-            nixpacksCmd += ` --env ${safeKey}="${String(v).replace(/"/g, '\\"')}"`;
-          }
-        }
-        // Auto-detect Next.js apps needing Node >= 20 when engines.node is not pinned
-        try {
-          const pkgRaw = await fs.readFile(path.join(sourceDir, "package.json"), "utf-8");
-          const pkg = JSON.parse(pkgRaw);
-          const nextVer = pkg.dependencies?.next || pkg.devDependencies?.next;
-          const hasNodeEngine = pkg.engines?.node;
-          const userSpecifiedNode =
-            options.environmentVariables?.NIXPACKS_NODE_VERSION ||
-            options.environmentVariables?.NODE_VERSION;
-          if (nextVer && !hasNodeEngine && !userSpecifiedNode) {
-            nixpacksCmd += ` --env NIXPACKS_NODE_VERSION=20`;
-          }
-        } catch {}
-
-        log(`Compiling container image via Nixpacks: ${nixpacksCmd}`);
-        const nixRes = await this.executor.execute(nixpacksCmd, { cwd: sourceDir, onLog: log });
-        if (nixRes.exitCode !== 0) {
-          const errMsg = nixRes.stderr || nixRes.stdout || `Nixpacks build exited with code ${nixRes.exitCode}`;
-          log(`[build:error] ${errMsg}`);
-          throw new PipelineStepError(withBuildToolHint(`Nixpacks build failed: ${errMsg}`), nixRes.exitCode);
-        }
-        log(`Nixpacks compilation succeeded for image ${imageTag}`);
-
-        assignedPort = await this.portManager.allocatePort(options.serviceId, jobId);
-        log(`Assigned dynamic host port: ${assignedPort} (target container port: ${targetPort})`);
-
-        const envFlags: string[] = [];
-        if (options.environmentVariables) {
-          for (const [k, v] of Object.entries(options.environmentVariables)) {
-            const safeKey = k.replace(/[^a-zA-Z0-9_]/g, "");
-            if (!safeKey) continue;
-            envFlags.push(`-e ${safeKey}="${String(v).replace(/"/g, '\\"')}"`);
-          }
-        }
-        envFlags.push(`-e PORT=${targetPort}`);
-
-        const startCmd = options.startCommand ? ` ${options.startCommand}` : "";
-        const runCmd = `docker run -d --name ${containerName} --restart unless-stopped -p ${assignedPort}:${targetPort} ${dockerVolumeFlags(options.volumes)} ${envFlags.join(" ")} ${imageTag}${startCmd}`.trim();
-
-        log(`Launching application container: ${runCmd}`);
-        const runRes = await this.executor.execute(runCmd);
-        if (runRes.exitCode !== 0) {
-          throw new PipelineStepError(`Docker run failed: ${runRes.stderr || runRes.stdout}`, runRes.exitCode);
-        }
-
-        containerId = runRes.stdout.trim().split("\n").pop() || containerName;
-        this.rememberLaunch(containerId, {
-          kind: "docker",
-          jobId,
-          serviceId: options.serviceId,
-          containerName,
-          port: assignedPort!,
-          runCmd: runCmd.replace(`-p ${assignedPort}:`, "-p {{PORT}}:"),
-          healthPath: options.healthCheckPath || "/health",
-        });
-        this.activeProcessPorts.set(containerId, assignedPort!);
-        this.activeProcessPorts.set(jobId, assignedPort!);
-        log(`Container launched successfully with ID: ${containerId}`);
+          const id = runRes.stdout.trim().split("\n").pop() || containerName;
+          this.rememberLaunch(id, {
+            kind: "docker",
+            jobId,
+            serviceId: options.serviceId,
+            containerName,
+            port: assignedPort!,
+            runCmd,
+            env: runEnv.env as NodeJS.ProcessEnv,
+            healthPath: options.healthCheckPath || "/health",
+          });
+          this.activeProcessPorts.set(id, assignedPort!);
+          this.activeProcessPorts.set(jobId, assignedPort!);
+          log(`Container launched successfully with ID: ${id}`);
+          return id;
+        };
+        containerPort = targetPort;
+        containerId = await dockerLaunch(containerPort);
       } else {
         // Containerless native process execution mode (Termux / Linux host without Docker daemon)
         strategy = "nixpacks";
@@ -853,10 +898,11 @@ server.listen(port, "0.0.0.0", () => {
         // (next, vite, tsc, etc.) are discoverable when running build/start commands
         const nmBin = path.join(sourceDir, "node_modules", ".bin");
         const currentPath = process.env.PATH || "/usr/bin:/bin";
+        const processEnv = await runtimeEnv("process");
         const execEnv: NodeJS.ProcessEnv = {
           ...process.env,
-          ...options.environmentVariables,
-          NODE_ENV: (options.environmentVariables?.NODE_ENV as any) || "production",
+          ...processEnv,
+          NODE_ENV: (processEnv.NODE_ENV as any) || "production",
           PATH: `${nmBin}:${currentPath}`,
         };
 
@@ -1073,7 +1119,7 @@ server.listen(port, "0.0.0.0");
         for (const m of nativeVolumes.mounts) log(`Volume ${m.id} bound at ${m.hostPath} (mountPath ${m.mountPath})`);
         const childEnv: NodeJS.ProcessEnv = {
           ...process.env,
-          ...options.environmentVariables,
+          ...processEnv,
           ...nativeVolumes.env,
           PATH: `${nmBin}:${currentPath}`,
           PORT: String(assignedPort),
@@ -1145,10 +1191,16 @@ server.listen(port, "0.0.0.0");
 
       // Step 6: Health Probe Verification
       const probePath = options.healthCheckPath || "/health";
-      const probeUrl = `http://127.0.0.1:${assignedPort}${probePath}`;
-      const timeoutMs = options.healthCheckTimeoutMs ?? 10000;
+      let probeUrl = `http://127.0.0.1:${assignedPort}${probePath}`;
+      const timeoutMs = options.healthCheckTimeoutMs ?? healthTimeoutMs();
       const intervalMs = options.healthCheckIntervalMs ?? 300;
-      const deadline = Date.now() + timeoutMs;
+      let deadline = Date.now() + timeoutMs;
+      // Only a real Docker container can be inspected (the mock executor answers "ok" to anything).
+      const inspectable = Boolean(dockerLaunch) && !isMockExecutor;
+      let launchedAt = Date.now();
+      let lastInspect = 0;
+      let remapped = false;
+      let bindHint = "";
 
       log(`Probing health endpoint at ${probeUrl} (timeout: ${timeoutMs}ms)`);
       let isHealthy = false;
@@ -1184,7 +1236,7 @@ server.listen(port, "0.0.0.0");
 
         // If app bound to options.targetPort instead of dynamic port, detect it
         // (never when that port belongs to another instance, e.g. the previous deployment)
-        if (options.targetPort && options.targetPort !== assignedPort && !this.portManager.isPortAllocated(options.targetPort)) {
+        if (!dockerLaunch && options.targetPort && options.targetPort !== assignedPort && !this.portManager.isPortAllocated(options.targetPort)) {
           const altProbeUrl = `http://127.0.0.1:${options.targetPort}${probePath}`;
           if (await this.executor.probeHealth(altProbeUrl, 500)) {
             isHealthy = true;
@@ -1194,18 +1246,47 @@ server.listen(port, "0.0.0.0");
           }
         }
 
+        if (inspectable && containerId && Date.now() - lastInspect > 2500) {
+          lastInspect = Date.now();
+          const state = await this.inspectContainer(containerId);
+          if (state?.crashed) {
+            const output = await this.containerLogs(containerId);
+            const code = state.exitCode || 1;
+            log(`[build:error] Application container exited during startup (exit code ${code})`);
+            throw new PipelineStepError(`Application container exited during startup (exit code ${code}). Last output:\n${output || "(no output)"}`, code);
+          }
+          // Give the app a few seconds to open its port before looking for it elsewhere.
+          if (state?.running && !remapped && Date.now() - launchedAt > 4000) {
+            const found = await this.detectContainerPort(containerId, state, containerPort!);
+            bindHint = found.hint;
+            if (found.port && found.port !== containerPort) {
+              log(`Application listens on port ${found.port}, not ${containerPort}; re-mapping host port ${assignedPort} → ${found.port}`);
+              remapped = true;
+              containerPort = found.port;
+              containerId = await dockerLaunch!(containerPort);
+              launchedAt = Date.now();
+              deadline = Date.now() + timeoutMs;
+              probeUrl = `http://127.0.0.1:${assignedPort}${probePath}`;
+              continue;
+            }
+          }
+        }
+
         await new Promise((r) => setTimeout(r, intervalMs));
       }
 
       if (!isHealthy) {
-        const detail = childErrorMsg || (startupStderrLines.length > 0 ? startupStderrLines.join("\n") : "");
+        let detail = childErrorMsg || (startupStderrLines.length > 0 ? startupStderrLines.join("\n") : "");
+        if (inspectable && containerId) {
+          const output = await this.containerLogs(containerId);
+          detail = [bindHint, output ? `Last container output:\n${output}` : ""].filter(Boolean).join("\n");
+        }
         const errMsg = detail
-          ? `Health check failed on port ${assignedPort}: ${detail}`
+          ? `Health check failed on port ${assignedPort}: no HTTP response within ${Math.round(timeoutMs / 1000)}s. ${detail}`
           : `Health check failed: application did not respond to HTTP probes on port ${assignedPort} within ${timeoutMs}ms`;
         log(`[build:error] ${errMsg}`);
         throw new Error(errMsg);
       }
-
       const durationMs = Date.now() - startTime;
       log(`Pipeline execution finished successfully in ${(durationMs / 1000).toFixed(2)}s`);
 
@@ -1218,6 +1299,7 @@ server.listen(port, "0.0.0.0");
         strategy,
         containerId,
         assignedPort,
+        containerPort,
         imageTag,
         logs,
         durationMs,
