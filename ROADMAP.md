@@ -42,8 +42,31 @@
 - [x] DB-backed cron jobs, WAF (enforced in `proxy.ts`), canary routing; real Query Studio (read-only by default)
 - [x] Runner-native Postgres/Redis provisioning without Docker; volume mounts
 
+## Completed — v1.2 (operations)
+- [x] Runner configuration preflight with actionable errors; project actions (redeploy/pause/resume/rename/delete)
+- [x] Live dashboard analytics and per-deployment traffic counters (`TrafficSample`); canary rollback uses real 5xx data
+- [x] Runner image ships `docker buildx` and repairs a missing plugin itself; secrets redacted from logs
+
+## Completed — v1.3 (availability and build reliability)
+- [x] **Always-on by default.** `scaleToZero` defaults to off; the every-minute cron starts a sleeping always-on service again (`src/lib/scale/always-on.ts`)
+- [x] **One owner per hostname.** A service routes only its own `Domain` rows; a second service with the same name and environment gets a suffixed host (`src/lib/domains/`)
+- [x] **Zero-downtime deploys.** The live version keeps its route while a new one builds and after a failed release (engine, DB resolver)
+- [x] **App port vs host port.** `Service.port` is the app's port; `Deployment.assignedPort` is the runner's host port and drives routing and tunnel ingress
+- [x] **Runner start-up checks.** 120 s health window, crash detection with the container's output, detection of the port an app really listens on, hint for apps bound to 127.0.0.1
+- [x] **Readable build failures.** Errors carry the end of the build output; Node 22 for unpinned Nixpacks projects; at most 2 builds at once
+- [x] **Secrets stay out of commands.** Environment values travel in the CLI's process environment, never on a command line or in a log; git never sees service variables
+- [x] **Private database networking.** Apps reach a database on the same runner through the Docker bridge; the registry of databases survives a runner restart; optional `RUNNER_DB_PORT_RANGE`
+- [x] Repository cleanup: stale planning files, generated graph output and a committed tunnel script removed
+
 ## Next
-- [ ] Per-deployment request / 5xx counters so canary auto-rollback has real input (`MetricSample` has CPU/memory/network only)
+- [ ] Per-environment Docker networks so tenants on one runner cannot reach each other's containers
+- [ ] Persist runner launch specs so restart and rollback work after the runner itself restarts
+- [ ] Health monitoring of live instances (mark CRASHED, restart, alert) between deploys
+- [ ] Database backups (scheduled `pg_dump` to R2) and restore
+- [ ] Volume size enforcement and volume snapshots
+- [ ] Encrypt `EnvironmentVariable.value` and database credentials at rest
+- [ ] Build cache shared between deployments of a service (BuildKit cache mounts keyed by service)
+- [ ] Runner fleet: several runners per workspace with placement and capacity reporting
 - [ ] Build over SSH: `SshRunnerDriver` only runs a pre-built `syncbay-<svc>:<sha>` image; it does not clone/build
 - [ ] TLS for custom domains on a zone without Cloudflare SSL for SaaS (DNS-only verification works; certificates must come from elsewhere, e.g. Vercel domains)
 - [ ] MySQL provisioning / Query Studio against a real MySQL server (untested: Docker Hub rate limit)
@@ -54,4 +77,3 @@
 ## Tech debt
 - [ ] Resolve the React Compiler advisories (`react-hooks/set-state-in-effect`, `preserve-manual-memoization`). They're downgraded to warnings in `eslint.config.mjs`.
 - [ ] Reduce the remaining ~360 lint warnings, mostly `no-explicit-any` and unused vars.
-- [ ] Encrypt `EnvironmentVariable.value` at rest.

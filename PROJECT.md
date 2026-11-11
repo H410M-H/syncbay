@@ -42,16 +42,37 @@ tracks what is still open.
 1. A deploy starts from the dashboard (`deployment.redeploy`), the REST API, a GitHub push
    webhook or a PR webhook (`pr-manager.ts`).
 2. `executeDeployment()` (`src/lib/orchestrator/engine.ts`) loads the service, resolves
-   `${{ ref }}` variables, merges managed-database env (`applyDatabaseEnv`) and registers
-   every hostname of the service as `BUILDING` in the edge registry.
+   `${{ ref }}` variables, merges managed-database env (`applyDatabaseEnv`) and claims the
+   service's platform hostname (`claimDefaultHostname`). If a version is already live, its
+   route stays `ACTIVE` for the whole deploy; only a service with nothing running shows the
+   `BUILDING` splash.
 3. `getRunnerDriver()` picks a driver: `webhook` (HTTP to the daemon), `ssh`, `queue`,
    `local` (in-process `runner/src/pipeline.ts`) or `mock`. Failed remote dispatches fall back
    to local unless `RUNNER_FALLBACK_LOCAL=false` / `RUNNER_FORCE_REMOTE=true`.
 4. The runner's `BuildPipeline` clones (or `git fetch` for a fast redeploy), detects Docker →
-   Nixpacks → native, builds (`--no-cache` on a clean rebuild), and starts the app on a port
-   from `PortManager` (10000–60000).
-5. The engine polls status, probes `/health` then `/`, registers the routes `ACTIVE`, records
-   the deployment and service port, and calls `requestTunnelReload()` (section 4).
+   Nixpacks → native, builds (`--no-cache` on a clean rebuild; at most
+   `RUNNER_MAX_CONCURRENT_BUILDS` at once), and starts the app on a host port from
+   `PortManager` (10000–60000). It waits up to `RUNNER_HEALTH_TIMEOUT_MS` (120 s) for an HTTP
+   answer. A container that exits fails the deploy with its own output; an app that listens
+   on another port than expected is found (`/proc/net/tcp`, EXPOSE, common ports) and the
+   host port is re-mapped to it.
+5. The engine polls status, probes `/health` then `/`, registers the routes `ACTIVE` and
+   records the host port on the deployment (`assignedPort`). `Service.port` stays the app's
+   own port; a port the runner detected is saved there. `requestTunnelReload()` follows
+   (section 4). On failure the previous live version keeps its route.
+
+### Hostnames
+A service answers on its own `Domain` rows: one generated platform host plus custom domains
+(`src/lib/domains/service-hosts.ts`). `claimDefaultHostname()` gives the first service
+`<service>-<env>.syncbay.app`; a later service with the same name and environment gets a
+suffix from its id. Nothing derives a hostname from the service name once a row exists, so
+two tenants cannot route, sleep or fail each other's address.
+
+### Availability
+`scaleToZero` is off by default. The idle sleeper only touches services that opted in. The
+every-minute cron runs `wakeAlwaysOnServices()`: an always-on service whose newest sleeping
+deployment has nothing live or in flight beside it is started again (not when paused or
+over its spending cap).
 
 ## 3. Edge routing
 
@@ -145,6 +166,9 @@ tracks what is still open.
 `Workspace → Project → Environment → Service → (Build, Deployment, Domain,
 EnvironmentVariable, Volume)`; `DatabaseInstance` per environment (status
 PROVISIONING → ACTIVE/UNHEALTHY/FAILED/DELETING); `TerminalSession` for simulated shells.
+`Service.port` is the app's listening port; `Deployment.assignedPort` is the runner's host
+port for that instance. `Domain.hostname` is globally unique and is the ownership record of
+an address.
 Migrations are hand-written folders under `prisma/migrations/`.
 
 ## 9. Interface contracts
@@ -214,6 +238,10 @@ tests/                         tsx verifications (verify-*.ts) and e2e/
   `email` (mocked DB); `terminal-stateless` (real Postgres, a runner daemon process, a Docker
   container, separate instance processes) and `domains` (real Postgres, real DNS lookups
   against a local authoritative server, Cloudflare API mocked).
+- `availability` (real Postgres + a runner daemon): always-on default, hostname ownership,
+  zero-downtime redeploys, app port vs host port, always-on reconciler.
+- `cd runner && npm run test:docker` (real Docker): port detection, slow start, crash,
+  loopback hint, build-error tail, secrets, volumes, private database networking.
 - `npm test` runs the e2e tiers.
 
 ## 12. Environment variables (edge, tunnel, domains, terminal)

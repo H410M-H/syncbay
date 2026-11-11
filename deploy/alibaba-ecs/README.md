@@ -61,5 +61,10 @@ docker compose -f deploy/alibaba-ecs/docker-compose.yml exec runner docker build
 ## Operations
 - **Logs:** `docker compose -f deploy/alibaba-ecs/docker-compose.yml logs -f runner`
 - **Update:** `git pull && sudo docker compose -f deploy/alibaba-ecs/docker-compose.yml up -d --build`
-- **Managed databases:** `RUNNER_DB_MODE=docker` starts Postgres, Redis and MySQL as containers on this host. `RUNNER_DB_HOST` is the address put into their connection URLs. Use the private VPC IP for apps on this host. Only open the database ports in the security group if something outside the instance must connect.
+- **Managed databases:** `RUNNER_DB_MODE=docker` starts Postgres, Redis and MySQL as containers on this host.
+  - `RUNNER_DB_HOST` is the address written into connection URLs, for external tools. Set it to the server's public IP or a DNS name.
+  - Apps deployed on this host do not use that address. The runner points their database URLs at the Docker bridge gateway (`RUNNER_DB_INTERNAL_HOST` overrides it), so they connect without any port being open.
+  - New databases get a host port from `RUNNER_DB_PORT_RANGE` (default `54320-54399` in this kit). Open that range in the security group only if pgAdmin, `psql` or Query Studio must connect from outside. A database created earlier keeps its port (for example 10001); open that one port, or recreate the database.
+- **Start-up checks:** a new instance has 120 s (`RUNNER_HEALTH_TIMEOUT_MS`) to answer HTTP. If the app listens on another port than the service's port, the runner finds it and re-maps. An app bound to `127.0.0.1` cannot be reached; bind it to `0.0.0.0`.
+- **Builds:** at most 2 at once (`RUNNER_MAX_CONCURRENT_BUILDS`; use 1 on a 1–2 GiB host). Node projects that pin no version build with Node 22 (`RUNNER_DEFAULT_NODE_VERSION`).
 - **Behind NAT instead** (a home machine, or a host with no public IP): keep Cloudflare Tunnel (`TUNNEL_DRIVER=cloudflare` with `CLOUDFLARE_TUNNEL_TOKEN`) and drop the caddy service. Use the tunnel hostname as `RUNNER_URL`.
