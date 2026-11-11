@@ -224,7 +224,9 @@ async function main() {
     const routes = await buildIngressRoutesFromDb();
     const mine = routes.filter((rt) => rt.hostname.includes(RUN));
     const names = mine.map((rt) => rt.hostname).sort();
-    assert.deepStrictEqual(names, [apex, host, `api${RUN}-production.syncbay.app`, `gen-${RUN}.syncbay.app`].sort(), `ACTIVE services + ACTIVE domains only, got ${names}`);
+    // A service routes only the hostnames it owns: its generated platform row (gen-…) and ACTIVE
+    // custom domains. The name-derived `api…-production.syncbay.app` is not one of its rows.
+    assert.deepStrictEqual(names, [apex, host, `gen-${RUN}.syncbay.app`].sort(), `ACTIVE services + ACTIVE domains only, got ${names}`);
     assert.ok(mine.every((rt) => rt.targetPort === 10500 && rt.targetHost === "127.0.0.1"));
 
     cfCalls.length = 0;

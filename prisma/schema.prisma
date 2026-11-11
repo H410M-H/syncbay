@@ -260,8 +260,11 @@ model Service {
   startCommand    String?
   port            Int?
   instanceType    String    @default("lite") // Cloudflare Containers instance type
-  scaleToZero     Boolean   @default(true)
-  idleTimeoutSecs Int       @default(300)
+  // The app's own listening port (inside its container). The host port a runner assigns to an
+  // instance is stored per deployment (`Deployment.assignedPort`).
+  // Always-on unless the user opts in; PR previews opt in (pr-manager).
+  scaleToZero     Boolean   @default(false)
+  idleTimeoutSecs Int       @default(1800)
   isPaused        Boolean   @default(false)
   deletedAt       DateTime?
   // Team B — scale-to-zero activity tracking (DB fallback when Upstash is unset)

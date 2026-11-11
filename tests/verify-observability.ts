@@ -135,7 +135,7 @@ async function main() {
   };
   const logsSvc = await mkService(`logs${tag}`);
   const emptySvc = await mkService(`empty${tag}`);
-  const runSvc = await mkService(`run${tag}`, { idleTimeoutSecs: 60 });
+  const runSvc = await mkService(`run${tag}`, { idleTimeoutSecs: 60, scaleToZero: true });
   const usageSvc = await mkService(`use${tag}`);
   const busySvc = await mkService(`busy${tag}`);
   const caller = (userId: string) =>

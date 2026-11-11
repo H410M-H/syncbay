@@ -20,7 +20,7 @@
  */
 
 import { db } from "@/lib/db";
-import { generateDefaultSubdomain } from "@/lib/domain-service";
+import { platformHostnames } from "@/lib/domains/service-hosts";
 import { reloadTunnel, validateHostname, type ReloadTunnelOptions, type RouteMapping } from "@/lib/tunnel/tunnel-config";
 
 /** Advisory lock key shared by every control-plane instance ("SYNC" + 3). */
@@ -52,7 +52,6 @@ export async function buildIngressRoutesFromDb(client: RouteDb = db): Promise<Ro
     where: {
       deletedAt: null,
       isPaused: false,
-      port: { not: null },
       deployments: { some: { status: "ACTIVE" } },
       environment: { project: { deletedAt: null } },
     },
@@ -60,19 +59,28 @@ export async function buildIngressRoutesFromDb(client: RouteDb = db): Promise<Ro
       name: true,
       port: true,
       environment: { select: { name: true } },
-      domains: { where: { status: "ACTIVE" }, select: { hostname: true } },
+      // The service's own hostnames: its generated platform host and verified custom domains.
+      domains: { where: { status: "ACTIVE" }, select: { hostname: true, isGenerated: true } },
+      // The live instance's host port on the runner.
+      deployments: {
+        where: { status: "ACTIVE", assignedPort: { not: null } },
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        select: { assignedPort: true },
+      },
     },
     orderBy: { createdAt: "asc" },
   });
 
   const routes = new Map<string, RouteMapping>();
   for (const svc of services) {
-    if (!svc.port) continue;
-    const hosts = [generateDefaultSubdomain(svc.name, svc.environment?.name || "production"), ...svc.domains.map((d) => d.hostname)];
+    const targetPort = svc.deployments?.[0]?.assignedPort ?? svc.port;
+    if (!targetPort) continue;
+    const hosts = [...platformHostnames(svc), ...svc.domains.map((d) => d.hostname)];
     for (const raw of hosts) {
       const hostname = raw.trim().toLowerCase();
       if (!validateHostname(hostname) || routes.has(hostname)) continue;
-      routes.set(hostname, { hostname, targetPort: svc.port, targetHost: "127.0.0.1" });
+      routes.set(hostname, { hostname, targetPort, targetHost: "127.0.0.1" });
     }
   }
   return [...routes.values()];

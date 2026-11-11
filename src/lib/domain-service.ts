@@ -10,6 +10,10 @@ import * as dns from "node:dns/promises";
 import { db } from "@/lib/db";
 import type { DomainStatus } from "@prisma/client";
 import { cloudflareApiClient, type CloudflareApiClient } from "@/lib/tunnel/cloudflare-api";
+import { generateDefaultSubdomain, slugifyHostPart } from "@/lib/domains/service-hosts";
+
+// Hostname rules live in the pure module so client components can share them.
+export { generateDefaultSubdomain, slugifyHostPart };
 
 export interface VerificationRecords {
   cnameTarget: string;
@@ -19,41 +23,12 @@ export interface VerificationRecords {
 }
 
 /**
- * Normalizes strings into DNS-safe hostname slugs (RFC 1123)
- */
-export function slugifyHostPart(str: string): string {
-  return str
-    .toLowerCase()
-    .replace(/[^a-z0-9-]/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "");
-}
-
-/**
  * Validates domain name syntax
  */
 export function isValidHostname(hostname: string): boolean {
   if (!hostname || hostname.length > 253) return false;
   const domainRegex = /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/;
   return domainRegex.test(hostname);
-}
-
-/**
- * Generates the default platform subdomain for a service in an environment.
- * Satisfies PROJECT.md contract:
- * `generateDefaultSubdomain(serviceName: string, envName: string): string`
- */
-export function generateDefaultSubdomain(
-  serviceName: string,
-  envName: string,
-  suffix?: string
-): string {
-  const serviceSlug = slugifyHostPart(serviceName) || "service";
-  const envSlug = slugifyHostPart(envName) || "production";
-  const base = `${serviceSlug}-${envSlug}`;
-  const suffixPart = suffix ? `-${suffix}` : "";
-
-  return `${base}${suffixPart}.syncbay.app`;
 }
 
 /** Hostname custom domains must CNAME to (CLOUDFLARE_CNAME_TARGET, default `cname.syncbay.app`). */
@@ -280,11 +255,3 @@ export async function verifyDomainDetailed(
 export async function verifyDomain(domainId: string): Promise<DomainStatus> {
   return (await verifyDomainDetailed(domainId)).status;
 }
-
-export const domainService = {
-  generateDefaultSubdomain,
-  generateVerificationRecords,
-  verifyDomain,
-  isValidHostname,
-  slugifyHostPart,
-};

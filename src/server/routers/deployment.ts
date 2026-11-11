@@ -36,6 +36,7 @@ export const deploymentRouter = createTRPCRouter({
           service: {
             include: {
               environment: true,
+              domains: { select: { hostname: true, isGenerated: true } },
             },
           },
         },

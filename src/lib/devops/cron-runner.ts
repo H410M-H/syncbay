@@ -14,7 +14,7 @@
  */
 
 import { db as defaultDb } from "@/lib/db";
-import { generateDefaultSubdomain } from "@/lib/domain-service";
+import { primaryServiceHostname } from "@/lib/domains/service-hosts";
 import { resolveServiceRoute } from "@/lib/edge/service-registry";
 import {
   assertValidCronPath,
@@ -70,11 +70,11 @@ function sleep(ms: number): Promise<void> {
 async function defaultResolveTarget(db: RunnerDb, job: { serviceId: string; path: string }): Promise<CronTarget | null> {
   const service = await db.service.findUnique({
     where: { id: job.serviceId },
-    include: { environment: true },
+    include: { environment: true, domains: { select: { hostname: true, isGenerated: true } } },
   });
   if (!service || service.deletedAt) return null;
 
-  const host = generateDefaultSubdomain(service.name, service.environment?.name || "production");
+  const host = primaryServiceHostname(service);
   const route = await resolveServiceRoute(host);
   if (route && route.status === "ACTIVE") {
     const runnerUrl = process.env.RUNNER_URL;

@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { trpc } from "@/lib/trpc-client";
+import { primaryServiceHostname } from "@/lib/domains/service-hosts";
 import { useDashboard } from "../dashboard-shell";
 import { BackButton } from "@/components/ui/back-button";
 
@@ -146,7 +147,7 @@ export default function ServicesPage() {
         <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
           {services.map((svc: any) => {
             const isPaused = svc.isPaused;
-            const primaryDomain = svc.domains?.[0]?.hostname || `${svc.name}.syncbay.run`;
+            const primaryDomain = primaryServiceHostname(svc);
 
             return (
               <div

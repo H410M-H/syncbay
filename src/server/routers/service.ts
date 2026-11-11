@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { createTRPCRouter, protectedProcedure } from "@/server/trpc";
 import { TRPCError } from "@trpc/server";
-import { domainService } from "@/lib/domain-service";
+import { claimDefaultHostname } from "@/lib/domains/claim";
 import { executeSyncVariables } from "@/lib/devops/env-sync";
 import { logEventBus } from "@/lib/telemetry/event-bus";
 import { restartServiceInstance, stopServiceInstances } from "@/lib/orchestrator/lifecycle";
@@ -123,7 +123,8 @@ export const serviceRouter = createTRPCRouter({
         instanceType: z
           .enum(["lite", "standard-1", "standard-2", "standard-4"])
           .default("lite"),
-        scaleToZero: z.boolean().default(true),
+        // Services stay up around the clock unless the user opts into scale-to-zero.
+        scaleToZero: z.boolean().default(false),
       })
     )
     .mutation(async ({ ctx, input }) => {
@@ -159,25 +160,8 @@ export const serviceRouter = createTRPCRouter({
         },
       });
 
-      // Automatically generate default domain <service>-<env>.syncbay.app
-      const defaultHostname = domainService.generateDefaultSubdomain(service.name, env.name);
-      const existingDomain = await ctx.db.domain.findUnique({
-        where: { hostname: defaultHostname },
-      });
-
-      const finalHostname = existingDomain
-        ? domainService.generateDefaultSubdomain(service.name, env.name, service.id.slice(-4).toLowerCase())
-        : defaultHostname;
-
-      await ctx.db.domain.create({
-        data: {
-          serviceId: service.id,
-          hostname: finalHostname,
-          isGenerated: true,
-          status: "ACTIVE",
-          verifiedAt: new Date(),
-        },
-      });
+      // The service's own platform host: <service>-<env>.syncbay.app, suffixed when that name is taken.
+      await claimDefaultHostname(ctx.db, { id: service.id, name: service.name, environment: { name: env.name } });
 
       return service;
     }),
