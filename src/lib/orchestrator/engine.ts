@@ -5,6 +5,8 @@ import { generateNixpacksPlan } from "@/lib/buildpack/nixpacks";
 import { resolveEnvironmentVariables, type DatabaseRef } from "@/lib/buildpack/resolver";
 import { generateDefaultSubdomain, resolveServiceHostnames } from "@/lib/domains/service-hosts";
 import { claimDefaultHostname } from "@/lib/domains/claim";
+import { resolveGithubToken } from "@/lib/github";
+import { assertServiceMayRun } from "@/lib/admin/guards";
 import { runKnipAnalysis } from "@/lib/buildpack/knip-analyzer";
 import { registerServiceRouteAsync } from "@/lib/edge/service-registry";
 import { applyDatabaseEnv } from "@/lib/database-provider";
@@ -95,6 +97,8 @@ export async function executeDeployment(
     log(`[syncbay] Deployment initiated for service ${serviceId}`, "system");
     log(`[syncbay] Target commit: ${commit} — "${message}"`, "system");
     await renewOrchestratorLease(deploymentId);
+    // Staff moderation: nothing of a suspended workspace or a taken-down service is started.
+    await assertServiceMayRun(serviceId);
 
     // Phase 1: Update to BUILDING
     await db.build.update({
@@ -153,12 +157,11 @@ export async function executeDeployment(
     let resolvedRepoUrl = service?.repoUrl || undefined;
     if (resolvedRepoUrl && /github\.com/i.test(resolvedRepoUrl) && !resolvedRepoUrl.includes("@")) {
       try {
-        let githubToken: string | undefined = process.env.GITHUB_TOKEN;
-        if (!githubToken && options.userId) {
-          const acc = await (db.account as any).findFirst({
-            where: { userId: options.userId, provider: "github", access_token: { not: null } },
-          });
-          githubToken = acc?.access_token;
+        // Deploys nobody is signed in for (webhooks, cron recovery, always-on restarts) use a
+        // token of the project's workspace; a revoked token is skipped.
+        const githubToken = await resolveGithubToken({ projectId: service?.environment?.projectId, userId: options.userId });
+        if (!githubToken) {
+          log(`[git:warn] No working GitHub connection in this workspace; cloning without credentials (private repositories fail). Sign in with GitHub again to reconnect.`, "system");
         }
         if (githubToken) {
           resolvedRepoUrl = resolvedRepoUrl.replace(

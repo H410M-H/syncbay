@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse, type NextFetchEvent } from "next/server";
+import { sanitizeForwardedHeaders } from "@/lib/edge/forward-headers";
 import { resolveServiceRoute } from "@/lib/edge/service-registry";
 import { recordServiceRequest } from "@/lib/scale/activity";
 import { enforceWaf } from "@/lib/edge/waf";
@@ -191,7 +192,8 @@ export async function proxy(req: NextRequest, event?: NextFetchEvent) {
         target.pathname = pathname;
         target.search = req.nextUrl.search;
 
-        const requestHeaders = new Headers(req.headers);
+        // Customer apps must never receive Syncbay session cookies.
+        const requestHeaders = sanitizeForwardedHeaders(new Headers(req.headers));
         requestHeaders.set("x-forwarded-host", host);
         requestHeaders.set("x-pathname", pathname);
         requestHeaders.set("x-syncbay-upstream", upstreamBase);

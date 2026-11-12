@@ -122,6 +122,7 @@ export function DashboardAnalytics({ workspaces }: { workspaces: Array<{ id: str
   const runnerOffline = runner && !runnerProblem && !runner.health.online;
   const toolchain = runner?.health.online ? runner.health.toolchain : undefined;
   const buildxMissing = toolchain?.docker === true && !toolchain.buildx;
+  const runnerOutdated = Boolean(runner?.health.online && runner.health.outdated);
   const d24 = ov?.deploys["24h"];
   const cap = ov?.usage.nearestCap;
 
@@ -166,6 +167,17 @@ export function DashboardAnalytics({ workspaces }: { workspaces: Array<{ id: str
         <div role="alert" className="card" style={{ borderColor: "rgba(245,158,11,0.45)", background: "rgba(245,158,11,0.08)", padding: "14px 18px" }}>
           <strong style={{ color: "#fbbf24" }}>⚠ Runner offline{runner.config.urlHost ? ` (${runner.config.urlHost})` : ""}: {runner.health.error || "no response"}</strong>
           <p style={{ fontSize: "0.8125rem", marginTop: "4px" }}>New deployments will fail until the runner answers its /health endpoint.</p>
+        </div>
+      )}
+      {runnerOutdated && (
+        <div role="alert" className="card" style={{ borderColor: "rgba(245,158,11,0.45)", background: "rgba(245,158,11,0.08)", padding: "14px 18px" }}>
+          <strong style={{ color: "#fbbf24" }}>
+            ⚠ The runner{runner?.config.urlHost ? ` on ${runner.config.urlHost}` : ""} runs an older release ({runner?.health.version || "before 1.4.0"})
+          </strong>
+          <p style={{ fontSize: "0.8125rem", marginTop: "4px" }}>
+            Deploy fixes (start-up checks, port detection, private database networking) are not active until it is updated. On the runner host:{" "}
+            <code>cd /opt/syncbay &amp;&amp; git pull &amp;&amp; docker compose -f deploy/alibaba-ecs/docker-compose.yml up -d --build</code>
+          </p>
         </div>
       )}
       {buildxMissing && (

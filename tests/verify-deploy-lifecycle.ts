@@ -97,6 +97,8 @@ async function main() {
     RUNNER_SECRET: SECRET,
     RUNNER_FALLBACK_LOCAL: "false",
     GITHUB_WEBHOOK_SECRET: "gh-webhook-test-secret",
+    // Placeholder GitHub tokens below; do not ask api.github.com whether they are revoked.
+    GITHUB_TOKEN_VALIDATION: "off",
   });
 
   const prisma = new PrismaClient();

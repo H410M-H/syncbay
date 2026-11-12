@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PUBLIC_USER_SELECT } from "@/lib/users/public-user";
 import { createTRPCRouter, protectedProcedure, publicProcedure } from "@/server/trpc";
 import { TRPCError } from "@trpc/server";
 import { WorkspaceRole } from "@prisma/client";
@@ -13,7 +14,7 @@ export const workspaceRouter = createTRPCRouter({
         members: { some: { userId: ctx.session.user.id } },
       },
       include: {
-        members: { include: { user: true } },
+        members: { include: { user: { select: PUBLIC_USER_SELECT } } },
         _count: { select: { projects: true } },
       },
       orderBy: { createdAt: "asc" },
@@ -30,7 +31,7 @@ export const workspaceRouter = createTRPCRouter({
           members: { some: { userId: ctx.session.user.id } },
         },
         include: {
-          members: { include: { user: true } },
+          members: { include: { user: { select: PUBLIC_USER_SELECT } } },
           _count: { select: { projects: true } },
         },
       });
@@ -160,7 +161,7 @@ export const workspaceRouter = createTRPCRouter({
 
       return ctx.db.auditLogEntry.findMany({
         where: { workspaceId: input.workspaceId },
-        include: { actor: true },
+        include: { actor: { select: PUBLIC_USER_SELECT } },
         orderBy: { createdAt: "desc" },
         take: input.limit,
       });

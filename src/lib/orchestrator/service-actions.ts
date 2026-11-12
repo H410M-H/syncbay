@@ -7,6 +7,7 @@
  * Both schedule work through `scheduleDeployment()`; callers check access and preflight the runner.
  */
 
+import { assertServiceMayRun } from "@/lib/admin/guards";
 import { scheduleDeployment } from "./schedule";
 import { resolveHeadCommitSha } from "./pr-manager";
 import { stopServiceInstances, type StopReport } from "./lifecycle";
@@ -106,6 +107,8 @@ export async function setServicePaused(
     return { service, lifecycle, wokeDeploymentId: null };
   }
 
+  // A service taken down by staff, or of a suspended workspace, cannot be resumed by its owner.
+  await assertServiceMayRun(serviceId, client);
   const latest = await client.deployment.findFirst({
     where: { serviceId },
     orderBy: { createdAt: "desc" },

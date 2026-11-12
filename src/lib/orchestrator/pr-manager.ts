@@ -3,6 +3,7 @@ import { scheduleDeployment } from "./schedule";
 import { stopServiceInstances } from "./lifecycle";
 import { slugifyHostPart } from "@/lib/domain-service";
 import { Octokit } from "@octokit/rest";
+import { resolveGithubToken } from "@/lib/github";
 
 function getPrismaClient(): any {
   const globalForPrisma = globalThis as unknown as { prisma?: any };
@@ -69,22 +70,8 @@ export async function getOctokitClient(projectId?: string, userId?: string): Pro
   }
 
   try {
-    const memberOfProject = projectId
-      ? { memberships: { some: { workspace: { projects: { some: { id: projectId } } } } } }
-      : undefined;
-    const lookups: any[] = [];
-    if (userId) lookups.push({ userId, ...(memberOfProject ? { user: memberOfProject } : {}) });
-    if (memberOfProject) {
-      lookups.push({ user: { memberships: { some: { role: "OWNER", workspace: { projects: { some: { id: projectId } } } } } } });
-      lookups.push({ user: memberOfProject });
-    }
-    for (const where of lookups) {
-      const account = await db.account.findFirst({
-        where: { provider: "github", access_token: { not: null }, ...where },
-        select: { access_token: true },
-      });
-      if (account?.access_token) return new Octokit({ auth: account.access_token });
-    }
+    const token = await resolveGithubToken({ projectId, userId });
+    if (token) return new Octokit({ auth: token });
   } catch (err: any) {
     console.warn("Could not retrieve GitHub account token:", err?.message);
   }

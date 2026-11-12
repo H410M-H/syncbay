@@ -67,6 +67,7 @@ const FOOTER_COLUMNS = [
       { label: "Privacy Policy", href: "/" },
       { label: "Terms of Service", href: "/" },
       { label: "Acceptable Use Policy", href: "/" },
+      { label: "Report Abuse", href: "/report-abuse" },
       { label: "Support & Contact Sales", href: "mailto:support@syncbay.app" },
     ],
   },

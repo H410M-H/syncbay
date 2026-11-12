@@ -314,11 +314,32 @@ export default function DatabasesPage() {
         </div>
       )}
 
-      <div className="card" style={{ marginTop: "20px", padding: "16px 20px", fontSize: "0.8125rem", color: "var(--text-secondary)" }}>
+      <div className="card" style={{ marginTop: "20px", padding: "16px 20px", fontSize: "0.8125rem", color: "var(--text-secondary)", lineHeight: 1.6 }}>
         <strong style={{ color: "var(--text-primary)" }}>How connections work.</strong> Services deployed on the same runner as a database reach it
-        over the runner&apos;s private network automatically; nothing needs opening. External tools (pgAdmin, <code>psql</code> on your laptop,
-        Query Studio) use the address shown above, so the database port must be open in the runner host&apos;s firewall or security group. Set{" "}
-        <code>RUNNER_DB_PORT_RANGE</code> on the runner (for example <code>54320-54399</code>) to keep database ports in one small range you can open.
+        over the runner&apos;s private network automatically; nothing needs opening.
+        <div style={{ marginTop: "10px" }}>
+          <strong style={{ color: "var(--text-primary)" }}>pgAdmin, DBeaver or psql from your computer</strong> — use an SSH tunnel; no database port
+          has to be opened:
+          <ul style={{ margin: "6px 0 0 18px", padding: 0 }}>
+            <li>
+              pgAdmin → Register Server → <em>SSH Tunnel</em> tab: enable it, Tunnel host = the runner&apos;s address shown in the URL above, port 22,
+              your SSH user and key.
+            </li>
+            <li>
+              <em>Connection</em> tab: Host = <code>127.0.0.1</code>, Port = the database port above, Maintenance database = <code>main</code>, user and
+              password from the URL.
+            </li>
+            <li>
+              Or in a terminal: <code>ssh -N -L 15432:127.0.0.1:&lt;db-port&gt; root@&lt;runner-host&gt;</code>, then connect to{" "}
+              <code>127.0.0.1:15432</code>.
+            </li>
+          </ul>
+        </div>
+        <div style={{ marginTop: "10px" }}>
+          Direct connections to the public address work only if the database port is open in the runner host&apos;s firewall or security group (set{" "}
+          <code>RUNNER_DB_PORT_RANGE</code>, e.g. <code>54320-54399</code>, to keep them in one range). Query Studio connects from Syncbay&apos;s servers
+          and needs that too.
+        </div>
       </div>
 
       {/* Code Connection Snippets Card */}

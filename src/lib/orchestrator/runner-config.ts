@@ -31,6 +31,24 @@ export interface RunnerHealth {
   error?: string;
   /** Build toolchain the runner reports on /health (absent on runners older than the buildx self-install). */
   toolchain?: RunnerToolchain;
+  /** Runner release from /health; null for runners older than 1.4.0, which did not report one. */
+  version?: string | null;
+  /** True when the runner is older than MIN_RUNNER_VERSION: the host must update its image. */
+  outdated?: boolean;
+}
+
+/** Oldest runner release this control plane is written for (see runner/src/version.ts). */
+export const MIN_RUNNER_VERSION = "1.4.0";
+
+/** Compares dotted versions ("1.3.0" < "1.4.0"); a missing version counts as older. */
+export function isRunnerOutdated(version: string | null | undefined, min = MIN_RUNNER_VERSION): boolean {
+  if (!version) return true;
+  const a = version.split(".").map((n) => parseInt(n, 10) || 0);
+  const b = min.split(".").map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) < (b[i] ?? 0);
+  }
+  return false;
 }
 
 export interface RunnerToolchain {
@@ -233,7 +251,16 @@ export async function checkRunnerHealth(): Promise<RunnerHealth> {
     }
     const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;
     if (!body || body.status !== "ok") return { online: false, latencyMs, error: "Runner /health did not answer like a Syncbay runner" };
-    return { online: true, latencyMs, uptime: finite(body.uptime), activeJobs: finite(body.activeJobs), toolchain: parseToolchain(body.toolchain) };
+    const version = typeof body.version === "string" ? body.version.slice(0, 32) : null;
+    return {
+      online: true,
+      latencyMs,
+      uptime: finite(body.uptime),
+      activeJobs: finite(body.activeJobs),
+      toolchain: parseToolchain(body.toolchain),
+      version,
+      outdated: isRunnerOutdated(version),
+    };
   } catch (err) {
     const e = err as { name?: string; message?: string; cause?: { code?: string } };
     const timedOut = e?.name === "TimeoutError" || e?.name === "AbortError";

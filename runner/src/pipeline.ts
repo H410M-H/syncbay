@@ -770,6 +770,14 @@ server.listen(port, "0.0.0.0", () => {
 });
 `;
         await fs.writeFile(path.join(sourceDir, "server.cjs"), starter, "utf8").catch(() => null);
+        // Nixpacks recognises a Node project by its package.json; a lone server.cjs has no build plan.
+        await fs
+          .writeFile(
+            path.join(sourceDir, "package.json"),
+            JSON.stringify({ name: serviceName, private: true, scripts: { start: "node server.cjs" } }, null, 2),
+            "utf8"
+          )
+          .catch(() => null);
       }
 
       // Clean rebuild: purge build artifacts and caches for every strategy (Docker/Nixpacks also get --no-cache)

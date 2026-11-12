@@ -37,9 +37,27 @@ const t = initTRPC.context<TRPCContext>().create({
 });
 
 /** Enforces authenticated caller — all protected procedures must use this */
-const enforceUserIsAuthed = t.middleware(({ ctx, next }) => {
+const suspendedCache = new Map<string, { suspended: boolean; at: number }>();
+const SUSPENDED_TTL_MS = 30_000;
+
+/** Whether staff suspended this user (cached 30 s per instance). */
+async function isUserSuspended(userId: string): Promise<boolean> {
+  const hit = suspendedCache.get(userId);
+  if (hit && Date.now() - hit.at < SUSPENDED_TTL_MS) return hit.suspended;
+  const row = await db.user.findUnique({ where: { id: userId }, select: { suspendedAt: true } }).catch(() => null);
+  const suspended = Boolean(row?.suspendedAt);
+  suspendedCache.set(userId, { suspended, at: Date.now() });
+  if (suspendedCache.size > 5000) suspendedCache.delete(suspendedCache.keys().next().value as string);
+  return suspended;
+}
+
+const enforceUserIsAuthed = t.middleware(async ({ ctx, next }) => {
   if (!ctx.session?.user) {
     throw new TRPCError({ code: "UNAUTHORIZED" });
+  }
+  const userId = (ctx.session.user as { id?: string }).id;
+  if (userId && (await isUserSuspended(userId))) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "This account is suspended. Contact support@syncbay.app." });
   }
   return next({
     ctx: {

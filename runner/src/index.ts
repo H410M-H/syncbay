@@ -33,6 +33,7 @@ function resolveDaemonSecret(explicit?: string): string {
   return DEV_RUNNER_SECRET;
 }
 import { RunnerServices } from "./services.ts";
+import { RUNNER_VERSION } from "./version.ts";
 import { handleMetricsRequest } from "./metrics.ts";
 import { TrafficStats, getDefaultTrafficStats, handleTrafficRequest, identityForPort } from "./traffic.ts";
 import { sanitizeVolumes } from "./volumes.ts";
@@ -270,6 +271,8 @@ export class RunnerDaemon {
       res.end(
         JSON.stringify({
           status: "ok",
+          version: RUNNER_VERSION,
+          startedAt: new Date(Date.now() - process.uptime() * 1000).toISOString(),
           uptime: process.uptime(),
           activeJobs: Array.from(this.jobs.values()).filter((j) => j.status === "BUILDING").length,
           allocatedPorts: this.portManager.getAllocatedPorts(),
@@ -418,6 +421,14 @@ export class RunnerDaemon {
     // remove headers that might cause issues
     delete options.headers["host"];
     delete options.headers["x-target-port"];
+    // Never hand Syncbay session cookies to a customer app (they are scoped to .syncbay.app).
+    const cookie = String(options.headers["cookie"] || "")
+      .split(";")
+      .map((part) => part.trim())
+      .filter((part) => part && !/^(?:__Secure-|__Host-)?(?:next-auth\.|authjs\.)|^sb_staff/i.test(part.split("=")[0].trim()))
+      .join("; ");
+    if (cookie) options.headers["cookie"] = cookie;
+    else delete options.headers["cookie"];
     const traffic = this.traffic.track(targetPort, Buffer.byteLength(body || ""), this.trafficIdentity);
 
     const proxyReq = http.request(options, (proxyRes) => {

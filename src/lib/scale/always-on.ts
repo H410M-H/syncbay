@@ -18,6 +18,9 @@ export interface AlwaysOnReport {
   skipped: Array<{ serviceId: string; reason: string }>;
 }
 
+/** A sleeping deployment older than this is not restarted automatically (30 days). */
+const RECENT_MS = 30 * 24 * 60 * 60 * 1000;
+
 const LIVE_OR_IN_FLIGHT = new Set(["ACTIVE", "QUEUED", "BUILDING", "DEPLOYING"]);
 
 export async function wakeAlwaysOnServices(options: { limit?: number } = {}): Promise<AlwaysOnReport> {
@@ -30,7 +33,10 @@ export async function wakeAlwaysOnServices(options: { limit?: number } = {}): Pr
       deletedAt: null,
       isPaused: false,
       scaleToZero: false,
-      environment: { project: { deletedAt: null } },
+      moderationLockedAt: null,
+      // Something to build from; an empty legacy service has nothing to start.
+      OR: [{ repoUrl: { not: null } }, { dockerImage: { not: null } }, { startCommand: { not: null } }],
+      environment: { project: { deletedAt: null, workspace: { suspendedAt: null } } },
       deployments: { some: { status: "SLEEPING" } },
     },
     select: {
@@ -40,7 +46,7 @@ export async function wakeAlwaysOnServices(options: { limit?: number } = {}): Pr
       deployments: {
         orderBy: { createdAt: "desc" },
         take: 8,
-        select: { id: true, status: true, buildId: true, build: { select: { commitSha: true } } },
+        select: { id: true, status: true, buildId: true, completedAt: true, build: { select: { commitSha: true } } },
       },
     },
     take: 50,
@@ -53,6 +59,8 @@ export async function wakeAlwaysOnServices(options: { limit?: number } = {}): Pr
     if (service.deployments.some((d) => LIVE_OR_IN_FLIGHT.has(d.status))) continue;
     const latest = service.deployments.find((d) => d.status === "SLEEPING");
     if (!latest) continue;
+    // Only versions that were live recently; long-abandoned services stay asleep until their owner acts.
+    if (!latest.completedAt || Date.now() - latest.completedAt.getTime() > RECENT_MS) continue;
     report.checked += 1;
     if (report.woken.length >= limit) {
       report.skipped.push({ serviceId: service.id, reason: "wake limit for this run reached" });

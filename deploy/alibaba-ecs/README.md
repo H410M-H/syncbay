@@ -49,6 +49,7 @@ Run this on the server after new runner changes land on `main`:
 ```bash
 cd /opt/syncbay && git pull && docker compose -f deploy/alibaba-ecs/docker-compose.yml up -d --build
 docker compose -f deploy/alibaba-ecs/docker-compose.yml exec runner docker buildx version   # must print a version
+curl -fsS https://runner.syncbay.app/health   # "version" must match runner/src/version.ts and "startedAt" must be recent
 ```
 - The image bundles the Docker CLI with the **buildx** plugin. Without buildx, every Docker or Nixpacks build fails with "BuildKit is enabled but the buildx component is missing".
 - Two more safeguards cover an old or broken image:
@@ -64,6 +65,7 @@ docker compose -f deploy/alibaba-ecs/docker-compose.yml exec runner docker build
 - **Managed databases:** `RUNNER_DB_MODE=docker` starts Postgres, Redis and MySQL as containers on this host.
   - `RUNNER_DB_HOST` is the address written into connection URLs, for external tools. Set it to the server's public IP or a DNS name.
   - Apps deployed on this host do not use that address. The runner points their database URLs at the Docker bridge gateway (`RUNNER_DB_INTERNAL_HOST` overrides it), so they connect without any port being open.
+  - **pgAdmin / DBeaver from your computer: use an SSH tunnel** (nothing to open). pgAdmin → Register Server → *SSH Tunnel*: host `47.237.1.136`, port 22, user `root`, your SSH key. *Connection*: host `127.0.0.1`, port = the database port (e.g. `10001`), database `main`, user `postgres`, password from the connection URL. Terminal alternative: `ssh -N -L 15432:127.0.0.1:10001 root@47.237.1.136`, then connect to `127.0.0.1:15432`.
   - New databases get a host port from `RUNNER_DB_PORT_RANGE` (default `54320-54399` in this kit). Open that range in the security group only if pgAdmin, `psql` or Query Studio must connect from outside. A database created earlier keeps its port (for example 10001); open that one port, or recreate the database.
 - **Start-up checks:** a new instance has 120 s (`RUNNER_HEALTH_TIMEOUT_MS`) to answer HTTP. If the app listens on another port than the service's port, the runner finds it and re-maps. An app bound to `127.0.0.1` cannot be reached; bind it to `0.0.0.0`.
 - **Builds:** at most 2 at once (`RUNNER_MAX_CONCURRENT_BUILDS`; use 1 on a 1–2 GiB host). Node projects that pin no version build with Node 22 (`RUNNER_DEFAULT_NODE_VERSION`).

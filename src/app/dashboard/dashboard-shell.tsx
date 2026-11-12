@@ -37,6 +37,8 @@ export function DashboardShell({ user, children }: DashboardShellProps) {
   const pathname = usePathname();
   const router = useRouter();
   const { data: workspaces, refetch: refetchWorkspaces } = trpc.workspace.list.useQuery();
+  // Non-null only for Syncbay staff; shows the staff console link.
+  const { data: staffMe } = trpc.admin.me.useQuery(undefined, { staleTime: 5 * 60_000, retry: false });
 
   const [topbarDropdownOpen, setTopbarDropdownOpen] = useState(false);
   const [sidebarDropdownOpen, setSidebarDropdownOpen] = useState(false);
@@ -882,6 +884,13 @@ export function DashboardShell({ user, children }: DashboardShellProps) {
             <span className="sidebar-label-text">Audit Log</span>
             {isCollapsed && <span className="sidebar-tooltip">Audit Log</span>}
           </Link>
+          {staffMe && (
+            <Link href="/admin" className="nav-item">
+              <span className="nav-icon">🛡</span>
+              <span className="sidebar-label-text">Staff console</span>
+              {isCollapsed && <span className="sidebar-tooltip">Staff console</span>}
+            </Link>
+          )}
 
           {/* Pricing & Comparison Link */}
           <Link href="/pricing" className="nav-item" style={{ marginTop: "4px" }}>
@@ -1237,6 +1246,11 @@ export function DashboardShell({ user, children }: DashboardShellProps) {
           <Link href="/dashboard/audit" className="nav-item" onClick={() => setMobileOpen(false)}>
             <span className="nav-icon">⊟</span> Audit Log
           </Link>
+          {staffMe && (
+            <Link href="/admin" className="nav-item" onClick={() => setMobileOpen(false)}>
+              <span className="nav-icon">🛡</span> Staff console
+            </Link>
+          )}
           <Link href="/pricing" className="nav-item" onClick={() => setMobileOpen(false)}>
             <span className="nav-icon">💎</span> Plans &amp; Pricing
           </Link>

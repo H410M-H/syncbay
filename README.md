@@ -116,5 +116,6 @@ See [`ROADMAP.md`](./ROADMAP.md).
 - [x] v1.1: durable deploys, persistent logs/metrics/usage, scale-to-zero, Stripe + R2, DB-backed WAF/cron/canary, real Query Studio
 - [x] v1.2: runner preflight, project actions, live analytics and traffic counters
 - [x] v1.3: always-on services, one owner per hostname, zero-downtime deploys, app-port detection, private database networking
+- [x] v1.4: staff console (`/admin`): staff roles, append-only staff audit, customer 360, moderation queue and public abuse reports; session cookies no longer reach customer apps
 
-Product requirements: [`docs/prd/Syncbay_PRD_v1_3.md`](./docs/prd/Syncbay_PRD_v1_3.md) ([PDF](./docs/prd/Syncbay_PRD_v1_3.pdf)).
+Product requirements: [`docs/prd/Syncbay_PRD_v1_4.md`](./docs/prd/Syncbay_PRD_v1_4.md) ([PDF](./docs/prd/Syncbay_PRD_v1_4.pdf)).
