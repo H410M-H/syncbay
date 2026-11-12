@@ -47,7 +47,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  return new Response(createDeploymentLogStream({ deploymentId, signal: req.signal }), {
+  return new Response(createDeploymentLogStream({ deploymentId, signal: req.signal, lastEventId: req.headers.get("last-event-id") }), {
     headers: {
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-cache, no-transform",

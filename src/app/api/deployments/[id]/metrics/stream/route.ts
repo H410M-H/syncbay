@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { findAccessibleDeployment } from "@/lib/telemetry/log-stream";
+import { STREAM_MAX_MS } from "@/lib/telemetry/log-stream";
 import { fetchContainerMetrics, latestSamples, sampleToPoint, type TelemetryPoint } from "@/lib/telemetry/metrics-sampler";
 
 export const dynamic = "force-dynamic";
@@ -79,9 +80,13 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
 
       void tick();
       const interval = setInterval(() => void tick(), LIVE_INTERVAL_MS);
+      // End before the 300 s function limit; the browser's EventSource reconnects on its own.
+      const lifetime = setTimeout(() => cleanup(), STREAM_MAX_MS);
       const cleanup = () => {
+        if (closed) return;
         closed = true;
         clearInterval(interval);
+        clearTimeout(lifetime);
         try {
           controller.close();
         } catch {

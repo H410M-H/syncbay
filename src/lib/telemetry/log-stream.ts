@@ -55,7 +55,17 @@ interface StreamOptions {
   /** Proxy the runner SSE when there is no local or persisted history (default true). */
   allowRunnerProxy?: boolean;
   fetchFn?: typeof fetch;
+  /**
+   * The stream ends itself after this long (default 270 s), before the serverless function's own
+   * 300 s limit would kill it. The browser's EventSource reconnects and resumes from `lastEventId`.
+   */
+  maxDurationMs?: number;
+  /** `Last-Event-ID` of a reconnecting client: the persisted log `seq` it already has. */
+  lastEventId?: string | null;
 }
+
+/** Default lifetime of one SSE connection. */
+export const STREAM_MAX_MS = 270_000;
 
 function runnerCredentials(): { base: string; secret: string } | null {
   const base = getRunnerBaseUrl();
@@ -130,10 +140,14 @@ export function createDeploymentLogStream(options: StreamOptions): ReadableStrea
         }
         sentIds.add(entry.id);
         if (typeof entry.seq === "number" && entry.seq > lastSeq) lastSeq = entry.seq;
-        send(`data: ${JSON.stringify(entry)}\n\n`);
+        // The persisted sequence number is the resume point a reconnecting client sends back.
+        send(`${typeof entry.seq === "number" ? `id: ${entry.seq}\n` : ""}data: ${JSON.stringify(entry)}\n\n`);
       };
 
-      send(`: connected\n\n`);
+      send(`retry: 1000\n: connected\n\n`);
+      const resumeAfter = Number.parseInt(String(options.lastEventId ?? ""), 10);
+      const resuming = Number.isInteger(resumeAfter) && resumeAfter >= 0;
+      if (resuming) lastSeq = resumeAfter;
 
       // Subscribe first so nothing published during the replay is missed.
       const live: LogEntry[] = [];
@@ -146,11 +160,12 @@ export function createDeploymentLogStream(options: StreamOptions): ReadableStrea
 
       let persisted: LogEntry[] = [];
       try {
-        persisted = await loadPersistedLogs(deploymentId);
+        persisted = await loadPersistedLogs(deploymentId, resuming ? { afterSeq: resumeAfter } : {});
       } catch {
         persisted = [];
       }
-      const inProcess = logEventBus.getHistory(deploymentId);
+      // A resumed client already has the history; the persisted rows after its id cover the gap.
+      const inProcess = resuming ? [] : logEventBus.getHistory(deploymentId);
       for (const entry of persisted) emit(entry);
       for (const entry of inProcess) emit(entry);
       replaying = false;
@@ -159,7 +174,7 @@ export function createDeploymentLogStream(options: StreamOptions): ReadableStrea
 
       // Nothing local or persisted: follow the runner's own job log stream.
       const runner = options.allowRunnerProxy === false ? null : runnerCredentials();
-      if (persisted.length === 0 && inProcess.length === 0 && runner) {
+      if (!resuming && persisted.length === 0 && inProcess.length === 0 && runner) {
         mode = "runner";
         void (async () => {
           const apiPath = `/api/builds/${encodeURIComponent(deploymentId)}/logs`;
@@ -229,12 +244,18 @@ export function createDeploymentLogStream(options: StreamOptions): ReadableStrea
       void poll();
       const pollInterval = setInterval(poll, pollMs);
       const pingInterval = setInterval(() => send(`: ping\n\n`), 15000);
+      // End before the platform's function limit; EventSource reconnects with Last-Event-ID.
+      const lifetime = setTimeout(() => {
+        send(`event: reconnect\ndata: {}\n\n`);
+        cleanup();
+      }, options.maxDurationMs ?? STREAM_MAX_MS);
 
       const cleanup = () => {
         if (closed) return;
         closed = true;
         clearInterval(pollInterval);
         clearInterval(pingInterval);
+        clearTimeout(lifetime);
         unsubscribe();
         try {
           controller.close();
