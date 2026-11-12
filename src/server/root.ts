@@ -1,4 +1,5 @@
 import { createTRPCRouter } from "@/server/trpc";
+import { adminRouter } from "./routers/admin";
 import { workspaceRouter } from "@/server/routers/workspace";
 import { projectRouter } from "@/server/routers/project";
 import { serviceRouter } from "@/server/routers/service";
@@ -39,6 +40,7 @@ export const appRouter = createTRPCRouter({
   rd: rdRouter,
   billing: billingRouter,
   analytics: analyticsRouter,
+  admin: adminRouter,
 });
 
 export type AppRouter = typeof appRouter;

@@ -89,19 +89,23 @@ enum InvoiceStatus {
 // ─── USER & AUTH ──────────────────────────────────────────────────────────────
 
 model User {
-  id            String    @id @default(cuid())
-  email         String    @unique
-  name          String?
-  image         String?
-  emailVerified DateTime?
-  githubId      String?   @unique
-  passwordHash  String?
-  totpSecret    String?
-  totpEnabled   Boolean   @default(false)
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  id              String    @id @default(cuid())
+  email           String    @unique
+  name            String?
+  image           String?
+  emailVerified   DateTime?
+  githubId        String?   @unique
+  passwordHash    String?
+  totpSecret      String?
+  totpEnabled     Boolean   @default(false)
+  // Set by Syncbay staff; a suspended user cannot sign in or call the API.
+  suspendedAt     DateTime?
+  suspendedReason String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   memberships WorkspaceMember[]
+  staffMember StaffMember?      @relation("StaffMemberUser")
   apiTokens   ApiToken[]
   auditLogs   AuditLogEntry[]
   sessions    Session[]
@@ -154,20 +158,27 @@ model VerificationToken {
 // ─── WORKSPACES & TEAMS ───────────────────────────────────────────────────────
 
 model Workspace {
-  id               String   @id @default(cuid())
-  name             String
-  slug             String   @unique
-  isPersonal       Boolean  @default(false)
+  id                 String    @id @default(cuid())
+  name               String
+  slug               String    @unique
+  isPersonal         Boolean   @default(false)
   spendingCapCents   Int?
-  stripeCustomerId   String?  @unique // Team D: lets Stripe webhooks map customer → workspace
-  creditBalanceCents Int      @default(0)
+  stripeCustomerId   String?   @unique // Team D: lets Stripe webhooks map customer → workspace
+  creditBalanceCents Int       @default(0)
   // Team B — spending-cap notification state (once per calendar month)
   usageWarnedAt      DateTime?
   spendCapReachedAt  DateTime?
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  // Staff console: suspension (services stopped, deploys and wakes refused) and CRM fields.
+  suspendedAt        DateTime?
+  suspendedReason    String?
+  suspendedById      String?
+  lifecycleStage     String?
+  staffTags          String[]  @default([])
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   members        WorkspaceMember[]
+  customerNotes  CustomerNote[]
   projects       Project[]
   invites        WorkspaceInvite[]
   apiTokens      ApiToken[]
@@ -225,6 +236,7 @@ model Project {
   buckets      Bucket[]
   featureFlags FeatureFlag[]
 
+  @@index([workspaceId])
   @@map("projects")
 }
 
@@ -248,29 +260,32 @@ model Environment {
 // ─── SERVICES ─────────────────────────────────────────────────────────────────
 
 model Service {
-  id              String    @id @default(cuid())
-  environmentId   String
-  name            String
-  sourceType      String // "github" | "docker" | "empty"
-  repoUrl         String?
-  branch          String?
-  rootDir         String?
-  dockerImage     String?
-  buildCommand    String?
-  startCommand    String?
-  port            Int?
-  instanceType    String    @default("lite") // Cloudflare Containers instance type
+  id                 String    @id @default(cuid())
+  environmentId      String
+  name               String
+  sourceType         String // "github" | "docker" | "empty"
+  repoUrl            String?
+  branch             String?
+  rootDir            String?
+  dockerImage        String?
+  buildCommand       String?
+  startCommand       String?
   // The app's own listening port (inside its container). The host port a runner assigns to an
   // instance is stored per deployment (`Deployment.assignedPort`).
+  port               Int?
+  instanceType       String    @default("lite") // Cloudflare Containers instance type
   // Always-on unless the user opts in; PR previews opt in (pr-manager).
-  scaleToZero     Boolean   @default(false)
-  idleTimeoutSecs Int       @default(1800)
-  isPaused        Boolean   @default(false)
-  deletedAt       DateTime?
+  scaleToZero        Boolean   @default(false)
+  idleTimeoutSecs    Int       @default(1800)
+  isPaused           Boolean   @default(false)
+  // Set by Syncbay staff (moderation). Unlike isPaused, the customer cannot lift it.
+  moderationLockedAt DateTime?
+  moderationReason   String?
+  deletedAt          DateTime?
   // Team B — scale-to-zero activity tracking (DB fallback when Upstash is unset)
-  lastRequestAt   DateTime?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  lastRequestAt      DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   environment Environment           @relation(fields: [environmentId], references: [id], onDelete: Cascade)
   builds      Build[]
@@ -284,6 +299,7 @@ model Service {
   wafRules     WafRule[]
   canaryConfig CanaryConfig?
 
+  @@index([environmentId])
   @@map("services")
 }
 
@@ -477,9 +493,9 @@ model UsageRecord {
 
   workspace Workspace @relation(fields: [workspaceId], references: [id])
 
-  @@index([serviceId, periodStart])
   // Team B — one row per service, resource and hour (idempotent hourly writer)
   @@unique([serviceId, resourceType, periodStart])
+  @@index([serviceId, periodStart])
   @@map("usage_records")
 }
 
@@ -513,19 +529,19 @@ model Invoice {
 }
 
 model PaymentMethod {
-  id                    String    @id @default(cuid())
+  id                    String   @id @default(cuid())
   workspaceId           String
-  brand                 String    // "visa" | "mastercard" | "amex" | "discover"
-  last4                 String    // e.g. "4242"
-  expMonth              Int       // 1-12
-  expYear               Int       // e.g. 2028
+  brand                 String // "visa" | "mastercard" | "amex" | "discover"
+  last4                 String // e.g. "4242"
+  expMonth              Int // 1-12
+  expYear               Int // e.g. 2028
   cardholderName        String?
-  isDefault             Boolean   @default(false)
-  stripePaymentMethodId String?   @unique // Team D: always a real Stripe pm_… id
-  createdAt             DateTime  @default(now())
-  updatedAt             DateTime  @updatedAt
+  isDefault             Boolean  @default(false)
+  stripePaymentMethodId String?  @unique // Team D: always a real Stripe pm_… id
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
 
-  workspace             Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId])
   @@map("payment_methods")
@@ -544,6 +560,7 @@ model AuditLogEntry {
   workspace Workspace @relation(fields: [workspaceId], references: [id])
   actor     User?     @relation(fields: [actorUserId], references: [id])
 
+  @@index([workspaceId, createdAt])
   @@map("audit_log_entries")
 }
 
@@ -553,17 +570,17 @@ model AuditLogEntry {
 /// shell needs no row: its signed session token carries everything). Output is stored
 /// masked; env holds only the user's own `export`/`unset` overrides, never service secrets.
 model TerminalSession {
-  id             String    @id
+  id             String   @id
   serviceId      String
   userId         String
-  cwd            String    @default("/app")
-  envOverrides   Json      @default("{}")
-  history        Json      @default("[]")
-  buffer         String    @default("")
-  outputSeq      Int       @default(0)
-  version        Int       @default(0)
-  lastActivityAt DateTime  @default(now())
-  createdAt      DateTime  @default(now())
+  cwd            String   @default("/app")
+  envOverrides   Json     @default("{}")
+  history        Json     @default("[]")
+  buffer         String   @default("")
+  outputSeq      Int      @default(0)
+  version        Int      @default(0)
+  lastActivityAt DateTime @default(now())
+  createdAt      DateTime @default(now())
 
   @@index([serviceId])
   @@index([lastActivityAt])
@@ -800,4 +817,93 @@ model CanaryConfig {
   service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
 
   @@map("canary_configs")
+}
+
+// ─── STAFF CONSOLE (/admin) ──────────────────────────────────────────────────
+// Syncbay employees. Customer roles (WorkspaceMember) are separate and grant nothing here.
+
+enum StaffRole {
+  SUPER_ADMIN
+  ADMIN
+  SUPPORT
+  MODERATOR
+  BILLING
+  VIEWER
+}
+
+model StaffMember {
+  id          String    @id @default(cuid())
+  userId      String    @unique
+  role        StaffRole
+  grantedById String?
+  note        String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  revokedAt   DateTime?
+
+  user User @relation("StaffMemberUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("staff_members")
+}
+
+/// Append-only record of every staff action, allowed or denied. A database trigger rejects
+/// UPDATE and DELETE; retention crons never touch it.
+model StaffAuditEvent {
+  id          String   @id @default(cuid())
+  actorUserId String?
+  actorRole   String?
+  action      String
+  permission  String?
+  outcome     String // ALLOWED | DENIED | FAILED
+  targetType  String?
+  targetId    String?
+  workspaceId String?
+  reason      String?
+  ip          String?
+  userAgent   String?
+  metadata    Json?
+  createdAt   DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([targetType, targetId])
+  @@index([actorUserId, createdAt])
+  @@map("staff_audit_events")
+}
+
+model AbuseReport {
+  id            String    @id @default(cuid())
+  category      String // PHISHING | MALWARE | CRYPTO_MINING | SPAM | CSAM | COPYRIGHT | ILLEGAL | FRAUD | OTHER
+  priority      Int // 0 (highest) – 3
+  url           String?
+  targetHost    String?
+  serviceId     String?
+  workspaceId   String?
+  description   String
+  reporterEmail String?
+  reporterIp    String?
+  status        String    @default("OPEN") // OPEN | IN_REVIEW | ACTIONED | DISMISSED
+  assigneeId    String?
+  resolution    String?
+  resolvedAt    DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([status, priority, createdAt])
+  @@index([targetHost])
+  @@map("abuse_reports")
+}
+
+model CustomerNote {
+  id          String    @id @default(cuid())
+  workspaceId String
+  authorId    String
+  body        String
+  pinned      Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  deletedAt   DateTime?
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, createdAt])
+  @@map("customer_notes")
 }

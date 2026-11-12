@@ -39,7 +39,7 @@ export async function validateBearerToken(
     where: { tokenHash },
     include: {
       workspace: true,
-      user: true,
+      user: { select: { id: true, name: true, email: true, image: true, suspendedAt: true } },
     },
   });
 
@@ -49,6 +49,10 @@ export async function validateBearerToken(
 
   if (tokenRecord.revokedAt) {
     throw new Error("API token has been revoked");
+  }
+
+  if (tokenRecord.user?.suspendedAt || tokenRecord.workspace?.suspendedAt) {
+    throw new Error("This account or workspace is suspended. Contact support@syncbay.app.");
   }
 
   // Update lastUsedAt asynchronously

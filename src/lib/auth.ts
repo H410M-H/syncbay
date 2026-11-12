@@ -238,6 +238,8 @@ export const authOptions: NextAuthOptions = {
         return false;
       }
       user.id = persistedUser.id;
+      // Suspended by Syncbay staff: no new sessions.
+      if ((persistedUser as { suspendedAt?: Date | null }).suspendedAt) return "/auth/signin?error=AccountSuspended";
 
       // Auto-create personal workspace on first sign-in — FR-AUTH-04
       try {

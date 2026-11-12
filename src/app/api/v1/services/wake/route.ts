@@ -13,6 +13,7 @@ import { db } from "@/lib/db";
 import { executeDeployment } from "@/lib/orchestrator/engine";
 import { hasValidRunnerSecret } from "@/lib/edge/runner-auth";
 import { isWorkspaceOverSpendingCap } from "@/lib/usage/metering";
+import { serviceBlockReason } from "@/lib/admin/guards";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -76,6 +77,11 @@ export async function POST(req: NextRequest) {
       { error: "Workspace spending cap reached; raise the cap to wake this service" },
       { status: 402 }
     );
+  }
+
+  const blocked = await serviceBlockReason(service.id);
+  if (blocked) {
+    return NextResponse.json({ error: blocked }, { status: 403 });
   }
 
   const latest = service.deployments[0];
