@@ -58,7 +58,15 @@
 - [x] **Private database networking.** Apps reach a database on the same runner through the Docker bridge; the registry of databases survives a runner restart; optional `RUNNER_DB_PORT_RANGE`
 - [x] Repository cleanup: stale planning files, generated graph output and a committed tunnel script removed
 
+## Completed — v1.4 (staff console and security)
+- [x] Syncbay session cookies are stripped from traffic forwarded to customer apps (edge and runner); workspace endpoints no longer return password hashes
+- [x] Staff console `/admin`: roles (super admin, admin, support, moderator, billing, viewer), reason-gated actions, append-only staff audit, `SUPER_ADMIN_EMAILS` bootstrap
+- [x] Customer 360 (search by email/slug/host/Stripe id, notes, lifecycle, tags), workspace and user suspension, service take-down, public abuse reports and moderation queue
+- [x] Unattended deploys use a working GitHub token of the project's workspace; log streams end before the 300 s function limit and resume
+- [x] pgAdmin over an SSH tunnel documented in the Databases page
+
 ## Next
+- [ ] Staff console: separate staff session and passkeys; "suspended" page and customer emails with appeals; runner host cost registry and margin; dunning and refunds; automatic abuse signals (Web Risk, crypto-mining); CSV exports
 - [ ] Per-environment Docker networks so tenants on one runner cannot reach each other's containers
 - [ ] Persist runner launch specs so restart and rollback work after the runner itself restarts
 - [ ] Health monitoring of live instances (mark CRASHED, restart, alert) between deploys

@@ -1,6 +1,6 @@
 # Syncbay — Product Requirements Document
 
-**Version 1.3 · 11 November 2026 · MSNS-DEV**
+**Version 1.4 · 12 November 2026 · MSNS-DEV**
 Supersedes *Portway PRD v0.1* (2 September 2026). The product was renamed **Syncbay** (`syncbay.app`).
 
 | Version | Date | Change |
@@ -8,7 +8,8 @@ Supersedes *Portway PRD v0.1* (2 September 2026). The product was renamed **Sync
 | 0.1 | 2 Sep 2026 | Initial draft under the working name Portway: scope, requirements, Cloudflare Containers data plane |
 | 1.1 | Oct 2026 | Backend made real: durable deploys, logs, metrics, usage, billing, managed databases |
 | 1.2 | Nov 2026 | Self-hosted runner in production, runner preflight, project actions, live analytics |
-| **1.3** | **11 Nov 2026** | **Availability and build reliability; this revision. Adds §9 (incident review) and §10 (recommendations)** |
+| 1.3 | 11 Nov 2026 | Availability and build reliability; incident review (§9) and recommendations (§10) |
+| **1.4** | **12 Nov 2026** | **Staff console (§16), security fixes and production log review (§9.2); this revision** |
 
 ---
 
@@ -188,6 +189,7 @@ flowchart TB
 - The stored connection URL carries the runner's public address, for external tools.
 - When the runner starts an app, it rewrites URLs that point at one of its own databases to the private address. Apps need no open port.
 - External access is the operator's choice: open the database port range in the firewall, or leave it closed.
+- **pgAdmin, DBeaver, psql from a laptop:** use an SSH tunnel (pgAdmin's *SSH Tunnel* tab, or `ssh -N -L 15432:127.0.0.1:<db-port> root@<runner>`). The database port stays closed.
 
 ## 8. Data model (core)
 
@@ -243,6 +245,24 @@ Reports from the first production users: *"my project goes to sleep"*, *"another
 | 8 | Secrets visible in build logs | Environment values were written into `docker run` and `nixpacks` command lines | Values travel in the process environment; command lines carry names only |
 
 Verified by: 8 deploy scenarios against a real Docker daemon, 7 availability checks against real Postgres and a runner process, and the existing lifecycle, project, observability and edge suites.
+
+### 9.2 Production log review — 12 November 2026
+
+After v1.3 went live, the Vercel runtime errors showed what was still wrong:
+
+| Error | Cause | Fix in v1.4 |
+| --- | --- | --- |
+| `Health check failed … within 10000ms` after the release | The runner host had not been updated, so it still ran the old image | Operator action: update the runner (Appendix B) |
+| `could not read Username for 'https://github.com'` from the cron | Deploys started by the cron or a webhook had no signed-in user, so private repositories were cloned without a token | A working GitHub token of the project's workspace is used; revoked tokens are cleared and skipped |
+| GitHub `401` on the repository list | The leaked OAuth token had been revoked | The user is asked to sign in with GitHub again |
+| `Nixpacks was unable to generate a build plan` | The always-on restart woke a legacy empty service; the starter app had no `package.json` | Starter app gets a `package.json`; always-on only restarts services with a source that were live in the last 30 days |
+| `Task timed out after 300 seconds` on log streams | Server-sent event streams never ended on their own | Streams end after 270 s and the browser resumes from the last log line |
+| pgAdmin `connection timeout` to the database port | The port is closed in the cloud firewall | Connect through an SSH tunnel; no port has to be opened (§7.2) |
+
+Two security problems were found while designing the staff console and fixed first:
+
+1. **Session cookies reached customer apps.** The login cookie is scoped to `.syncbay.app` so the wake button works on service hosts. The edge forwarded every request header, so a customer's app received the session token of everyone who visited it. Syncbay cookies are now removed before traffic is forwarded, at the edge and again in the runner.
+2. **Password hashes in API responses.** Two workspace endpoints returned whole user rows (including `passwordHash` and `totpSecret`) to other members. They now return name, email and avatar only.
 
 ## 10. Recommendations
 
@@ -363,6 +383,122 @@ gantt
 3. Should Syncbay issue certificates for custom domains itself (Caddy on the runner) where Cloudflare SSL for SaaS is not available?
 4. Which regions get the first additional runners?
 
+## 16. Staff console (`/admin`)
+
+Syncbay employees need one place to support customers, act on abuse and watch the business. Four research agents studied access control, customer 360 (CRM), trust and safety, and operations/ERP practice at Stripe, GitHub, Google, Vercel, Railway, Render, Cloudflare, HubSpot, Intercom, ChartMogul and others. v1 below is what shipped; §16.6 lists what is next.
+
+### 16.1 Roles and permissions
+
+| Permission | Super admin | Admin | Support | Moderator | Billing | Viewer |
+| --- | --- | --- | --- | --- | --- | --- |
+| Open console, overview, workspaces, users | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Revenue (MRR, month to date) | ✓ | ✓ |  |  | ✓ | ✓ |
+| Billing details of a workspace | ✓ | ✓ | ✓ |  | ✓ | ✓ |
+| Notes on a customer | ✓ | ✓ | ✓ | ✓ | ✓ |  |
+| Lifecycle stage and tags | ✓ | ✓ | ✓ |  | ✓ |  |
+| Suspend / unsuspend a workspace | ✓ ✎ | ✓ ✎ |  | ✓ ✎ | ✓ ✎ |  |
+| Suspend / unsuspend a user | ✓ ✎ | ✓ ✎ |  | ✓ ✎ |  |  |
+| Take down / restore a service | ✓ ✎ | ✓ ✎ |  | ✓ ✎ |  |  |
+| Abuse queue: read | ✓ | ✓ | ✓ | ✓ |  | ✓ |
+| Abuse queue: assign, resolve | ✓ | ✓ |  | ✓ |  |  |
+| Staff list; grant Support/Moderator/Billing/Viewer | ✓ | ✓ |  |  |  |  |
+| Grant or revoke Admin / Super admin | ✓ ✎ |  |  |  |  |  |
+| Audit log | all | all | own | own | own |  |
+
+✎ = needs a written reason; destructive actions also need the target's name typed. Nobody can see environment variable values, database passwords or OAuth tokens.
+
+### 16.2 How access is enforced
+
+```mermaid
+flowchart TB
+  req[Request to /admin or admin API] --> sess{Signed in?}
+  sess -- no --> signin[Sign-in page]
+  sess -- yes --> staff{Active StaffMember,<br/>user not suspended?}
+  staff -- no --> nf[404 Not found]
+  staff -- yes --> perm{Role has<br/>permission?}
+  perm -- no --> deny[403 + DENIED audit row]
+  perm -- yes --> reason{Reason / typed<br/>name required?}
+  reason -- missing --> bad[400]
+  reason -- ok --> act[Action] --> audit[(Append-only<br/>staff audit log)]
+  act --> cust[(Customer audit log:<br/>'Syncbay staff')]
+```
+
+- Roles are read from the database on every request, so revoking access works at once.
+- `SUPER_ADMIN_EMAILS` bootstraps the first super admins. It only counts for an account signed in with GitHub or Google (an email the provider verified), never a password-only account. Such admins cannot be revoked from the console.
+- The last super admin cannot be removed: the check runs under a database lock.
+- The staff audit log is append-only. A database trigger rejects updates and deletes.
+
+### 16.3 Moderation
+
+```mermaid
+stateDiagram-v2
+  [*] --> OPEN: public report form
+  OPEN --> IN_REVIEW: assigned
+  IN_REVIEW --> ACTIONED: take down service / suspend workspace / note
+  IN_REVIEW --> DISMISSED
+  ACTIONED --> [*]
+  DISMISSED --> [*]
+```
+
+- **Public form:** `/report-abuse` needs no login. It is protected by a honeypot, a minimum time on the form, a per-IP limit and de-duplication.
+- **Linking and priority:** a report is linked to the service that serves the reported host. Priority comes from the category: CSAM, phishing and malware first, copyright last.
+- **Take down vs pause:** a take-down stops the service and sets a lock that the owner cannot lift (unlike their own pause).
+- **Suspension** stops every service in the workspace. While it lasts, deploys fail with an explanation, and resume and wake are refused. The always-on restart skips the workspace, and API tokens are rejected.
+- **Suspended users** can't sign in. Their sessions are refused within 30 seconds.
+
+### 16.4 Customer 360
+
+- **Search** accepts an email, workspace slug, service hostname, Stripe customer id or raw id.
+- **The workspace page shows:**
+  - owner and members;
+  - projects and services, with the latest deployment, domains and variable *names*;
+  - databases (name and status only);
+  - billing and month-to-date usage (billing roles only);
+  - abuse reports, the customer's audit log, and pinned notes;
+  - lifecycle stage and tags.
+
+### 16.5 Data model
+
+```mermaid
+erDiagram
+  USER ||--o| STAFF_MEMBER : "is staff"
+  WORKSPACE ||--o{ CUSTOMER_NOTE : has
+  WORKSPACE ||--o{ ABUSE_REPORT : "reported in"
+  SERVICE ||--o{ ABUSE_REPORT : "reported in"
+  STAFF_MEMBER {
+    enum role
+    datetime revokedAt
+  }
+  STAFF_AUDIT_EVENT {
+    string action
+    string outcome
+    string reason
+    string ip
+  }
+  ABUSE_REPORT {
+    string category
+    int priority
+    string status
+  }
+  WORKSPACE {
+    datetime suspendedAt
+    string lifecycleStage
+    string_array staffTags
+  }
+```
+
+### 16.6 Next for the console
+
+| Priority | Item | Why |
+| --- | --- | --- |
+| 1 | Separate staff session (own host-only cookie, 8 h / 30 min idle) and passkeys for staff | Staff access should not ride on the customer session |
+| 2 | "Suspended" page on the service hostname and customer emails with a statement of reasons; appeals | Customers and visitors should know what happened and how to appeal |
+| 3 | Runner host registry with monthly cost; gross margin; capacity | ERP view of infrastructure cost vs revenue |
+| 4 | Dunning queue, credits and refunds through Stripe with two-person approval over $500 | Billing operations without the Stripe dashboard |
+| 5 | Automatic signals: Google Web Risk on new hosts, crypto-mining detection, brand words in new hostnames | Find abuse before reports arrive |
+| 6 | CSV exports, saved views, assigned account managers | Day-to-day CRM work |
+| 7 | Consent-based read-only impersonation (1 hour, customer notified) | Faster support without broad access |
+
 ## Appendix A — Runner settings added in v1.3
 
 | Variable | Default | Purpose |
@@ -381,3 +517,9 @@ curl -fsS https://runner.syncbay.app/health
 ```
 
 Running app and database containers are not interrupted by a runner update.
+
+## Appendix C — Settings added in v1.4
+
+| Variable | Where | Purpose |
+| --- | --- | --- |
+| `SUPER_ADMIN_EMAILS` | Vercel | Emails that are always super admin (GitHub or Google sign-in required) |
