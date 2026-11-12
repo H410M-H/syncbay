@@ -9,7 +9,7 @@
  */
 
 import { db } from "@/lib/db";
-import { generateDefaultSubdomain } from "@/lib/domain-service";
+import { resolveServiceHostnames } from "@/lib/domains/service-hosts";
 import { registerServiceRouteAsync, removeServiceRouteAsync } from "@/lib/edge/service-registry";
 import { getRunnerDriver, type RestartContainerResult, type RunnerDriver, type RunnerDriverType } from "./runner-driver";
 import { cancelDeploymentJob, completeDeploymentJob } from "./job-queue";
@@ -24,30 +24,8 @@ const IN_FLIGHT_STATUSES = ["QUEUED", "BUILDING", "DEPLOYING"];
 
 // ─── Shared helpers ──────────────────────────────────────────────────────────
 
-/** Every hostname the engine routes for a service (default subdomain, domains, PR host, *.localhost aliases). */
-export function resolveServiceHostnames(service: {
-  name?: string | null;
-  environment?: { name?: string | null; isPrEnv?: boolean | null; prNumber?: number | null } | null;
-  domains?: Array<{ hostname?: string | null }> | null;
-}): string[] {
-  const hosts = new Set<string>();
-  const serviceName = service.name || "web";
-  const addPlatform = (host: string) => {
-    hosts.add(host);
-    if (host.endsWith(".syncbay.app")) {
-      const sub = host.slice(0, -".syncbay.app".length);
-      hosts.add(`${sub}.localhost`);
-      hosts.add(sub);
-    }
-  };
-  addPlatform(generateDefaultSubdomain(serviceName, service.environment?.name || "production"));
-  for (const d of service.domains || []) if (d.hostname) addPlatform(d.hostname.toLowerCase());
-  if (service.environment?.isPrEnv && service.environment.prNumber) {
-    hosts.add(`${serviceName}-pr-${service.environment.prNumber}.syncbay.app`);
-    hosts.add(`${serviceName}-pr-${service.environment.prNumber}.localhost`);
-  }
-  return [...hosts];
-}
+// Re-exported for the callers that already import hostnames from the lifecycle module.
+export { resolveServiceHostnames };
 
 /**
  * The driver that hosts a deployment's instance (falls back to the configured default).
@@ -97,12 +75,6 @@ async function loadServiceForRouting(serviceId: string, client: Client) {
     where: { id: serviceId },
     include: { domains: true, environment: true },
   });
-}
-
-/** DB edge resolution (`resolveServiceRouteFromDb`) reads `service.port` as the live port. */
-async function setServicePort(client: Client, serviceId: string, port?: number): Promise<void> {
-  if (!port || typeof client.service?.update !== "function") return;
-  await client.service.update({ where: { id: serviceId }, data: { port } }).catch(() => null);
 }
 
 async function setRoutes(hosts: string[], status: string, port?: number, isLocal?: boolean): Promise<void> {
@@ -184,7 +156,6 @@ export async function onDeploymentActive(ctx: ActiveDeploymentContext, client: C
         }
         if (newer.assignedPort) {
           await setRoutes(ctx.hosts, "ACTIVE", newer.assignedPort, newer.runnerDriver === "local");
-          await setServicePort(client, ctx.serviceId, newer.assignedPort);
         }
       } else {
         for (const old of others) {
@@ -384,7 +355,6 @@ export async function restartServiceInstance(serviceId: string, userId?: string,
       });
       const service = await loadServiceForRouting(serviceId, client);
       if (service && port) await setRoutes(resolveServiceHostnames(service), "ACTIVE", port, driver.type === "local");
-      await setServicePort(client, serviceId, port);
       await requestTunnelReload(`restart:${serviceId}`);
       return { mode: "restart", deploymentId: active.id, containerId: res.containerId, port };
     }
@@ -407,7 +377,6 @@ export async function rollbackToDeployment(
     if (res?.restarted && port) {
       const service = await loadServiceForRouting(target.serviceId, client);
       if (service) await setRoutes(resolveServiceHostnames(service), "ACTIVE", port, driver.type === "local");
-      await setServicePort(client, target.serviceId, port);
       await client.deployment.update({
         where: { id: target.id },
         data: { status: "ACTIVE", cfContainerId: res.containerId, assignedPort: port, completedAt: new Date() },

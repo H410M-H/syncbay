@@ -3,7 +3,8 @@ import { logEventBus } from "@/lib/telemetry/event-bus";
 import { detectRuntime } from "@/lib/buildpack/detector";
 import { generateNixpacksPlan } from "@/lib/buildpack/nixpacks";
 import { resolveEnvironmentVariables, type DatabaseRef } from "@/lib/buildpack/resolver";
-import { generateDefaultSubdomain } from "@/lib/domain-service";
+import { generateDefaultSubdomain, resolveServiceHostnames } from "@/lib/domains/service-hosts";
+import { claimDefaultHostname } from "@/lib/domains/claim";
 import { runKnipAnalysis } from "@/lib/buildpack/knip-analyzer";
 import { registerServiceRouteAsync } from "@/lib/edge/service-registry";
 import { applyDatabaseEnv } from "@/lib/database-provider";
@@ -30,6 +31,29 @@ export interface TriggerOptions {
   driverType?: "LOCAL" | "CLOUD" | "webhook" | "queue" | "ssh" | "local";
   /** Recovery: resume polling a runner job that is already building this deployment. */
   resume?: { runnerJobId: string; driverType: string };
+  /** How long to poll the runner before handing off to the recovery sweep (default `DEPLOY_POLL_BUDGET_MS`). */
+  pollBudgetMs?: number;
+}
+
+interface LiveRoute {
+  port: number;
+  isLocal: boolean;
+}
+
+/** The instance currently serving a service (its newest ACTIVE deployment other than `exceptDeploymentId`). */
+async function findLiveRoute(serviceId: string, exceptDeploymentId: string): Promise<LiveRoute | null> {
+  try {
+    const live = await db.deployment.findFirst({
+      where: { serviceId, status: "ACTIVE", id: { not: exceptDeploymentId }, assignedPort: { not: null } },
+      orderBy: { createdAt: "desc" },
+      select: { assignedPort: true, runnerDriver: true, cfContainerId: true },
+    });
+    if (!live?.assignedPort) return null;
+    const isLocal = live.runnerDriver === "local" || Boolean(live.cfContainerId?.startsWith("proc_") && !process.env.RUNNER_URL);
+    return { port: live.assignedPort, isLocal };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -55,6 +79,17 @@ export async function executeDeployment(
   };
 
   const targetHostnames = new Set<string>();
+  let liveRoute: LiveRoute | null = null;
+  /** Routes for a deploy in progress: the live version keeps its route; otherwise the splash shows `status`. */
+  const setInFlightRoutes = async (status: "BUILDING" | "DEPLOYING" | "FAILED") => {
+    for (const host of targetHostnames) {
+      if (liveRoute) {
+        await registerServiceRouteAsync(host, liveRoute.port, "ACTIVE", `http://127.0.0.1:${liveRoute.port}`, liveRoute.isLocal);
+      } else {
+        await registerServiceRouteAsync(host, undefined, status);
+      }
+    }
+  };
 
   try {
     log(`[syncbay] Deployment initiated for service ${serviceId}`, "system");
@@ -91,37 +126,28 @@ export async function executeDeployment(
 
     const envName = service?.environment?.name || "production";
     const serviceName = service?.name || "web";
-    const defaultUrl = generateDefaultSubdomain(serviceName, envName);
+    // The service answers on its own Domain rows. The generated platform host is claimed here
+    // (suffixed when another service already owns `<service>-<env>.syncbay.app`), never assumed
+    // from the name: two services with the same name must not route each other's address.
+    const defaultUrl = service
+      ? await claimDefaultHostname(db, { id: service.id, name: serviceName, environment: { name: envName } }).catch(() =>
+          generateDefaultSubdomain(serviceName, envName)
+        )
+      : generateDefaultSubdomain(serviceName, envName);
+    for (const host of resolveServiceHostnames({
+      name: serviceName,
+      environment: service?.environment,
+      domains: [{ hostname: defaultUrl, isGenerated: true }, ...(service?.domains || [])],
+    })) {
+      targetHostnames.add(host);
+    }
 
-    // Collect all relevant domain hostnames for this service
-    targetHostnames.add(defaultUrl);
-    if (defaultUrl.endsWith(".syncbay.app")) {
-      const sub = defaultUrl.slice(0, -".syncbay.app".length);
-      targetHostnames.add(`${sub}.localhost`);
-      targetHostnames.add(sub);
-    }
-    if (service?.domains) {
-      for (const d of service.domains) {
-        if (d.hostname) {
-          targetHostnames.add(d.hostname);
-          if (d.hostname.endsWith(".syncbay.app")) {
-            const dSub = d.hostname.slice(0, -".syncbay.app".length);
-            targetHostnames.add(`${dSub}.localhost`);
-            targetHostnames.add(dSub);
-          }
-        }
-      }
-    }
-    if (service?.environment?.isPrEnv && service?.environment?.prNumber) {
-      const prHost = `${serviceName}-pr-${service.environment.prNumber}.syncbay.app`;
-      targetHostnames.add(prHost);
-      targetHostnames.add(`${serviceName}-pr-${service.environment.prNumber}.localhost`);
-    }
+    // A version that is already live keeps serving while this one builds (and stays live if this
+    // one fails). Only a service with nothing running shows the build splash.
+    liveRoute = await findLiveRoute(serviceId, deploymentId);
 
     // Register initial state in Edge Service Registry (routes traffic to preview splash while building)
-    for (const host of targetHostnames) {
-      await registerServiceRouteAsync(host, undefined, "BUILDING");
-    }
+    await setInFlightRoutes("BUILDING");
 
     // Check if repository needs authenticated git clone credentials
     let resolvedRepoUrl = service?.repoUrl || undefined;
@@ -146,20 +172,6 @@ export async function executeDeployment(
       } catch {
         // Keep original repoUrl
       }
-    }
-
-    // Ensure default domain record is persisted in DB
-    if (service) {
-      await (db.domain as any).upsert({
-        where: { hostname: defaultUrl },
-        update: { status: "ACTIVE" },
-        create: {
-          serviceId: service.id,
-          hostname: defaultUrl,
-          isGenerated: true,
-          status: "ACTIVE",
-        },
-      }).catch(() => null);
     }
 
     // Defer runtime detection and build plan generation to the runner
@@ -200,9 +212,7 @@ export async function executeDeployment(
       data: { status: "DEPLOYING" },
     }).catch(() => null);
 
-    for (const host of targetHostnames) {
-      await registerServiceRouteAsync(host, undefined, "DEPLOYING");
-    }
+    await setInFlightRoutes("DEPLOYING");
 
     // Phase 2.5: Dispatch to Runner Driver Subsystem
     let driver = getRunnerDriver((options.resume?.driverType as TriggerOptions["driverType"]) ?? options.driverType);
@@ -296,7 +306,7 @@ export async function executeDeployment(
     if (finalStatus !== "ACTIVE" && finalStatus !== "FAILED" && finalStatus !== "CANCELLED") {
       log(`[runner] Build job ${dispatchRes.jobId} enqueued/running. Awaiting completion...`, "system");
       const pollStart = Date.now();
-      const timeoutMs = deployPollBudgetMs();
+      const timeoutMs = options.pollBudgetMs ?? deployPollBudgetMs();
       let lastRenew = Date.now();
       let lastLogCount = 0;
       let consecutivePollErrors = 0;
@@ -404,6 +414,8 @@ export async function executeDeployment(
     }
 
     if (!isHealthy) {
+      // The runner started this instance; do not leave it running behind a failed deployment.
+      if (containerId) await driver.stopContainer(containerId).catch(() => null);
       throw new Error(
         `Deployment health check failed: application on port ${targetPort} did not respond to HTTP probes on ${healthPath} or /`
       );
@@ -433,11 +445,13 @@ export async function executeDeployment(
       },
     }).catch(() => null);
 
-    if (typeof (db.service as any)?.update === "function") {
-      await (db.service as any).update({
-        where: { id: serviceId },
-        data: { port: targetPort },
-      }).catch(() => null);
+    // `Service.port` is the port the app listens on inside its container. The host port the runner
+    // assigned lives on the deployment (`assignedPort`). When the runner had to detect the app's
+    // real port, remember it so the next deploy maps it correctly on the first try.
+    const detectedAppPort = Number(runnerMeta.containerPort);
+    if (Number.isInteger(detectedAppPort) && detectedAppPort > 0 && detectedAppPort !== service?.port && typeof (db.service as any)?.update === "function") {
+      await (db.service as any).update({ where: { id: serviceId }, data: { port: detectedAppPort } }).catch(() => null);
+      log(`[deploy] The app listens on port ${detectedAppPort}; saved as the service port`, "system");
     }
 
     await onDeploymentActive({
@@ -460,9 +474,7 @@ export async function executeDeployment(
     log(`[error] Deployment failed: ${error.message}`, "stderr");
     logEventBus.recordError(deploymentId, error.message);
 
-    for (const host of targetHostnames) {
-      await registerServiceRouteAsync(host, undefined, "FAILED");
-    }
+    await setInFlightRoutes("FAILED");
 
     await db.build.update({
       where: { id: buildId },

@@ -114,3 +114,7 @@ See [`ROADMAP.md`](./ROADMAP.md).
 - [x] Managed Postgres/Redis and web terminal
 - [x] GitHub Actions CI and env validation
 - [x] v1.1: durable deploys, persistent logs/metrics/usage, scale-to-zero, Stripe + R2, DB-backed WAF/cron/canary, real Query Studio
+- [x] v1.2: runner preflight, project actions, live analytics and traffic counters
+- [x] v1.3: always-on services, one owner per hostname, zero-downtime deploys, app-port detection, private database networking
+
+Product requirements: [`docs/prd/Syncbay_PRD_v1_3.md`](./docs/prd/Syncbay_PRD_v1_3.md) ([PDF](./docs/prd/Syncbay_PRD_v1_3.pdf)).

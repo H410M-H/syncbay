@@ -62,7 +62,7 @@ function NewServiceWizardContent() {
   const [startCommand, setStartCommand] = useState("");
   const [port, setPort] = useState(3000);
   const [instanceType, setInstanceType] = useState<"lite" | "standard-1" | "standard-2" | "standard-4">("lite");
-  const [scaleToZero, setScaleToZero] = useState(true);
+  const [scaleToZero, setScaleToZero] = useState(false);
   const [deployImmediately, setDeployImmediately] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
@@ -408,7 +408,7 @@ function NewServiceWizardContent() {
             <div>
               <div style={{ fontWeight: 600, fontSize: "0.875rem" }}>Enable Scale-to-Zero</div>
               <div style={{ fontSize: "0.8125rem", color: "var(--text-muted)", marginTop: "2px" }}>
-                Powers down container when idle for 300 seconds to conserve compute credits. Wakes up upon next request in ~250ms.
+                Off by default: the service runs around the clock. When enabled, it stops after 30 minutes without requests and starts again on the next visit (that first visitor waits while it starts).
               </div>
             </div>
           </label>

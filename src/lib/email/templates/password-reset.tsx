@@ -13,7 +13,7 @@ export const PasswordResetEmail = ({
   return (
     <Html>
       <Head />
-      <Preview>Reset your SyncBay password</Preview>
+      <Preview>Reset your Syncbay password</Preview>
       <Tailwind>
         <Body className="bg-[#09090b] text-[#fafafa] font-sans">
           <Container className="mx-auto p-4 max-w-2xl">
@@ -30,7 +30,7 @@ export const PasswordResetEmail = ({
             <Section className="bg-[#18181b] border border-[#27272a] rounded-lg p-8">
               <Text className="text-xl font-semibold mb-4 text-white">Reset Password</Text>
               <Text className="text-[#a1a1aa] mb-6 leading-relaxed">
-                We received a request to reset the password for your SyncBay account associated with <strong className="text-white">{userEmail}</strong>.
+                We received a request to reset the password for your Syncbay account associated with <strong className="text-white">{userEmail}</strong>.
               </Text>
               <Section className="text-center mt-6 mb-6">
                 <Button 

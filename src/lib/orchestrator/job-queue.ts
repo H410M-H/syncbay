@@ -312,6 +312,7 @@ export async function getQueueJobStatus(jobId: string, client: Client = db): Pro
     errorMessage: job.errorMessage || undefined,
     metadata: {
       simulated: Boolean(result.simulated),
+      ...(typeof result.containerPort === "number" ? { containerPort: result.containerPort } : {}),
       // The runner probes the app before it reports success; without RUNNER_URL the
       // control plane has no network path of its own to the runner host.
       healthVerifiedByRunner: job.status === "SUCCEEDED",

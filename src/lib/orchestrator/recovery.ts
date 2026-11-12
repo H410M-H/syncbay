@@ -26,6 +26,8 @@ export interface RecoveryOptions {
   graceMs?: number;
   /** In-flight deployments without a job row older than this are failed (default 30 min). */
   legacyStaleMs?: number;
+  /** Poll budget for resumed deployments; the cron passes one that fits inside its own time limit. */
+  pollBudgetMs?: number;
   /** Injection point for tests; defaults to `executeDeployment`. */
   execute?: typeof executeDeployment;
 }
@@ -103,7 +105,11 @@ export async function recoverStaleDeployments(opts: RecoveryOptions = {}): Promi
     });
     if (claimed.count === 0) return;
 
-    const options: TriggerOptions = { ...(job.options || {}), serviceId: job.serviceId };
+    const options: TriggerOptions = {
+      ...(job.options || {}),
+      serviceId: job.serviceId,
+      ...(opts.pollBudgetMs ? { pollBudgetMs: opts.pollBudgetMs } : {}),
+    };
     const canResume = Boolean(job.runnerJobId) && job.driverType && job.driverType !== "local";
     try {
       if (canResume) {

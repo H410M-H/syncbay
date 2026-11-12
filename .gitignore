@@ -44,8 +44,8 @@ next-env.d.ts
 # agent internal workspace
 .agents/
 
-# graphify cache
-graphify-out/cache/
+# graphify output (generated)
+graphify-out/
 
 # runner workspaces
 .runner_workspace/

@@ -497,6 +497,36 @@ async function introspectRedis(target: QueryTarget): Promise<TableSchema[]> {
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
+const UNREACHABLE = /ETIMEDOUT|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ENOTFOUND|connection timeout|timeout expired|connect timeout|Connection is closed/i;
+
+/**
+ * A network failure gets an answer the user can act on. The control plane connects from outside
+ * the runner, so a database on a self-hosted runner is reachable only when its port is open.
+ */
+async function reachable<T>(target: QueryTarget, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (err) {
+    const message = (err as Error)?.message || String(err);
+    const code = (err as { code?: string })?.code || "";
+    if (!UNREACHABLE.test(`${code} ${message}`)) throw err;
+    let where = "the database";
+    let port = "";
+    try {
+      const url = new URL(target.connectionUrl);
+      where = `${url.hostname}:${url.port}`;
+      port = url.port;
+    } catch {
+      // keep the generic wording
+    }
+    throw new Error(
+      `Could not reach ${where} (${code || "connection timed out"}). Services on the same runner connect over the private network and are not affected. ` +
+        `For Query Studio and external tools, open TCP port ${port || "of the database"} in the runner host's firewall or security group ` +
+        `(set RUNNER_DB_PORT_RANGE on the runner to keep database ports in one small range).`
+    );
+  }
+}
+
 /** Executes one query/command against a managed database. */
 export async function executeQuery(target: QueryTarget, rawQuery: string, options: QueryOptions = {}): Promise<QueryResult> {
   const query = (rawQuery || "").trim();
@@ -509,19 +539,16 @@ export async function executeQuery(target: QueryTarget, rawQuery: string, option
     rowLimit: Math.min(Math.max(options.rowLimit ?? QUERY_ROW_LIMIT, 1), QUERY_ROW_LIMIT),
   };
   const started = Date.now();
-  const result =
-    target.provider === "REDIS"
-      ? await runRedis(target, query, opts)
-      : target.provider === "MYSQL"
-      ? await runMysql(target, query, opts)
-      : await runPostgres(target, query, opts);
+  const result = await reachable(target, () =>
+    target.provider === "REDIS" ? runRedis(target, query, opts) : target.provider === "MYSQL" ? runMysql(target, query, opts) : runPostgres(target, query, opts)
+  );
   return { ...result, durationMs: Date.now() - started };
 }
 
 /** Real schema of a managed database (tables + columns, or Redis keys). */
 export async function getDatabaseSchema(target: QueryTarget): Promise<TableSchema[]> {
   assertReachable(target);
-  if (target.provider === "REDIS") return introspectRedis(target);
-  if (target.provider === "MYSQL") return introspectMysql(target);
-  return introspectPostgres(target);
+  return reachable(target, () =>
+    target.provider === "REDIS" ? introspectRedis(target) : target.provider === "MYSQL" ? introspectMysql(target) : introspectPostgres(target)
+  );
 }

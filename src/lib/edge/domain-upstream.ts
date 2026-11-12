@@ -7,7 +7,7 @@
  * the fallback. A paused service routes as SLEEPING so the splash/wake page answers.
  */
 
-import { generateDefaultSubdomain } from "@/lib/domain-service";
+import { primaryServiceHostname } from "@/lib/domains/service-hosts";
 import { resolveServiceRoute, type ServiceRouteStatus } from "@/lib/edge/service-registry";
 import { resolveServiceRouteFromDb } from "@/lib/edge/resolve";
 
@@ -26,8 +26,9 @@ export async function resolveDomainUpstream(service: {
   isPaused?: boolean;
   deployments?: Array<{ status: string }>;
   environment?: { name: string } | null;
+  domains?: Array<{ hostname: string; isGenerated?: boolean | null }> | null;
 }): Promise<DomainUpstream> {
-  const platformHost = generateDefaultSubdomain(service.name, service.environment?.name || "production");
+  const platformHost = primaryServiceHostname(service);
   const live = await resolveServiceRoute(platformHost).catch(() => null);
   const route = live ?? (await resolveServiceRouteFromDb(service.id).catch(() => null));
   const pausedStatus = service.isPaused ? ("SLEEPING" as ServiceRouteStatus) : undefined;

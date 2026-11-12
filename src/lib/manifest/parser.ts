@@ -42,13 +42,13 @@ export const ServiceManifestSchema = z.object({
       instanceType: z.string().default("lite"),
       minReplicas: z.number().int().default(1),
       maxReplicas: z.number().int().default(5),
-      scaleToZero: z.boolean().default(true),
+      scaleToZero: z.boolean().default(false),
     })
     .default({
       instanceType: "lite",
       minReplicas: 1,
       maxReplicas: 5,
-      scaleToZero: true,
+      scaleToZero: false,
     }),
 });
 

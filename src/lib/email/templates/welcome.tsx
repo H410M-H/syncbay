@@ -10,7 +10,7 @@ export const WelcomeEmail = ({ name = 'User', loginUrl = 'https://syncbay.app/lo
   return (
     <Html>
       <Head />
-      <Preview>{`Welcome to SyncBay, ${name}!`}</Preview>
+      <Preview>{`Welcome to Syncbay, ${name}!`}</Preview>
       <Tailwind>
         <Body className="bg-[#09090b] text-[#fafafa] font-sans">
           <Container className="mx-auto p-4 max-w-2xl">
@@ -27,7 +27,7 @@ export const WelcomeEmail = ({ name = 'User', loginUrl = 'https://syncbay.app/lo
             <Section className="bg-[#18181b] border border-[#27272a] rounded-lg p-8">
               <Text className="text-xl font-semibold mb-4 text-white">Welcome aboard, {name}! 🚀</Text>
               <Text className="text-[#a1a1aa] mb-6 leading-relaxed">
-                We&apos;re thrilled to have you join SyncBay. Get ready to experience the next generation of PaaS, designed to make your deployments faster and more reliable.
+                We&apos;re thrilled to have you join Syncbay. Get ready to experience the next generation of PaaS, designed to make your deployments faster and more reliable.
               </Text>
               <Section className="text-center mt-6 mb-6">
                 <Button 

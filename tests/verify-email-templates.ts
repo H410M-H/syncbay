@@ -64,7 +64,7 @@ async function main() {
       const html = await render(element());
       if (!html || html.trim().length === 0) throw new Error("rendered HTML is empty");
       if (!/<html/i.test(html)) throw new Error("rendered output has no <html> element");
-      if (!/Syncbay|SyncBay/.test(html)) throw new Error('rendered HTML does not mention "Syncbay"');
+      if (!/Syncbay|Syncbay/.test(html)) throw new Error('rendered HTML does not mention "Syncbay"');
       console.log(`  PASS  ${name} (${html.length} bytes)`);
     } catch (error) {
       failures++;

@@ -30,8 +30,9 @@ export async function resolveServiceRouteFromDb(
   const subdomain = (subdomainOrHost || "").trim().toLowerCase();
   if (!subdomain) return null;
 
+  // A handful of recent deployments: enough to find the live one behind a newer build or failure.
   const serviceInclude = {
-    deployments: { orderBy: { createdAt: "desc" as const }, take: 1 },
+    deployments: { orderBy: { createdAt: "desc" as const }, take: 8 },
   };
 
   // 1. Resolve exact registered Domain record first (excluding deleted services)
@@ -71,8 +72,13 @@ export async function resolveServiceRouteFromDb(
 
   if (!service) return null;
 
-  const latest = service.deployments?.[0];
+  // The live version keeps serving while a newer deployment builds, and after one fails.
+  const newest = service.deployments?.[0];
+  const live = service.deployments?.find((d) => d.status === "ACTIVE" && d.assignedPort);
+  const latest = live || newest;
   const status = service.isPaused ? "SLEEPING" : latest?.status || "NOT_FOUND";
+  // `assignedPort` is the host port on the runner; `service.port` (the app's own port) is only a
+  // last resort for deployments recorded before host ports were stored.
   const targetPort = latest?.assignedPort || service.port || 3000;
   const isLocal = Boolean(
     latest?.cfContainerId?.startsWith("c_local_") ||

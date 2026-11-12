@@ -3,6 +3,7 @@
 import { useState, useEffect, use } from "react";
 import Link from "next/link";
 import { trpc } from "@/lib/trpc-client";
+import { primaryServiceHostname } from "@/lib/domains/service-hosts";
 import { useDashboard } from "../../dashboard-shell";
 import { BackButton } from "@/components/ui/back-button";
 
@@ -112,7 +113,7 @@ export default function ServiceDetailsPage(props: { params: Promise<{ id: string
     );
   }
 
-  const primaryDomain = service.domains?.[0]?.hostname || `${service.name}.syncbay.run`;
+  const primaryDomain = primaryServiceHostname(service);
 
   return (
     <div className="fade-in">

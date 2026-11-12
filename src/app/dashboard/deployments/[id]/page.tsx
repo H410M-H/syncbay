@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useState, useEffect, useRef, useMemo } from "react";
 import { trpc } from "@/lib/trpc-client";
+import { primaryServiceHostname } from "@/lib/domains/service-hosts";
 import { BackButton } from "@/components/ui/back-button";
 import { ActionMenu } from "@/components/ui/action-menu";
 
@@ -228,7 +229,7 @@ export default function DeploymentDetailPage() {
   const deployment = deploymentQuery.data;
   const showLogs = searchParams.get("view") === "logs" || true; // Default to showing logs directly
   const activeServiceUrl = deployment.status === "ACTIVE"
-    ? `https://${deployment.service.name}-${deployment.service.environment.name}.syncbay.app`
+    ? `https://${primaryServiceHostname(deployment.service)}`
     : null;
 
   return (

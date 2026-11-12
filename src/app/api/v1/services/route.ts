@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { validateBearerToken, checkScope } from "@/lib/api/auth-token";
-import { generateDefaultSubdomain } from "@/lib/domain-service";
+import { claimDefaultHostname } from "@/lib/domains/claim";
 
 export const dynamic = "force-dynamic";
 
@@ -104,17 +104,8 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    // Create default platform subdomain
-    const defaultHostname = generateDefaultSubdomain(service.name, targetEnv.name);
-    await db.domain.create({
-      data: {
-        serviceId: service.id,
-        hostname: defaultHostname,
-        isGenerated: true,
-        status: "ACTIVE",
-        verifiedAt: new Date(),
-      },
-    });
+    // The service's own platform host (suffixed when another service already owns the plain name).
+    const defaultHostname = await claimDefaultHostname(db, { id: service.id, name: service.name, environment: { name: targetEnv.name } });
 
     return NextResponse.json(
       {
