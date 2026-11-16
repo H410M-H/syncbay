@@ -31,6 +31,25 @@ services:
       - runner-state:/var/lib/syncbay-runner
       - runner-workspace:/app/.runner_workspace
 
+  # Keeps the runner on the latest main: pulls every 10 minutes and rebuilds runner + caddy when
+  # runner code changed (auto-update.sh). Needs the checkout at the same path inside and outside.
+  updater:
+    image: docker:27-cli
+    restart: unless-stopped
+    # Only what the updater needs; the runner secret stays out of this container.
+    environment:
+      SYNCBAY_REPO_DIR: ${SYNCBAY_REPO_DIR:-/opt/syncbay}
+      RUNNER_AUTO_UPDATE: ${RUNNER_AUTO_UPDATE:-true}
+      RUNNER_AUTO_UPDATE_INTERVAL: ${RUNNER_AUTO_UPDATE_INTERVAL:-600}
+      RUNNER_AUTO_UPDATE_BRANCH: ${RUNNER_AUTO_UPDATE_BRANCH:-main}
+    entrypoint: ["/bin/sh", "${SYNCBAY_REPO_DIR:-/opt/syncbay}/deploy/alibaba-ecs/auto-update.sh"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${SYNCBAY_REPO_DIR:-/opt/syncbay}:${SYNCBAY_REPO_DIR:-/opt/syncbay}
+      - runner-state:/state
+    depends_on:
+      - runner
+
   caddy:
     image: caddy:2
     restart: unless-stopped

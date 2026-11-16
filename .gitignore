@@ -50,3 +50,6 @@ graphify-out/
 # runner workspaces
 .runner_workspace/
 .runner_logs/
+
+# agent worktrees
+.claude/worktrees/

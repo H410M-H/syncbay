@@ -177,6 +177,16 @@ export function DashboardAnalytics({ workspaces }: { workspaces: Array<{ id: str
           <p style={{ fontSize: "0.8125rem", marginTop: "4px" }}>
             Deploy fixes (start-up checks, port detection, private database networking) are not active until it is updated. On the runner host:{" "}
             <code>cd /opt/syncbay &amp;&amp; git pull &amp;&amp; docker compose -f deploy/alibaba-ecs/docker-compose.yml up -d --build</code>
+            {" "}— after that the updater service keeps it current on its own.
+          </p>
+        </div>
+      )}
+      {runner?.health.online && runner.health.update && ["build-failed", "error"].includes(runner.health.update.result) && (
+        <div role="alert" className="card" style={{ borderColor: "rgba(245,158,11,0.45)", background: "rgba(245,158,11,0.08)", padding: "14px 18px" }}>
+          <strong style={{ color: "#fbbf24" }}>⚠ The runner&apos;s automatic update failed ({runner.health.update.result})</strong>
+          <p style={{ fontSize: "0.8125rem", marginTop: "4px" }}>
+            {runner.health.update.message || "See the updater logs on the runner host"} — check with{" "}
+            <code>docker compose -f deploy/alibaba-ecs/docker-compose.yml logs updater</code>
           </p>
         </div>
       )}

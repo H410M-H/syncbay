@@ -34,6 +34,7 @@ function resolveDaemonSecret(explicit?: string): string {
 }
 import { RunnerServices } from "./services.ts";
 import { RUNNER_VERSION } from "./version.ts";
+import { readUpdateStatus } from "./update-status.ts";
 import { handleMetricsRequest } from "./metrics.ts";
 import { TrafficStats, getDefaultTrafficStats, handleTrafficRequest, identityForPort } from "./traffic.ts";
 import { sanitizeVolumes } from "./volumes.ts";
@@ -76,6 +77,13 @@ export interface JobState {
   serviceId?: string;
   sseClients: Set<http.ServerResponse>;
 }
+
+/** Shown to visitors while an app does not answer (crashed, restarting or redeploying). */
+const APP_UNAVAILABLE_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="15"><title>Restarting…</title>
+<style>body{margin:0;min-height:100vh;display:grid;place-items:center;font-family:system-ui,sans-serif;background:#0b0d12;color:#e6e8ee}
+main{max-width:30rem;padding:2rem;text-align:center}h1{font-size:1.4rem;margin:0 0 .5rem}p{color:#9aa3b2;line-height:1.5}</style></head>
+<body><main><h1>This app is restarting</h1><p>It did not answer just now. Syncbay restarts apps that stop responding automatically; this page reloads every 15 seconds.</p></main></body></html>`;
 
 export class RunnerDaemon {
   public readonly port: number;
@@ -277,6 +285,7 @@ export class RunnerDaemon {
           activeJobs: Array.from(this.jobs.values()).filter((j) => j.status === "BUILDING").length,
           allocatedPorts: this.portManager.getAllocatedPorts(),
           toolchain: getToolchainStatus(),
+          update: readUpdateStatus(),
           tunnel: {
             driver: this.tunnelDriver.driverType,
             status: this.tunnelDriver.getStatus(),
@@ -440,6 +449,13 @@ export class RunnerDaemon {
 
     proxyReq.on("error", (err) => {
       traffic.failed();
+      // Browsers get a page that retries on its own (the health monitor restarts crashed apps);
+      // API clients keep the JSON error. 503 rather than 502 so CDNs pass the page through.
+      if (String(req.headers["accept"] || "").includes("text/html")) {
+        res.writeHead(503, { "Content-Type": "text/html; charset=utf-8", "Retry-After": "15", "Cache-Control": "no-store" });
+        res.end(APP_UNAVAILABLE_PAGE);
+        return;
+      }
       res.writeHead(502, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Bad Gateway", message: err.message, targetPort }));
     });

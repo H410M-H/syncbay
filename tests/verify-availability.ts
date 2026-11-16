@@ -63,6 +63,7 @@ async function main() {
   const { buildIngressRoutesFromDb } = await import("../src/lib/tunnel/tunnel-sync");
   const { stopServiceToSleep } = await import("../src/lib/scale/service-control");
   const { wakeAlwaysOnServices } = await import("../src/lib/scale/always-on");
+  const { monitorServiceHealth } = await import("../src/lib/scale/health-monitor");
 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "sb-availability-"));
   const appFile = path.join(tmp, "app.cjs");
@@ -234,6 +235,41 @@ setTimeout(() => {
     assert.strictEqual(getServiceRoute(hostA)?.status, "ACTIVE");
     assert.ok(!(await wakeAlwaysOnServices()).woken.some((w) => w.serviceId === svcA.id), "nothing to do once it is live");
     ok("a sleeping always-on service was started again (newer failed build ignored); scale-to-zero and paused ones were not");
+
+    // ─── 6. Health monitor heals a crashed app ───────────────────────────────
+    console.log("\n[6] Health monitor");
+    const liveNow = await prisma.deployment.findUniqueOrThrow({ where: { id: a2.id } });
+    const pid = Number(String(liveNow.cfContainerId).replace("proc_", ""));
+    assert.ok(pid > 0, `native instance id ${liveNow.cfContainerId}`);
+    await prisma.deployment.update({ where: { id: a2.id }, data: { completedAt: new Date(Date.now() - 5 * 60_000) } });
+    const healthy = await monitorServiceHealth();
+    assert.ok(!healthy.skipped, healthy.skipped);
+    assert.ok(!healthy.failing.some((f) => f.serviceId === svcA.id), "a healthy app is left alone");
+    process.kill(-pid, "SIGKILL"); // the app crashes (whole process group)
+    await sleep(500);
+    const down = await viaRunner(liveNow.assignedPort!).catch(() => ({}));
+    assert.ok(down.version !== "v2" && (down.error === "Bad Gateway" || !down.version), `the app is really down: ${JSON.stringify(down)}`);
+    const first = await monitorServiceHealth();
+    assert.ok(first.failing.some((f) => f.serviceId === svcA.id && f.failures === 1), JSON.stringify(first));
+    assert.strictEqual(first.healed.length, 0, "one failed probe is not enough to act");
+    const second = await monitorServiceHealth();
+    const heal = second.healed.find((h) => h.serviceId === svcA.id);
+    assert.ok(heal && heal.mode === "restart", JSON.stringify(second));
+    const back = await waitFor("healed app answers", async () => {
+      const d = await prisma.deployment.findUniqueOrThrow({ where: { id: a2.id } });
+      try {
+        return (await viaRunner(d.assignedPort!)).version === "v2" ? d : null;
+      } catch {
+        return null;
+      }
+    });
+    assert.strictEqual(back.status, "ACTIVE");
+    assert.ok(await prisma.auditLogEntry.findFirst({ where: { workspaceId: mine.workspace.id, action: "service.auto_healed" } }), "customer audit log records the restart");
+    const third = await monitorServiceHealth();
+    assert.ok(!third.healed.some((h) => h.serviceId === svcA.id), "cooldown: no second restart right away");
+    const offline = await monitorServiceHealth({ checkRunner: async () => ({ online: false }) });
+    assert.match(String(offline.skipped), /runner offline/);
+    ok("a crashed app is restarted after two failed probes (audited, then cooldown); nothing is healed while the runner is down");
 
     console.log(`\n✅ verify-availability: ${passed} checks passed (real Postgres + real runner daemon)`);
   } finally {
