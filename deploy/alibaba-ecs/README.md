@@ -45,7 +45,9 @@ In Vercel → Project → Settings → Environment Variables (Production):
 Then redeploy. New deployments are dispatched to the ECS runner, and requests to their `*.syncbay.app` hosts are proxied to it.
 
 ## Updating the runner
-Run this on the server after new runner changes land on `main`:
+The `updater` service does this automatically: every 10 minutes it pulls `main` and, when runner code changed, rebuilds and restarts the runner (apps and databases keep running). Its last result is on `/health` under `update` and on the dashboard; `docker compose -f deploy/alibaba-ecs/docker-compose.yml logs updater` shows the details. Set `RUNNER_AUTO_UPDATE=false` in `.env` to update by hand only.
+
+The updater only exists after the first update that includes it, so a server set up before November 2026 needs this once. To update by hand at any time:
 ```bash
 cd /opt/syncbay && git pull && docker compose -f deploy/alibaba-ecs/docker-compose.yml up -d --build
 docker compose -f deploy/alibaba-ecs/docker-compose.yml exec runner docker buildx version   # must print a version

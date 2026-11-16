@@ -65,6 +65,11 @@
 - [x] Unattended deploys use a working GitHub token of the project's workspace; log streams end before the 300 s function limit and resume
 - [x] pgAdmin over an SSH tunnel documented in the Databases page
 
+## Completed — v1.5 (keep apps up, build any stack)
+- [x] Health monitor: live apps probed every minute; restarted (or redeployed) after two failed probes, with cooldown and audit
+- [x] Runner auto-updater on the server (pull + rebuild when runner code changes, retries, status on `/health` and the dashboard)
+- [x] Visitors see a self-refreshing "restarting" page instead of a CDN 502 while an app is down
+
 ## Next
 - [ ] Staff console: separate staff session and passkeys; "suspended" page and customer emails with appeals; runner host cost registry and margin; dunning and refunds; automatic abuse signals (Web Risk, crypto-mining); CSV exports
 - [ ] Per-environment Docker networks so tenants on one runner cannot reach each other's containers
