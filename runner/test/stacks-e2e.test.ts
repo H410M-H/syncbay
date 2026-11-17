@@ -47,6 +47,8 @@ interface Case {
   /** Path fetched after the deploy and the text its body must contain. */
   path: string;
   marker: string;
+  /** Service variables of the deploy. */
+  env?: Record<string, string>;
 }
 
 const pkg = (body: object) => JSON.stringify({ name: "e2e-app", version: "1.0.0", private: true, ...body }, null, 2);
@@ -86,7 +88,10 @@ export default function RootLayout({ children }) {
     stack: "static/React (Vite)",
     // A client-side route: nginx falls back to index.html.
     path: "/some/deep/route",
-    marker: "vite-marker",
+    // The title comes from a service variable at build time (Vite replaces %VITE_*% in index.html):
+    // template builds must receive the service's variables, as Nixpacks builds do.
+    marker: "vite-marker-from-build-env",
+    env: { VITE_TITLE: "vite-marker-from-build-env" },
     files: {
       "package.json": pkg({
         type: "module",
@@ -99,7 +104,7 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({ plugins: [react()] });
 `,
       "index.html": `<!doctype html>
-<html><head><meta charset="UTF-8" /><title>vite-marker</title></head>
+<html><head><meta charset="UTF-8" /><title>%VITE_TITLE%</title></head>
 <body><div id="root"></div><script type="module" src="/src/main.jsx"></script></body></html>
 `,
       "src/main.jsx": `import React from "react";
@@ -391,6 +396,7 @@ for (const [name, c] of Object.entries(CASES)) {
       serviceName: `stk-${name}`,
       workDir: dir,
       healthCheckTimeoutMs: 120_000,
+      environmentVariables: c.env,
       onLog: (line) => logs.push(line),
     });
     row.totalSecs = (Date.now() - startedAt) / 1000;

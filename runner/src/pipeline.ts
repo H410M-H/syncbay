@@ -1055,6 +1055,9 @@ server.listen(port, "0.0.0.0", () => {
               log(`[pipeline:warn] RUNNER_BUILD_CA_FILE could not be read (${err?.code || err?.message || err}); building without it`);
             }
           }
+          // Service variables reach build steps by name (values travel in the CLI's environment).
+          const templateBuildEnv = containerEnv(appEnv);
+          buildProcEnv = templateBuildEnv.env;
           const nodeVersion = /^v?(\d+)/.exec(appEnv.NODE_VERSION || appEnv.NIXPACKS_NODE_VERSION || "")?.[1];
           const generated = generateDockerfile(tpl, {
             buildCommand: options.buildCommand,
@@ -1062,6 +1065,7 @@ server.listen(port, "0.0.0.0", () => {
             port: appPort,
             nodeMajor: nodeVersion,
             extraCaCert,
+            buildArgs: Object.keys(templateBuildEnv.env),
           });
           const generatedPath = path.join(sourceDir, GENERATED_DOCKERFILE);
           await writeOwnFile(generatedPath, generated);
@@ -1072,6 +1076,7 @@ server.listen(port, "0.0.0.0", () => {
           buildCmd = `docker build -t ${imageTag} -f ${shq(generatedPath)}`;
           if (options.cleanBuild) buildCmd += " --no-cache";
           for (const flag of dockerBuildFlags()) buildCmd += ` ${flag}`;
+          for (const name of Object.keys(templateBuildEnv.env)) buildCmd += ` --build-arg ${name}`;
           buildCmd += ` ${shq(sourceDir)}`;
         } else {
           log(`Using Nixpacks automated runtime detection & Docker containerization${forced}`);

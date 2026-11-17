@@ -21,7 +21,10 @@ import { getRunnerBaseUrl } from "@/lib/runner-client";
 function withCredentialsFor<T extends { connectionUrl: string; provider: string }>(inst: T, role: string | undefined) {
   const credentials = parseDatabaseUrl(inst.connectionUrl, inst.provider as "POSTGRES" | "REDIS" | "MYSQL");
   if (role === "OWNER" || role === "ADMIN" || role === "MEMBER") return { ...inst, credentials };
-  return { ...inst, connectionUrl: maskConnectionUrl(inst.connectionUrl), credentials: { ...credentials, password: "" } };
+  const masked = maskConnectionUrl(inst.connectionUrl);
+  // Every field that embeds the password: the URL, and the CLI command built from it.
+  const cliCommand = credentials.cliCommand.split(inst.connectionUrl).join(masked); // mysql already prints -p*****
+  return { ...inst, connectionUrl: masked, credentials: { ...credentials, password: "", connectionUrl: masked, cliCommand } };
 }
 
 export const databaseRouter = createTRPCRouter({

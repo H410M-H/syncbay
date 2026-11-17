@@ -65,6 +65,9 @@ while true; do
       # Compare with HEAD after the merge: a checkout that is ahead of origin stays where it is.
       git diff --quiet "$LOCAL" HEAD -- runner deploy/alibaba-ecs || NEED_BUILD=1
     fi
+    # Record the pending rebuild before starting it: if the updater stops mid-build, the next run
+    # (which sees the checkout already up to date) still rebuilds.
+    [ "$NEED_BUILD" = "1" ] && touch "$STATUS_DIR/rebuild-pending"
     if [ "$NEED_BUILD" = "0" ]; then
       status up-to-date "$(git rev-parse --short HEAD)" "$([ "$LOCAL" != "$(git rev-parse HEAD)" ] && echo 'pulled; no runner changes')"
     # Build first while the old runner keeps serving, then wait (up to 10 min) until no deploy is

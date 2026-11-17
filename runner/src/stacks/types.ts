@@ -93,6 +93,12 @@ export interface DockerfileOptions {
   nodeMajor?: string;
   /** COPY `syncbay-build-ca.crt` from the context and trust it in every build stage. */
   extraCaCert?: boolean;
+  /**
+   * Names of the service's variables to expose to build steps (`ARG NAME`; the values come from
+   * `docker build --build-arg NAME`, read from the CLI's environment). Frontend builds bake
+   * `VITE_*` / `NEXT_PUBLIC_*` values in, and private registries need tokens, as with Nixpacks.
+   */
+  buildArgs?: string[];
 }
 
 /** File name the runner copies `RUNNER_BUILD_CA_FILE` to inside the build context. */
