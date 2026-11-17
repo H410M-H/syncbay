@@ -53,13 +53,16 @@ export interface VolumeFile {
 
 /** An answer for the client: `status` becomes the HTTP status, `code` tells "volume" from "path". */
 export class VolumeAccessError extends Error {
-  constructor(
-    readonly status: 400 | 403 | 404 | 409 | 500 | 501,
-    message: string,
-    readonly code: string
-  ) {
+  // Plain fields, not constructor parameter properties: the runner also runs under Node's
+  // type-stripping, which rejects parameter properties.
+  readonly status: 400 | 403 | 404 | 409 | 500 | 501;
+  readonly code: string;
+
+  constructor(status: 400 | 403 | 404 | 409 | 500 | 501, message: string, code: string) {
     super(message);
     this.name = "VolumeAccessError";
+    this.status = status;
+    this.code = code;
   }
 }
 
