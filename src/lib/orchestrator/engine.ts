@@ -94,8 +94,12 @@ export async function executeDeployment(
   };
 
   try {
-    log(`[syncbay] Deployment initiated for service ${serviceId}`, "system");
-    log(`[syncbay] Target commit: ${commit} — "${message}"`, "system");
+    if (options.resume) {
+      log(`[syncbay] Resuming deployment for service ${serviceId} (runner job ${options.resume.runnerJobId})`, "system");
+    } else {
+      log(`[syncbay] Deployment initiated for service ${serviceId}`, "system");
+      log(`[syncbay] Target commit: ${commit} — "${message}"`, "system");
+    }
     await renewOrchestratorLease(deploymentId);
     // Staff moderation: nothing of a suspended workspace or a taken-down service is started.
     await assertServiceMayRun(serviceId);
@@ -312,6 +316,13 @@ export async function executeDeployment(
       const timeoutMs = options.pollBudgetMs ?? deployPollBudgetMs();
       let lastRenew = Date.now();
       let lastLogCount = 0;
+      // Resumed by the recovery sweep: the runner returns its whole log again, and the lines relayed
+      // before the hand-off are already stored. Skip each of those once (stored lines are redacted).
+      const relayed = new Map<string, number>();
+      if (options.resume) {
+        const rows = await db.deploymentLog.findMany({ where: { deploymentId }, select: { line: true } }).catch(() => [] as Array<{ line: string }>);
+        for (const r of rows) relayed.set(r.line, (relayed.get(r.line) ?? 0) + 1);
+      }
       let consecutivePollErrors = 0;
       while (Date.now() - pollStart < timeoutMs) {
         await new Promise((r) => setTimeout(r, 1000));
@@ -341,6 +352,12 @@ export async function executeDeployment(
         // Relay remote runner daemon logs to event bus
         if (check.logs && Array.isArray(check.logs) && check.logs.length > lastLogCount) {
           for (let i = lastLogCount; i < check.logs.length; i++) {
+            const key = redactSecrets(check.logs[i]);
+            const seen = relayed.get(key);
+            if (seen) {
+              relayed.set(key, seen - 1);
+              continue;
+            }
             dispatchOnLog(check.logs[i]);
           }
           lastLogCount = check.logs.length;

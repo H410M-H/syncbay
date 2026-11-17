@@ -5,7 +5,7 @@
  *   Docker:  the named volume `syncbay-vol-<id>`. Its mountpoint (`docker volume inspect`) is read
  *            directly when this process can read it; otherwise (rootless/remote Docker, or
  *            RUNNER_VOLUME_ACCESS=container) a short-lived, network-less, read-only helper container
- *            (`RUNNER_VOLUME_HELPER_IMAGE`, default busybox:latest) lists or reads it at /v.
+ *            (`RUNNER_VOLUME_HELPER_IMAGE`, default busybox:1.36.1) lists or reads it at /v.
  *   Native:  the bind directory `<RUNNER_STATE_DIR>/volumes/<id>` (see volumes.ts), read directly.
  *
  * Path guard: a client path is relative to the volume root. NUL bytes, backslashes, absolute
@@ -195,7 +195,10 @@ export function listDirectoryDirect(root: string, rel: string, limit: number = V
 export function readFileDirect(root: string, rel: string, limit: number = VOLUME_READ_LIMIT): VolumeFile {
   if (!rel) throw new VolumeAccessError(409, "The volume root is a directory", "NOT_A_FILE");
   const { rootReal, real } = resolveInside(root, rel);
-  const fd = openChecked(real, rootReal, fs.constants.O_RDONLY);
+  // Never open a FIFO or device: opening a FIFO blocks the daemon's event loop until a writer
+  // appears, and opening a device can have side effects. O_NONBLOCK covers a swap after this check.
+  if (!fs.lstatSync(real).isFile()) throw new VolumeAccessError(409, `Not a regular file: /${rel}`, "NOT_A_FILE");
+  const fd = openChecked(real, rootReal, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0) | (fs.constants.O_NOCTTY ?? 0));
   try {
     const st = fs.fstatSync(fd);
     if (!st.isFile()) throw new VolumeAccessError(409, `Not a regular file: /${rel}`, "NOT_A_FILE");
@@ -298,7 +301,7 @@ export class VolumeBrowser {
     this.nativeBaseDir = options.nativeBaseDir;
     const envAccess = process.env.RUNNER_VOLUME_ACCESS as VolumeAccessMode | undefined;
     this.access = options.access || (envAccess && ["auto", "direct", "container"].includes(envAccess) ? envAccess : "auto");
-    this.helperImage = options.helperImage || process.env.RUNNER_VOLUME_HELPER_IMAGE?.trim() || "busybox:latest";
+    this.helperImage = options.helperImage || process.env.RUNNER_VOLUME_HELPER_IMAGE?.trim() || "busybox:1.36.1";
   }
 
   private nativeDir(id: string): string {

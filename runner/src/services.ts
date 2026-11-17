@@ -172,7 +172,14 @@ export class RunnerServices {
       return true;
     }
 
-    const segments = pathname.split("/").filter(Boolean).slice(2).map(decodeURIComponent);
+    let segments: string[];
+    try {
+      segments = pathname.split("/").filter(Boolean).slice(2).map((part) => decodeURIComponent(part));
+    } catch {
+      // A malformed %-escape would otherwise throw outside the handler and stop the daemon.
+      sendJson(res, 400, { error: "Malformed path", code: "BAD_PATH" });
+      return true;
+    }
     const [id, action] = segments;
 
     try {

@@ -87,7 +87,10 @@ function nodeBuildSteps(stack: DetectedStack, opts: DockerfileOptions): string[]
   const plan = stack.plan;
   const lines: string[] = [];
   if (plan.packageManager !== "bun") lines.push(NODE_ENV_LINE);
-  if (plan.packageManager && !plan.installNeedsSource) {
+  if (plan.noManifest) {
+    // A plain server file with no package.json: nothing to install.
+    lines.push("COPY . .");
+  } else if (plan.packageManager && !plan.installNeedsSource) {
     lines.push(`COPY package.json package-lock.json* npm-shrinkwrap.json* pnpm-lock.yaml* yarn.lock* bun.lock* bun.lockb* .npmrc* ./`);
     lines.push(...nodeInstall(plan));
     lines.push("COPY . .");
@@ -134,7 +137,11 @@ const NGINX_TEMPLATE = [
   "}",
 ];
 
-const shArg = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
+/** One single-quoted shell word; line breaks are refused (they would end the Dockerfile instruction). */
+const shArg = (value: string) => {
+  if (/[\r\n\0]/.test(value)) throw new Error(`Refusing a value with a line break in a generated Dockerfile: ${JSON.stringify(value.slice(0, 80))}`);
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+};
 
 function nginxStage(port: number): string[] {
   return [
@@ -153,7 +160,7 @@ function staticSite(stack: DetectedStack, opts: DockerfileOptions): string[] {
   const pick =
     `RUN set -e; mkdir -p /out; for d in ${dirs.map(shArg).join(" ")}; do if [ -f "$d/index.html" ]; then cp -a "$d"/. /out/; echo "Serving $d"; exit 0; fi; done; ` +
     `f=$(find dist build out -maxdepth 3 -name index.html 2>/dev/null | head -n 1); if [ -n "$f" ]; then cp -a "$(dirname "$f")"/. /out/; echo "Serving $(dirname "$f")"; exit 0; fi; ` +
-    `echo "The build produced no index.html in ${dirs.join(", ")}; set the output directory in the build command or add a Dockerfile" >&2; exit 1`;
+    `echo ${shArg(`The build produced no index.html in ${dirs.join(", ")}; set the output directory in the build command or add a Dockerfile`)} >&2; exit 1`;
   return [
     `FROM ${nodeImage(plan, opts)} AS build`,
     "WORKDIR /app",

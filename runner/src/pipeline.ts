@@ -41,7 +41,8 @@ export interface PipelineCommandResult {
 }
 
 export interface PipelineExecutor {
-  execute(command: string, options?: { cwd?: string; env?: NodeJS.ProcessEnv; onLog?: (line: string) => void }): Promise<PipelineCommandResult>;
+  /** `replaceEnv`: run with exactly `env` instead of the runner's environment plus `env` (customer code). */
+  execute(command: string, options?: { cwd?: string; env?: NodeJS.ProcessEnv; replaceEnv?: boolean; onLog?: (line: string) => void }): Promise<PipelineCommandResult>;
   probeHealth(url: string, timeoutMs?: number): Promise<boolean>;
   fileExists(filePath: string): Promise<boolean>;
 }
@@ -160,7 +161,7 @@ function splitLines(chunk: Buffer | string): string[] {
 export class DefaultPipelineExecutor implements PipelineExecutor {
   public async execute(
     command: string,
-    options: { cwd?: string; env?: NodeJS.ProcessEnv; onLog?: (line: string) => void } = {}
+    options: { cwd?: string; env?: NodeJS.ProcessEnv; replaceEnv?: boolean; onLog?: (line: string) => void } = {}
   ): Promise<PipelineCommandResult> {
     return new Promise((resolve) => {
       let stdout = "";
@@ -168,7 +169,7 @@ export class DefaultPipelineExecutor implements PipelineExecutor {
 
       const child = spawn(command, {
         cwd: options.cwd,
-        env: { ...process.env, ...options.env },
+        env: (options.replaceEnv ? { ...options.env } : { ...process.env, ...options.env }) as NodeJS.ProcessEnv,
         shell: true,
       });
 
@@ -404,26 +405,82 @@ export function builderPreference(
   return { preference: "auto", source: "default" };
 }
 
+/** Runner settings and credentials that customer code must never see (RUNNER_SECRET signs every runner API call). */
+const RUNNER_ONLY_ENV = /^(RUNNER_|SYNCBAY_|CLOUDFLARE_|TUNNEL_|R2_|AWS_|GITHUB_|GH_|NPM_TOKEN$|DOCKER_|DATABASE_URL$|REDIS_URL$|DIRECT_URL$)/i;
+
+/** The runner's own environment minus its secrets and settings: the base for native app processes. */
+export function hostEnvForApps(): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(process.env).filter(([key]) => !RUNNER_ONLY_ENV.test(key))) as NodeJS.ProcessEnv;
+}
+
+/**
+ * Writes a runner-owned file inside a repo-controlled directory without following symlinks: the
+ * old entry (possibly a symlink planted by the repo) is removed, then the file is created with
+ * O_CREAT|O_EXCL, which never follows a link. The runner runs as root; following a link here would
+ * let a repository overwrite any file on the host.
+ */
+export async function writeOwnFile(file: string, data: string | Buffer): Promise<void> {
+  await fs.rm(file, { force: true });
+  await fs.writeFile(file, data, { flag: "wx", mode: 0o644 });
+}
+
+/**
+ * Reads a small regular file from the repository, or null: symlinks, FIFOs and devices are refused
+ * (O_NOFOLLOW | O_NONBLOCK), so a repo cannot make the runner read host files such as
+ * /proc/self/environ or block on /dev/zero.
+ */
+export async function readRepoFile(file: string, max = 512 * 1024): Promise<string | null> {
+  let fh: fs.FileHandle | undefined;
+  try {
+    fh = await fs.open(file, fsSync.constants.O_RDONLY | fsSync.constants.O_NOFOLLOW | fsSync.constants.O_NONBLOCK);
+    const st = await fh.stat();
+    if (!st.isFile() || st.size > max) return null;
+    return await fh.readFile("utf8");
+  } catch {
+    return null;
+  } finally {
+    await fh?.close().catch(() => null);
+  }
+}
+
 /** Largest file the stack detector reads (manifests are small; this keeps a stray blob out of memory). */
 const STACK_FILE_MAX_BYTES = 512 * 1024;
 
 /** Synchronous, read-only view of a source directory for `detectStack()`. */
 export function stackFilesFor(dir: string): StackFiles {
   const resolve = (rel: string) => path.join(dir, rel);
+  // Only regular files inside the repository: a manifest that is a symlink (to a host file, or out
+  // of the tree through a symlinked directory) is ignored.
+  let rootReal: string | null = null;
+  const inside = (file: string): boolean => {
+    try {
+      rootReal ??= fsSync.realpathSync(dir);
+      const real = fsSync.realpathSync(file);
+      return real === rootReal || real.startsWith(rootReal + path.sep);
+    } catch {
+      return false;
+    }
+  };
   return {
-    exists: (rel) => fsSync.existsSync(resolve(rel)),
+    exists: (rel) => fsSync.existsSync(resolve(rel)) && inside(resolve(rel)),
     read: (rel) => {
+      let fd: number | undefined;
       try {
         const file = resolve(rel);
-        const stat = fsSync.statSync(file);
+        if (!inside(file)) return null;
+        fd = fsSync.openSync(file, fsSync.constants.O_RDONLY | fsSync.constants.O_NOFOLLOW | fsSync.constants.O_NONBLOCK);
+        const stat = fsSync.fstatSync(fd);
         if (!stat.isFile() || stat.size > STACK_FILE_MAX_BYTES) return null;
-        return fsSync.readFileSync(file, "utf8");
+        return fsSync.readFileSync(fd, "utf8");
       } catch {
         return null;
+      } finally {
+        if (fd !== undefined) fsSync.closeSync(fd);
       }
     },
     list: (rel) => {
       try {
+        if (!inside(resolve(rel))) return [];
         return fsSync.readdirSync(resolve(rel));
       } catch {
         return [];
@@ -836,7 +893,17 @@ export class BuildPipeline {
       }
 
       if (options.rootDir) {
-        sourceDir = path.join(baseWorkDir, options.rootDir);
+        // The root directory must stay inside the clone: no "..", no absolute path, and no symlinked
+        // directory leading out of it (another job's workspace, or the host).
+        const rel = path.posix.normalize(String(options.rootDir).replace(/\\/g, "/")).replace(/^\.\//, "");
+        if (path.posix.isAbsolute(rel) || rel === ".." || rel.startsWith("../") || rel.includes("\0")) {
+          throw new PipelineStepError(`Invalid root directory "${options.rootDir}": it must be a path inside the repository`, 1);
+        }
+        sourceDir = path.join(baseWorkDir, rel);
+        const [real, base] = await Promise.all([fs.realpath(sourceDir).catch(() => sourceDir), fs.realpath(baseWorkDir).catch(() => baseWorkDir)]);
+        if (real !== base && !real.startsWith(base + path.sep)) {
+          throw new PipelineStepError(`Root directory "${options.rootDir}" leads outside the repository`, 1);
+        }
       }
 
       // If workspace has no starter application files and no repo was provided, provision starter app
@@ -853,7 +920,7 @@ export class BuildPipeline {
       // A workspace that already holds a recognised project (go.mod, requirements.txt …) is never overwritten.
       if (!hasPkg && !hasDf && !hasIdx && !hasHtml && !options.repoUrl && !detectStack(stackFilesFor(sourceDir))) {
         provisionedStarter = true;
-        await fs.writeFile(starterMarker, "Starter app written by the Syncbay runner\n", "utf8").catch(() => null);
+        await writeOwnFile(starterMarker, "Starter app written by the Syncbay runner\n").catch(() => null);
         const starter = `const http = require("http");
 const port = parseInt(process.env.PORT || "${targetPort}", 10);
 const server = http.createServer((req, res) => {
@@ -868,7 +935,7 @@ server.listen(port, "0.0.0.0", () => {
   console.log("Syncbay application [${serviceName}] active on port " + port);
 });
 `;
-        await fs.writeFile(path.join(sourceDir, "server.cjs"), starter, "utf8").catch(() => null);
+        await writeOwnFile(path.join(sourceDir, "server.cjs"), starter).catch(() => null);
         // Nixpacks recognises a Node project by its package.json; a lone server.cjs has no build plan.
         await fs
           .writeFile(
@@ -937,6 +1004,14 @@ server.listen(port, "0.0.0.0", () => {
           chosen = !hasDocker ? null : hasDockerfile ? "dockerfile" : stack ? "template" : hasNixpacks ? "nixpacks" : null;
       }
       if (!chosen && stack) log(`Detected ${describeStack(stack)} from ${stack.reason}, but Docker is not available on this runner; running it as a native process`);
+      // A customer repository is never run unsandboxed on a host that has Docker: with no Dockerfile,
+      // no recognised stack and no Nixpacks there is nothing safe to build, so say what is missing.
+      if (!chosen && hasDocker && !isMockExecutor && options.repoUrl) {
+        throw new PipelineStepError(
+          `No supported stack was detected in ${options.rootDir ? `"${options.rootDir}"` : "the repository root"}. Syncbay builds Node.js (needs a package.json), static sites (index.html), Python, Go, Rust, PHP, Java, Ruby, Deno and Bun projects; add a Dockerfile for anything else, or check the service's root directory.`,
+          1
+        );
+      }
 
       if (chosen) {
         strategy = chosen;
@@ -972,7 +1047,7 @@ server.listen(port, "0.0.0.0", () => {
           if (caSource) {
             const caCopy = path.join(sourceDir, BUILD_CA_FILE);
             try {
-              await fs.copyFile(caSource, caCopy);
+              await writeOwnFile(caCopy, await fs.readFile(caSource));
               cleanupAfterBuild.push(caCopy);
               extraCaCert = true;
               log(`Build steps trust the CA certificates from RUNNER_BUILD_CA_FILE`);
@@ -989,10 +1064,10 @@ server.listen(port, "0.0.0.0", () => {
             extraCaCert,
           });
           const generatedPath = path.join(sourceDir, GENERATED_DOCKERFILE);
-          await fs.writeFile(generatedPath, generated, "utf8");
+          await writeOwnFile(generatedPath, generated);
           // BuildKit reads <Dockerfile>.dockerignore first, so the user's .dockerignore is never touched.
-          const userIgnore = await fs.readFile(path.join(sourceDir, ".dockerignore"), "utf8").catch(() => null);
-          await fs.writeFile(path.join(sourceDir, GENERATED_DOCKERIGNORE), generateDockerignore(tpl, userIgnore), "utf8");
+          const userIgnore = await readRepoFile(path.join(sourceDir, ".dockerignore"));
+          await writeOwnFile(path.join(sourceDir, GENERATED_DOCKERIGNORE), generateDockerignore(tpl, userIgnore));
           log(`Generated ${GENERATED_DOCKERFILE}: ${(generated.match(/^FROM \S+/gm) || []).map((l) => l.slice(5)).join(" → ")}`);
           buildCmd = `docker build -t ${imageTag} -f ${shq(generatedPath)}`;
           if (options.cleanBuild) buildCmd += " --no-cache";
@@ -1009,11 +1084,11 @@ server.listen(port, "0.0.0.0", () => {
           if (nixEnv.nixpacksFlags.length > 0) buildCmd += ` ${nixEnv.nixpacksFlags.join(" ")}`;
 
           // Nixpacks would pick Node 18 (end-of-life) for a project that pins nothing.
-          const pkg = await fs.readFile(path.join(sourceDir, "package.json"), "utf-8").then(JSON.parse, () => null);
+          const pkg = await readRepoFile(path.join(sourceDir, "package.json")).then((t) => (t ? JSON.parse(t) : null)).catch(() => null);
           const nodeMajor = pickNodeVersion({
             packageJson: pkg,
             hasNvmrc: await this.executor.fileExists(path.join(sourceDir, ".nvmrc")),
-            nodeVersionFile: await fs.readFile(path.join(sourceDir, ".node-version"), "utf-8").catch(() => null),
+            nodeVersionFile: await readRepoFile(path.join(sourceDir, ".node-version")),
             userEnv: appEnv,
             fallback: process.env.RUNNER_DEFAULT_NODE_VERSION,
           });
@@ -1066,6 +1141,8 @@ server.listen(port, "0.0.0.0", () => {
           await this.executor.execute(`docker rm -f ${containerName}`).catch(() => null);
           const runRes = await this.executor.execute(runCmd.replace("{{PORT}}", String(assignedPort)), { env: runEnv.env as NodeJS.ProcessEnv });
           if (runRes.exitCode !== 0) {
+            // A failed `docker run` (port taken, bad flag) leaves a container in "Created" behind.
+            await this.executor.execute(`docker rm -f ${containerName}`).catch(() => null);
             throw new PipelineStepError(`Docker run failed: ${tailText(runRes.stderr || runRes.stdout, 10)}`, runRes.exitCode);
           }
           const id = runRes.stdout.trim().split("\n").pop() || containerName;
@@ -1100,7 +1177,7 @@ server.listen(port, "0.0.0.0", () => {
         const currentPath = process.env.PATH || "/usr/bin:/bin";
         const processEnv = await runtimeEnv("process");
         const execEnv: NodeJS.ProcessEnv = {
-          ...process.env,
+          ...hostEnvForApps(),
           ...processEnv,
           NODE_ENV: (processEnv.NODE_ENV as any) || "production",
           PATH: `${nmBin}:${currentPath}`,
@@ -1117,13 +1194,13 @@ server.listen(port, "0.0.0.0", () => {
               installCmd = "yarn install --prefer-offline || npm install --no-audit --prefer-offline --include=dev";
             }
             log(`Installing dependencies via: ${installCmd}`);
-            const iRes = await this.executor.execute(installCmd, { cwd: sourceDir, env: execEnv, onLog: log });
+            const iRes = await this.executor.execute(installCmd, { cwd: sourceDir, env: execEnv, replaceEnv: true, onLog: log });
             if (iRes.exitCode !== 0) {
               const errMsg = iRes.stderr || iRes.stdout || `Exit code ${iRes.exitCode}`;
               log(`[build:error] Dependency installation failed: ${errMsg}`);
               if (!options.buildCommand) {
                 try {
-                  const pkgContent = JSON.parse(await fs.readFile(pkgPath, "utf8"));
+                  const pkgContent = JSON.parse((await readRepoFile(pkgPath)) ?? "null");
                   if (pkgContent.scripts?.build) {
                     throw new PipelineStepError(`Dependency installation failed: ${errMsg}`, iRes.exitCode);
                   }
@@ -1136,7 +1213,7 @@ server.listen(port, "0.0.0.0", () => {
 
           if (options.buildCommand) {
             log(`Compiling application with custom build command: ${options.buildCommand}`);
-            const bRes = await this.executor.execute(options.buildCommand, { cwd: sourceDir, env: execEnv, onLog: log });
+            const bRes = await this.executor.execute(options.buildCommand, { cwd: sourceDir, env: execEnv, replaceEnv: true, onLog: log });
             if (bRes.exitCode !== 0) {
               const errMsg = bRes.stderr || bRes.stdout || `Build command exited with code ${bRes.exitCode}`;
               log(`[build:error] ${errMsg}`);
@@ -1144,10 +1221,10 @@ server.listen(port, "0.0.0.0", () => {
             }
           } else {
             try {
-              const pkgContent = JSON.parse(await fs.readFile(pkgPath, "utf8"));
+              const pkgContent = JSON.parse((await readRepoFile(pkgPath)) ?? "null");
               if (pkgContent.scripts?.build) {
                 log(`Running npm run build...`);
-                const bRes = await this.executor.execute("npm run build", { cwd: sourceDir, env: execEnv, onLog: log });
+                const bRes = await this.executor.execute("npm run build", { cwd: sourceDir, env: execEnv, replaceEnv: true, onLog: log });
                 if (bRes.exitCode !== 0) {
                   const errMsg = bRes.stderr || bRes.stdout || `npm run build exited with code ${bRes.exitCode}`;
                   log(`[build:error] ${errMsg}`);
@@ -1160,7 +1237,7 @@ server.listen(port, "0.0.0.0", () => {
           }
         } else if (options.buildCommand) {
           log(`Compiling application with custom build command: ${options.buildCommand}`);
-          const bRes = await this.executor.execute(options.buildCommand, { cwd: sourceDir, env: execEnv, onLog: log });
+          const bRes = await this.executor.execute(options.buildCommand, { cwd: sourceDir, env: execEnv, replaceEnv: true, onLog: log });
           if (bRes.exitCode !== 0) {
             const errMsg = bRes.stderr || bRes.stdout || `Build command exited with code ${bRes.exitCode}`;
             log(`[build:error] ${errMsg}`);
@@ -1174,7 +1251,7 @@ server.listen(port, "0.0.0.0", () => {
         let runCmd = options.startCommand;
         if (!runCmd && packageJsonExists) {
           try {
-            const pkgContent = JSON.parse(await fs.readFile(pkgPath, "utf8"));
+            const pkgContent = JSON.parse((await readRepoFile(pkgPath)) ?? "null");
             if (pkgContent.scripts?.start) {
               runCmd = "npm start";
             } else if (pkgContent.main && (await this.executor.fileExists(path.join(sourceDir, pkgContent.main)))) {
@@ -1285,7 +1362,7 @@ server.listen(port, "0.0.0.0", () => {
   console.log("Static server running on port " + port);
 });
 `;
-              await fs.writeFile(staticServerFile, staticServerCode, "utf8").catch(() => null);
+              await writeOwnFile(staticServerFile, staticServerCode).catch(() => null);
               runCmd = `node "${staticServerFile}" "${sDir}"`;
               break;
             }
@@ -1295,6 +1372,12 @@ server.listen(port, "0.0.0.0", () => {
         if (!runCmd) {
           if (await this.executor.fileExists(path.join(sourceDir, "server.js"))) {
             runCmd = "node server.js";
+          } else if (options.repoUrl) {
+            // Never report a customer repository as live with a placeholder page.
+            throw new PipelineStepError(
+              "Nothing to run in the repository: no start command, package.json start script, server/index file, Python entry point or index.html was found. Set a start command for the service or add a Dockerfile.",
+              1
+            );
           } else {
             // Provision fallback starter app
             const starter = `const http = require("http");
@@ -1309,7 +1392,7 @@ const server = http.createServer((req, res) => {
 });
 server.listen(port, "0.0.0.0");
 `;
-            await fs.writeFile(path.join(sourceDir, "server.cjs"), starter, "utf8").catch(() => null);
+            await writeOwnFile(path.join(sourceDir, "server.cjs"), starter).catch(() => null);
             runCmd = "node server.cjs";
           }
         }
@@ -1318,7 +1401,7 @@ server.listen(port, "0.0.0.0");
         const nativeVolumes = prepareNativeVolumes(options.volumes, sourceDir);
         for (const m of nativeVolumes.mounts) log(`Volume ${m.id} bound at ${m.hostPath} (mountPath ${m.mountPath})`);
         const childEnv: NodeJS.ProcessEnv = {
-          ...process.env,
+          ...hostEnvForApps(),
           ...processEnv,
           ...nativeVolumes.env,
           PATH: `${nmBin}:${currentPath}`,

@@ -135,10 +135,41 @@ function guardSafeMode(sql: string, safeMode: boolean): { isDestructive: boolean
   return { isDestructive: destructive.isDestructive };
 }
 
+/** Largest single value returned to the browser; longer text is cut and marked. */
+const MAX_VALUE_CHARS = 64 * 1024;
+
+function capValue(value: string): string {
+  return value.length > MAX_VALUE_CHARS ? `${value.slice(0, MAX_VALUE_CHARS)}… [truncated: ${value.length.toLocaleString("en-US")} characters]` : value;
+}
+
 function jsonSafe(value: unknown): unknown {
   if (typeof value === "bigint") return value.toString();
-  if (Buffer.isBuffer(value)) return value.toString("base64");
+  if (Buffer.isBuffer(value)) return capValue(value.toString("base64"));
+  if (typeof value === "string") return capValue(value);
+  if (value && typeof value === "object" && !(value instanceof Date)) {
+    const text = JSON.stringify(value);
+    if (text && text.length > MAX_VALUE_CHARS) return capValue(text);
+  }
   return value;
+}
+
+/** Statements read mode accepts (the transaction is READ ONLY as well). */
+const READ_STATEMENTS = new Set(["SELECT", "WITH", "VALUES", "TABLE", "SHOW", "EXPLAIN", "DESCRIBE", "DESC"]);
+/**
+ * Server functions that reach outside the database or change the session (file access, programs,
+ * large objects, other servers, settings). Refused in read mode even inside a SELECT, because
+ * managed databases connect as a superuser.
+ */
+const READ_MODE_FORBIDDEN_FUNCTIONS =
+  /\b(set_config|pg_read_file|pg_read_binary_file|pg_ls_\w+|pg_stat_file|lo_\w+|dblink\w*|pg_terminate_backend|pg_cancel_backend|pg_reload_conf|pg_rotate_logfile|pg_promote|pg_switch_wal|pg_create_\w+|pg_drop_\w+|pg_file_\w+|load_file|sys_exec|sys_eval)\s*\(/i;
+
+function assertReadStatement(sql: string): void {
+  const kind = commandTypeOf(sql);
+  if (!READ_STATEMENTS.has(kind)) {
+    throw new Error(`Read mode runs SELECT, WITH, VALUES, TABLE, SHOW and EXPLAIN only (got ${kind}). Switch to write mode (OWNER/ADMIN) for other statements.`);
+  }
+  const fn = READ_MODE_FORBIDDEN_FUNCTIONS.exec(stripSqlComments(sql));
+  if (fn) throw new Error(`Read mode does not allow ${fn[1]}(): it reaches outside the database or changes the session.`);
 }
 
 function normalizeRows(rows: Record<string, unknown>[]): Record<string, any>[] {
@@ -170,10 +201,21 @@ async function runPostgres(target: QueryTarget, sql: string, opts: Required<Quer
   const capped = cappableSelect(sql);
   const text = capped ? `SELECT * FROM (${capped}) AS sb_query_studio LIMIT ${opts.rowLimit + 1}` : sql.trim();
 
+  if (opts.mode === "read") assertReadStatement(sql);
   return withPg(target.connectionUrl, async (client) => {
     await client.query(opts.mode === "read" ? "BEGIN TRANSACTION READ ONLY" : "BEGIN");
     try {
       await client.query(`SET LOCAL statement_timeout = ${Math.floor(opts.timeoutMs)}`);
+      if (opts.mode === "read") {
+        // Managed databases connect as a superuser, which can read server files or run programs even
+        // in a READ ONLY transaction. Drop to a read-only role for the statement (PostgreSQL 14+).
+        const su = await client.query("SELECT rolsuper FROM pg_roles WHERE rolname = current_user");
+        if (su.rows[0]?.rolsuper) {
+          await client.query("SET LOCAL ROLE pg_read_all_data").catch(() => {
+            throw new Error("Read mode needs PostgreSQL 14 or newer for this connection (role pg_read_all_data)");
+          });
+        }
+      }
       // Extended protocol: exactly one statement, so `COMMIT; …` cannot escape the transaction.
       const res = await client.query({ text, queryMode: "extended" } as QueryConfig & { queryMode: "extended" });
       await client.query(opts.mode === "read" ? "ROLLBACK" : "COMMIT");
@@ -268,6 +310,7 @@ async function runMysql(target: QueryTarget, sql: string, opts: Required<QueryOp
   const capped = cappableSelect(sql);
   const text = capped ? `SELECT * FROM (${capped}) AS sb_query_studio LIMIT ${opts.rowLimit + 1}` : sql.trim().replace(/;\s*$/, "");
 
+  if (opts.mode === "read") assertReadStatement(sql);
   return withMysql(target.connectionUrl, async (conn) => {
     await conn.query(`SET SESSION MAX_EXECUTION_TIME = ${Math.floor(opts.timeoutMs)}`);
     await conn.query(opts.mode === "read" ? "START TRANSACTION READ ONLY" : "START TRANSACTION");
@@ -400,7 +443,7 @@ async function scanKeys(redis: Redis, pattern: string, limit: number): Promise<{
 }
 
 function redisRows(reply: unknown, command: string): { columns: QueryColumn[]; rows: Record<string, any>[] } {
-  const fmt = (v: unknown) => (Buffer.isBuffer(v) ? v.toString("utf8") : v);
+  const fmt = (v: unknown) => (Buffer.isBuffer(v) ? capValue(v.toString("utf8")) : typeof v === "string" ? capValue(v) : v);
   if (command === "HGETALL" && Array.isArray(reply)) {
     const rows: Record<string, any>[] = [];
     for (let i = 0; i + 1 < reply.length; i += 2) rows.push({ field: fmt(reply[i]), value: fmt(reply[i + 1]) });
@@ -448,7 +491,15 @@ async function runRedis(target: QueryTarget, line: string, opts: Required<QueryO
         warning: truncated ? `Result truncated to ${opts.rowLimit} keys` : undefined,
       };
     }
-    const reply = await redis.call(args[0], ...args.slice(1));
+    // A GET of a huge string is read as its first 64 KiB, never as a whole.
+    let reply: unknown;
+    if (command === "GET" && args.length === 2) {
+      const len = Number(await redis.call("STRLEN", args[1]));
+      reply = len > MAX_VALUE_CHARS ? `${await redis.call("GETRANGE", args[1], "0", String(MAX_VALUE_CHARS - 1))}… [truncated: ${len.toLocaleString("en-US")} bytes]` : await redis.call("GET", args[1]);
+      if (len === 0 && (await redis.call("EXISTS", args[1])) === 0) reply = null;
+    } else {
+      reply = await redis.call(args[0], ...args.slice(1));
+    }
     const { columns, rows } = redisRows(reply, command);
     const truncated = rows.length > opts.rowLimit;
     return {

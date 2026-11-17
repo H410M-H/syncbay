@@ -9,7 +9,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 import { PortManager } from "../src/port-manager.ts";
-import { BuildPipeline, MockPipelineExecutor, builderPreference, dockerBuildFlags, stackFilesFor } from "../src/pipeline.ts";
+import { BuildPipeline, MockPipelineExecutor, builderPreference, dockerBuildFlags, hostEnvForApps, readRepoFile, stackFilesFor, writeOwnFile } from "../src/pipeline.ts";
 import { cargoBinName, detectStack, generateDockerfile, generateDockerignore, pyprojectDependencies, type DetectedStack, type StackFiles } from "../src/stacks/index.ts";
 
 /** In-memory project: relative path → content. Directories exist when a file lies below them. */
@@ -509,4 +509,79 @@ test("stacks pipeline: stackFilesFor reads the real directory", () => {
   assert.strictEqual(files.read("missing.txt"), null);
   assert.strictEqual(files.read("cmd"), null, "a directory is not read as a file");
   assert.strictEqual(detectStack(files)?.plan.goPackage, "./cmd/api");
+});
+
+// ─── Security: repository-controlled files (audit findings) ─────────────────────
+
+test("security: a symlink planted as a generated file is replaced, never written through", async () => {
+  const exec = new MockPipelineExecutor();
+  const dir = writeFixture(FASTAPI, exec);
+  const victim = path.join(fixtureRoot, `victim-${fixtureSeq}.txt`);
+  fs.writeFileSync(victim, "host file");
+  const ignoreVictim = path.join(fixtureRoot, `victim-ignore-${fixtureSeq}.txt`);
+  fs.writeFileSync(ignoreVictim, "host file");
+  const caVictim = path.join(fixtureRoot, `victim-ca-${fixtureSeq}.txt`);
+  fs.writeFileSync(caVictim, "host file");
+  fs.symlinkSync(victim, path.join(dir, "Dockerfile.syncbay"));
+  fs.symlinkSync(ignoreVictim, path.join(dir, "Dockerfile.syncbay.dockerignore"));
+  fs.symlinkSync(caVictim, path.join(dir, "syncbay-build-ca.crt"));
+  fs.symlinkSync("/proc/self/environ", path.join(dir, ".dockerignore"));
+  const caFile = path.join(fixtureRoot, "corp-ca-2.crt");
+  fs.writeFileSync(caFile, "-----BEGIN CERTIFICATE-----\nMIIC\n-----END CERTIFICATE-----\n");
+  const result = await withEnv({ RUNNER_BUILDER: undefined, RUNNER_BUILD_CA_FILE: caFile, RUNNER_SECRET: "audit-secret-value" }, () => runMock(exec, { workDir: dir }));
+  assert.strictEqual(result.success, true, result.error);
+  for (const f of [victim, ignoreVictim, caVictim]) assert.strictEqual(fs.readFileSync(f, "utf8"), "host file", `${f} was not overwritten`);
+  assert.ok(!fs.lstatSync(path.join(dir, "Dockerfile.syncbay")).isSymbolicLink(), "the generated Dockerfile is a regular file");
+  assert.ok(!fs.readFileSync(path.join(dir, "Dockerfile.syncbay.dockerignore"), "utf8").includes("audit-secret-value"), "a symlinked .dockerignore is not read");
+});
+
+test("security: readRepoFile refuses symlinks and FIFOs; writeOwnFile replaces a dangling link", async () => {
+  const dir = writeFixture({ "real.txt": "ok" });
+  fs.symlinkSync("/etc/hostname", path.join(dir, "link.txt"));
+  assert.strictEqual(await readRepoFile(path.join(dir, "real.txt")), "ok");
+  assert.strictEqual(await readRepoFile(path.join(dir, "link.txt")), null);
+  const target = path.join(fixtureRoot, `dangling-${fixtureSeq}`);
+  fs.symlinkSync(target, path.join(dir, "out.txt"));
+  await writeOwnFile(path.join(dir, "out.txt"), "mine");
+  assert.ok(!fs.existsSync(target), "the link target was not created");
+  assert.strictEqual(fs.readFileSync(path.join(dir, "out.txt"), "utf8"), "mine");
+});
+
+test("security: stackFilesFor ignores manifests that are symlinks out of the repository", () => {
+  const outside = writeFixture({ "package.json": JSON.stringify({ dependencies: { express: "4" } }) });
+  const dir = writeFixture({ "README.md": "x" });
+  fs.symlinkSync(path.join(outside, "package.json"), path.join(dir, "package.json"));
+  assert.strictEqual(stackFilesFor(dir).read("package.json"), null);
+  assert.strictEqual(stackFilesFor(dir).exists("package.json"), false);
+});
+
+test("security: a root directory outside the repository is refused", async () => {
+  const exec = new MockPipelineExecutor();
+  const dir = writeFixture(FASTAPI, exec);
+  for (const rootDir of ["../..", "/etc", "a/../../x"]) {
+    const result = await runMock(exec, { workDir: dir, rootDir });
+    assert.strictEqual(result.success, false, rootDir);
+    assert.match(result.error || "", /root directory/i);
+  }
+  fs.symlinkSync("/tmp", path.join(dir, "escape"));
+  const viaLink = await runMock(exec, { workDir: dir, rootDir: "escape" });
+  assert.strictEqual(viaLink.success, false);
+  assert.match(viaLink.error || "", /outside the repository/);
+});
+
+test("security: native app processes do not inherit the runner's secrets", () => {
+  return withEnv({ RUNNER_SECRET: "s", CLOUDFLARE_API_TOKEN: "t", SYNCBAY_WEBHOOK_SECRET: "w", R2_SECRET_ACCESS_KEY: "r", PATH_EXTRA_OK: "1" }, async () => {
+    const env = hostEnvForApps();
+    for (const k of ["RUNNER_SECRET", "CLOUDFLARE_API_TOKEN", "SYNCBAY_WEBHOOK_SECRET", "R2_SECRET_ACCESS_KEY"]) assert.ok(!(k in env), k);
+    assert.strictEqual(env.PATH_EXTRA_OK, "1");
+  });
+});
+
+test("stacks: a plain server.js without package.json is a Node app with nothing to install", () => {
+  const dir = writeFixture({ "server.js": "require('http').createServer().listen(process.env.PORT)" });
+  const stack = detectStack(stackFilesFor(dir))!;
+  assert.strictEqual(stack.id, "node");
+  const df = generateDockerfile(stack, {} as any);
+  assert.ok(!/npm (ci|install)/.test(df) && !/COPY package\.json/.test(df), df);
+  assert.match(df, /node server\.js/);
 });

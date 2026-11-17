@@ -38,7 +38,7 @@ export function DatabaseBrowser({ db, canQuery, focused }: { db: InventoryDataba
     const query = isRedis
       ? buildRedisPreviewCommand(table.tableName, table.columns[0]?.type ?? "string")
       : buildTablePreviewQuery(db.provider === "MYSQL" ? "MYSQL" : "POSTGRES", table, PREVIEW_ROW_LIMIT);
-    preview.mutate({ databaseId: db.id, query, mode: "read", safeMode: true });
+    preview.mutate({ databaseId: db.id, query, mode: "read", safeMode: false /* generated, quoted SELECT; read mode still applies its allowlist and READ ONLY */ });
   };
 
   return (

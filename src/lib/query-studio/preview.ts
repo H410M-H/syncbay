@@ -67,13 +67,21 @@ export function buildRedisPreviewCommand(key: string, type: string): string {
 }
 
 /** Connection URL with the password replaced, for display. Unparsable input is fully masked. */
+const SECRET_PARAMS = /^(password|pass|pwd|secret|token|auth|access_?key|sslpassword)$/i;
+
 export function maskConnectionUrl(url: string | null | undefined): string {
   if (!url) return "";
   try {
     const parsed = new URL(url);
     if (parsed.password) parsed.password = "****";
+    // redis://<secret>@host: a user part with no password is the password for Redis.
+    else if (parsed.username && /^rediss?:$/i.test(parsed.protocol)) parsed.username = "****";
+    for (const key of [...parsed.searchParams.keys()]) if (SECRET_PARAMS.test(key)) parsed.searchParams.set(key, "****");
     return parsed.toString();
   } catch {
-    return url.replace(/(:\/\/[^:/@\s]+:)[^@\s]+@/, "$1****@").replace(/^[^:]*:\/\/.*$/, (m) => (m.includes("@") ? m : "****"));
+    // Not a parseable URL: hide everything between "://" and the last "@", and any password=… pair.
+    return url
+      .replace(/(:\/\/)[^/]*@/, (_m, scheme) => `${scheme}****@`)
+      .replace(/([?&;](?:password|pass|pwd|secret|token)=)[^&;\s]*/gi, "$1****");
   }
 }

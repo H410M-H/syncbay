@@ -23,6 +23,8 @@ export interface StackPlan {
   /** pnpm major (or exact version from `packageManager`) to install. */
   pnpmVersion?: string;
   nodeMajor?: string;
+  /** No package.json: a plain `node server.js` app, nothing to install. */
+  noManifest?: boolean;
   /** True when install scripts need the whole source tree (postinstall, prepare, yarn berry …). */
   installNeedsSource?: boolean;
   /** Static output directory, relative to the project root ("." for a plain site). */

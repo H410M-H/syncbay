@@ -204,6 +204,12 @@ export const bucketRouter = createTRPCRouter({
         where: { id: input.bucketId, project: memberScope(ctx.session.user.id) },
       });
       if (!bucket) throw new TRPCError({ code: "NOT_FOUND", message: "Bucket not found" });
+      // Viewers see what a bucket holds but cannot read or write objects (as with volume files and rows).
+      const writer = await ctx.db.bucket.findFirst({
+        where: { id: input.bucketId, project: memberScope(ctx.session.user.id, ["OWNER", "ADMIN", "MEMBER"]) },
+        select: { id: true },
+      });
+      if (!writer) throw new TRPCError({ code: "FORBIDDEN", message: "Viewers cannot download or upload objects" });
 
       let presignedUrl: string;
       try {

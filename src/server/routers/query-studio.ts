@@ -76,6 +76,10 @@ export const queryStudioRouter = createTRPCRouter({
     .input(z.object({ databaseId: z.string() }))
     .query(async ({ ctx, input }) => {
       const { dbInstance, role } = await loadDatabaseForUser(ctx.db, ctx.session.user.id, input.databaseId);
+      // Redis key names often carry session or reset tokens; viewers see table structure only.
+      if (role === "VIEWER" && dbInstance.provider === "REDIS") {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Viewers cannot list Redis keys; key names can contain tokens" });
+      }
       try {
         const tables = await getDatabaseSchema({
           provider: dbInstance.provider as QueryProvider,

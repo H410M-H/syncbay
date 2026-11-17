@@ -476,10 +476,13 @@ async function main() {
       assert.strictEqual(new Set([...p1.objects, ...p2.objects].map((o: any) => o.key)).size, 4);
       ok("delimiter listing: root → [folder/] + readme.txt; folder/ → [folder/sub/] + a.txt, c.bin (300 B); cursor pagination covers all 4 keys");
 
-      const dl = await asViewer.bucket.generatePresignedUrl({ bucketId: bucket.id, key: "folder/c.bin", operation: "get", expiresInSeconds: 300 });
+      const dl = await asOwner.bucket.generatePresignedUrl({ bucketId: bucket.id, key: "folder/c.bin", operation: "get", expiresInSeconds: 300 });
       const got = Buffer.from(await (await fetch(dl.url)).arrayBuffer());
       assert.ok(got.equals(files["folder/c.bin"]), "downloaded bytes match");
-      ok("presigned GET downloads the exact bytes");
+      for (const operation of ["get", "put"] as const) {
+        await assert.rejects(asViewer.bucket.generatePresignedUrl({ bucketId: bucket.id, key: "folder/c.bin", operation, expiresInSeconds: 300 }), (e: any) => e.code === "FORBIDDEN");
+      }
+      ok("presigned GET downloads the exact bytes; viewers get no download or upload link");
 
       const missing = await prisma.bucket.create({ data: { projectId: project.id, name: "gone", r2BucketRef: `sb-gone-${RUN}` } });
       const gone = await asOwner.bucket.checkConnection({ bucketId: missing.id });
@@ -599,7 +602,7 @@ async function main() {
     docker(["volume", "create", dockerName]);
     dockerVolumes.push(dockerName);
     docker([
-      "run", "--rm", "-v", `${dockerName}:/v`, "busybox:latest", "sh", "-c",
+      "run", "--rm", "-v", `${dockerName}:/v`, "busybox:1.36.1", "sh", "-c",
       "mkdir -p /v/logs && echo 'cached entry' > /v/item.txt && printf 'l1\\nl2\\n' > /v/logs/app.log && head -c 200 /dev/urandom > /v/blob.bin && ln -s /etc/shadow /v/shadow-link && ln -s item.txt /v/inner",
     ]);
     for (const [port, access] of [[PORT_A, "direct"], [PORT_B, "container"]] as const) {

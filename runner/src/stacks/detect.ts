@@ -461,7 +461,30 @@ function detectDeno(files: StackFiles): DetectedStack {
 // ─── ENTRY POINT ─────────────────────────────────────────────────────────────
 
 /** Detects the project's stack, or null when nothing is recognised (Nixpacks / native fallback). */
+/**
+ * Values read from a repository's manifests (output directories, dependency names, binary and
+ * module names) end up inside Dockerfile lines and shell words. A value with a line break or shell
+ * quoting characters could add Dockerfile instructions, so such values are dropped and the stack's
+ * default is used instead.
+ */
+const UNSAFE_VALUE = /[\r\n\0'"`$\\]/;
+
+function sanitizePlan(stack: DetectedStack): DetectedStack {
+  const plan: Record<string, unknown> = { ...stack.plan };
+  for (const [key, value] of Object.entries(plan)) {
+    if (typeof value === "string" && UNSAFE_VALUE.test(value)) delete plan[key];
+    else if (Array.isArray(value)) plan[key] = value.filter((v) => typeof v !== "string" || !UNSAFE_VALUE.test(v));
+  }
+  const notes = stack.notes.filter((n) => !/[\r\n\0]/.test(n));
+  return { ...stack, plan: plan as DetectedStack["plan"], notes };
+}
+
 export function detectStack(files: StackFiles): DetectedStack | null {
+  const stack = detectStackUnchecked(files);
+  return stack ? sanitizePlan(stack) : null;
+}
+
+function detectStackUnchecked(files: StackFiles): DetectedStack | null {
   const pkgText = files.read("package.json");
   const pkg = pkgText ? parseJson<Pkg>(pkgText) || {} : null;
   const pkgDeps = pkg ? { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) } : {};
@@ -482,6 +505,12 @@ export function detectStack(files: StackFiles): DetectedStack | null {
   if (files.exists("Gemfile")) return detectRuby(files);
   const procfile = procfileWeb(files);
   if (procfile && /\b(python|gunicorn|uvicorn|hypercorn|daphne|waitress)\b/.test(procfile)) return detectPython(files);
+  // A plain Node.js server with no package.json (server.js / index.js / app.js / main.js).
+  const jsEntry = ["server.js", "index.js", "app.js", "main.js"].find((f) => files.exists(f));
+  if (jsEntry) {
+    const plain = detectNode(files, { main: jsEntry } as Pkg);
+    return { ...plain, reason: jsEntry, plan: { ...plain.plan, noManifest: true } };
+  }
   if (files.exists("index.html")) return { id: "static", label: "Static site", reason: "index.html", port: 8080, notes: [], plan: { outputDir: ".", needsBuild: false } };
   if (files.exists("public/index.html")) return { id: "static", label: "Static site", reason: "public/index.html", port: 8080, notes: [], plan: { outputDir: "public", needsBuild: false } };
   return null;

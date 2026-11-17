@@ -1,3 +1,4 @@
+import { repoRootDir } from "@/server/routers/service";
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { validateBearerToken, checkScope } from "@/lib/api/auth-token";
@@ -74,6 +75,9 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     if (!body.projectId || !body.name) {
       return NextResponse.json({ error: "Fields 'projectId' and 'name' are required" }, { status: 400 });
+    }
+    if (body.rootDir != null && !repoRootDir.safeParse(String(body.rootDir)).success) {
+      return NextResponse.json({ error: "Field 'rootDir' must be a path inside the repository" }, { status: 400 });
     }
 
     const project = await db.project.findFirst({

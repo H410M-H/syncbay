@@ -1,3 +1,4 @@
+import { maskConnectionUrl } from "@/lib/query-studio/preview";
 import { z } from "zod";
 import { createTRPCRouter, protectedProcedure } from "@/server/trpc";
 import { TRPCError } from "@trpc/server";
@@ -12,6 +13,16 @@ import {
 import { DatabaseProvider } from "@prisma/client";
 import { checkConnection, type QueryProvider } from "@/lib/query-studio/engine";
 import { getRunnerBaseUrl } from "@/lib/runner-client";
+
+/**
+ * Connection details as the caller may see them: a workspace VIEWER gets the URL with the password
+ * masked and no password in `credentials` (they can see that a database exists, not log in to it).
+ */
+function withCredentialsFor<T extends { connectionUrl: string; provider: string }>(inst: T, role: string | undefined) {
+  const credentials = parseDatabaseUrl(inst.connectionUrl, inst.provider as "POSTGRES" | "REDIS" | "MYSQL");
+  if (role === "OWNER" || role === "ADMIN" || role === "MEMBER") return { ...inst, credentials };
+  return { ...inst, connectionUrl: maskConnectionUrl(inst.connectionUrl), credentials: { ...credentials, password: "" } };
+}
 
 export const databaseRouter = createTRPCRouter({
   /**
@@ -52,17 +63,16 @@ export const databaseRouter = createTRPCRouter({
         include: {
           environment: {
             include: {
-              project: true,
+              project: { include: { workspace: { select: { members: { where: { userId: ctx.session.user.id }, select: { role: true } } } } } },
             },
           },
         },
         orderBy: { createdAt: "desc" },
       });
 
-      return instances.map((inst) => ({
-        ...inst,
-        credentials: parseDatabaseUrl(inst.connectionUrl, inst.provider),
-      }));
+      return instances.map(({ environment: { project: { workspace, ...project }, ...environment }, ...inst }) =>
+        withCredentialsFor({ ...inst, environment: { ...environment, project } }, workspace.members[0]?.role)
+      );
     }),
 
   /**
@@ -86,7 +96,7 @@ export const databaseRouter = createTRPCRouter({
         include: {
           environment: {
             include: {
-              project: true,
+              project: { include: { workspace: { select: { members: { where: { userId: ctx.session.user.id }, select: { role: true } } } } } },
             },
           },
         },
@@ -96,10 +106,8 @@ export const databaseRouter = createTRPCRouter({
         throw new TRPCError({ code: "NOT_FOUND", message: "Database instance not found" });
       }
 
-      return {
-        ...instance,
-        credentials: parseDatabaseUrl(instance.connectionUrl, instance.provider),
-      };
+      const { environment: { project: { workspace, ...project }, ...environment }, ...inst } = instance;
+      return withCredentialsFor({ ...inst, environment: { ...environment, project } }, workspace.members[0]?.role);
     }),
 
   /**
