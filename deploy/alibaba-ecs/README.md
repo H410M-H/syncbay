@@ -71,4 +71,28 @@ curl -fsS https://runner.syncbay.app/health   # "version" must match runner/src/
   - New databases get a host port from `RUNNER_DB_PORT_RANGE` (default `54320-54399` in this kit). Open that range in the security group only if pgAdmin, `psql` or Query Studio must connect from outside. A database created earlier keeps its port (for example 10001); open that one port, or recreate the database.
 - **Start-up checks:** a new instance has 120 s (`RUNNER_HEALTH_TIMEOUT_MS`) to answer HTTP. If the app listens on another port than the service's port, the runner finds it and re-maps. An app bound to `127.0.0.1` cannot be reached; bind it to `0.0.0.0`.
 - **Builds:** at most 2 at once (`RUNNER_MAX_CONCURRENT_BUILDS`; use 1 on a 1–2 GiB host). Node projects that pin no version build with Node 22 (`RUNNER_DEFAULT_NODE_VERSION`).
+- **Builders:** by default (`auto`) a repository's own `Dockerfile` wins. Without one, the runner detects the stack and builds a generated `Dockerfile.syncbay` (see *Supported stacks*), and only falls back to Nixpacks, then a native process, when nothing is recognised. A failed template build is not retried with Nixpacks; its error names the generated file. `RUNNER_BUILDER` (`auto` | `template` | `nixpacks` | `dockerfile`) in `.env` changes the default for the host; a service variable `SYNCBAY_BUILDER` overrides it per service.
+- **Builds behind a proxy:** `HTTP(S)_PROXY` / `NO_PROXY` from `.env` reach `docker build` as build args (by name only, so values never appear in logs). `RUNNER_BUILD_NETWORK=host` lets build steps reach a proxy on the host's `127.0.0.1`. `RUNNER_BUILD_CA_FILE` (a PEM file mounted into the runner container) is trusted by every template build step: npm, pip, Go, Cargo, Composer, Maven/Gradle (imported into the JDK store), Bundler and Deno.
 - **Behind NAT instead** (a home machine, or a host with no public IP): keep Cloudflare Tunnel (`TUNNEL_DRIVER=cloudflare` with `CLOUDFLARE_TUNNEL_TOKEN`) and drop the caddy service. Use the tunnel hostname as `RUNNER_URL`.
+
+## Supported stacks
+Without a Dockerfile, the runner reads the repository's manifests and generates `Dockerfile.syncbay` (plus `Dockerfile.syncbay.dockerignore`; a repo's `.dockerignore` is reused). Every image listens on `$PORT` on `0.0.0.0`; a service with no port set uses the stack's port below. The service's build and start commands replace the defaults. The deploy log names the detected stack and prints hints (for example Django's `ALLOWED_HOSTS`). "e2e" marks stacks built, started and answered HTTP 200 in `cd runner && npm run test:stacks` (real Docker).
+
+| Stack | Detected from | Image | Default start | Port | e2e |
+| --- | --- | --- | --- | --- | --- |
+| Node.js: Express, Fastify, Koa, Hono, NestJS … | `package.json` (npm, pnpm, Yarn 1/Berry lockfiles) | `node:<.nvmrc / engines, default 22>-bookworm-slim` | `start` script, `main`, or `server.js` / `index.js` | 3000 | Express |
+| Next.js / Nuxt / Remix / SvelteKit (adapter-node) / Astro SSR / Angular SSR | `next`, `nuxt`, `@remix-run/*`, `@sveltejs/kit`, `@astrojs/node`, `@angular/ssr` | same | `next start`, `node .output/server/index.mjs`, `node build` … | 3000 (Astro 4321, Angular SSR 4000) | Next.js |
+| Static SPA: Vite (React, Vue, Svelte, Solid), CRA, Vue CLI, Angular, Gatsby, Astro, Next `output: 'export'`, Nuxt generate, SvelteKit adapter-static | build script + output dir (`dist`, `build`, `out`, `dist/<app>/browser` …) | Node build stage → `nginx:1.27-alpine` with SPA fallback to `index.html` | nginx | 8080 | Vite React, Angular 19 |
+| Plain static site | `index.html` or `public/index.html` | `nginx:1.27-alpine` | nginx | 8080 | yes |
+| Python: Django, FastAPI, Flask, Procfile, `main.py` | `requirements.txt`, `pyproject.toml` (PEP 621), `poetry.lock`, `uv.lock`, `Pipfile`, `manage.py` | `python:<.python-version, default 3.12>-slim` | `gunicorn <project>.wsgi`, `uvicorn main:app`, `gunicorn app:app`, Procfile `web:` | 8000 | Flask, FastAPI, Django |
+| Go | `go.mod` (`main.go` or `cmd/<name>/main.go`) | `golang:1.<go.mod>-bookworm` → `debian:bookworm-slim` | the built binary | 8080 | net/http |
+| Rust: Axum, Actix Web, Rocket, std | `Cargo.toml` (`[[bin]]` or package name) | `rust:1-bookworm` → `debian:bookworm-slim` | the release binary | 8080 | std `TcpListener` |
+| PHP, Laravel | `composer.json`, `index.php`, `public/index.php`, `artisan` | `composer:2` stage → `php:8.3-apache` (doc root `public/` when present) | Apache on `$PORT` | 8080 | plain PHP + Composer autoload |
+| Java: Spring Boot, any fat jar | `pom.xml`, `build.gradle(.kts)` (wrapper used when present) | `maven:3.9-eclipse-temurin-21` / `gradle:8-jdk21` → `eclipse-temurin:21-jre` | `java -jar app.jar` | 8080 | — |
+| Ruby: Rails, Rack (Sinatra …) | `Gemfile` + `config.ru` / `bin/rails` | `ruby:<.ruby-version, default 3.3>` → `-slim` | `rails server`, `puma`, `rackup` | 3000 | — |
+| Deno | `deno.json(c)` | `denoland/deno` | `deno task start` or `main.ts` | 8000 | — |
+| Bun | `bun.lock(b)` or `packageManager: bun@…` | `oven/bun:1` | `start` script or `index.ts` | 3000 | — |
+
+- Precedence when a repo has several manifests: Laravel, Rails and Django win over their asset-tooling `package.json`; Go, Java and Rust win over a helper `package.json` (a napi-rs addon stays Node).
+- Templates for Django with `psycopg2` (source build), `mysqlclient`, and Rails with `pg`/`mysql2`/`sqlite3` install system libraries with `apt-get`; that needs the Debian mirrors to be reachable from the build.
+- Anything not covered: add a `Dockerfile`, or set `SYNCBAY_BUILDER=nixpacks` on the service.
