@@ -65,11 +65,22 @@
 - [x] Unattended deploys use a working GitHub token of the project's workspace; log streams end before the 300 s function limit and resume
 - [x] pgAdmin over an SSH tunnel documented in the Databases page
 
+## Completed — v1.5 (keep apps up, build any stack)
+- [x] Health monitor: live apps probed every minute; restarted (or redeployed) after two failed probes, with cooldown and audit
+- [x] Runner auto-updater on the server (pull + rebuild when runner code changes, retries, status on `/health` and the dashboard)
+- [x] Visitors see a self-refreshing "restarting" page instead of a CDN 502 while an app is down
+- [x] Syncbay stack templates: generated Dockerfiles for Node/Next.js, Angular/React/Vue/static SPAs, Python (Flask, FastAPI, Django), Go, Rust, PHP/Laravel, Java, Ruby, Deno, Bun; 11 stacks verified end to end
+- [x] Data view per project: test connections and browse databases (read-only previews), buckets (folders, downloads) and volumes (files)
+- [x] Security review fixes: repository symlinks never followed by the runner, runner secrets never passed to apps, `rootDir` confined, Query Studio read mode hardened, viewer access narrowed
+
 ## Next
 - [ ] Staff console: separate staff session and passkeys; "suspended" page and customer emails with appeals; runner host cost registry and margin; dunning and refunds; automatic abuse signals (Web Risk, crypto-mining); CSV exports
 - [ ] Per-environment Docker networks so tenants on one runner cannot reach each other's containers
 - [ ] Persist runner launch specs so restart and rollback work after the runner itself restarts
-- [ ] Health monitoring of live instances (mark CRASHED, restart, alert) between deploys
+- [ ] Alerts when the health monitor heals a service (email/webhook); CRASHED after repeated heals
+- [ ] Read-only database role for Query Studio and the Data view (instead of the superuser + role drop)
+- [ ] Sandbox builds (rootless Docker or a socket proxy); Docker Hub pull-through mirror on runners
+- [ ] Show the builder and detected stack in the deployment view
 - [ ] Database backups (scheduled `pg_dump` to R2) and restore
 - [ ] Volume size enforcement and volume snapshots
 - [ ] Encrypt `EnvironmentVariable.value` and database credentials at rest

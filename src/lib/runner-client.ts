@@ -1,7 +1,8 @@
 /**
  * Syncbay PaaS — Signed runner HTTP client for managed databases & terminals.
- * Uses the driver's canonical `${ts}.${nonce}.${METHOD}.${path}.${payload}` signature: POST payload
- * is the raw body, GET/DELETE payload is the request pathname (matches runner/src/services.ts).
+ * Uses the driver's canonical `${ts}.${nonce}.${METHOD}.${path}.${payload}` signature: `path` is the
+ * pathname without query, POST payload is the raw body, GET/DELETE payload is the request pathname
+ * plus its query string, if any (matches runner/src/services.ts).
  * Every call gets a fresh `X-Syncbay-Nonce`, which the runner accepts only once.
  */
 
@@ -27,14 +28,21 @@ export async function runnerFetch(
 
   const method = init.method || (init.body !== undefined ? "POST" : "GET");
   const bodyStr = method === "POST" ? JSON.stringify(init.body ?? {}) : undefined;
-  const { headers: signedHeaders } = signRequest(resolveRunnerSecret(), method, pathname, bodyStr ?? pathname);
+  // The canonical `path` is the bare pathname (what the runner reads from `url.pathname`); a
+  // GET/DELETE payload is the full request target, so any query string is covered by the HMAC.
+  // Normalised through the WHATWG parser (as fetch and the runner both do), so the signed bytes
+  // are exactly what arrives.
+  const target = new URL(pathname, "http://runner.invalid");
+  const barePath = target.pathname;
+  const requestTarget = `${target.pathname}${target.search}`;
+  const { headers: signedHeaders } = signRequest(resolveRunnerSecret(), method, barePath, bodyStr ?? requestTarget);
 
   const controller = new AbortController();
   const timer = init.timeoutMs ? setTimeout(() => controller.abort(), init.timeoutMs) : null;
   init.signal?.addEventListener("abort", () => controller.abort(), { once: true });
 
   try {
-    return await fetch(`${base}${pathname}`, {
+    return await fetch(`${base}${requestTarget}`, {
       method,
       headers: {
         "Content-Type": "application/json",

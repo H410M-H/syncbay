@@ -248,7 +248,15 @@ export default function BucketsPage() {
                     </div>
                   </div>
 
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                    <Link
+                      href={`/dashboard/projects/${b.projectId}/data?focus=${encodeURIComponent(`bucket:${b.id}`)}`}
+                      className="btn btn-secondary btn-sm"
+                      style={{ fontSize: "0.75rem" }}
+                      aria-label={`Browse objects in ${b.name}`}
+                    >
+                      🗂 Data
+                    </Link>
                     <button
                       onClick={() => {
                         setSelectedBucketForUrl(b);

@@ -1,6 +1,6 @@
 # Syncbay — Product Requirements Document
 
-**Version 1.4 · 12 November 2026 · MSNS-DEV**
+**Version 1.5 · 17 November 2026 · MSNS-DEV**
 Supersedes *Portway PRD v0.1* (2 September 2026). The product was renamed **Syncbay** (`syncbay.app`).
 
 | Version | Date | Change |
@@ -9,7 +9,8 @@ Supersedes *Portway PRD v0.1* (2 September 2026). The product was renamed **Sync
 | 1.1 | Oct 2026 | Backend made real: durable deploys, logs, metrics, usage, billing, managed databases |
 | 1.2 | Nov 2026 | Self-hosted runner in production, runner preflight, project actions, live analytics |
 | 1.3 | 11 Nov 2026 | Availability and build reliability; incident review (§9) and recommendations (§10) |
-| **1.4** | **12 Nov 2026** | **Staff console (§16), security fixes and production log review (§9.2); this revision** |
+| 1.4 | 12 Nov 2026 | Staff console (§16), security fixes and production log review (§9.2) |
+| **1.5** | **17 Nov 2026** | **Apps stay up (§9.3), every common stack builds (§17), Data view (§18), validation and security review (§19); this revision** |
 
 ---
 
@@ -79,7 +80,7 @@ flowchart LR
 
 **Control plane.** Next.js 16 (App Router), tRPC, Prisma on PostgreSQL, NextAuth. Stateless: every long-running action is a `DeploymentJob` row that survives a function restart, and a cron resumes anything that lapses.
 
-**Data plane.** The runner clones the repository, builds an image (Dockerfile, else Nixpacks, else a native process), starts it on a host port, checks that it answers HTTP, and proxies traffic to it. Requests between the planes are signed (HMAC-SHA256, single-use nonce).
+**Data plane.** The runner clones the repository, builds an image (the repo's Dockerfile, else a Syncbay-generated Dockerfile for the detected stack (§17), else Nixpacks), starts it on a host port, checks that it answers HTTP, and proxies traffic to it. Requests between the planes are signed (HMAC-SHA256, single-use nonce).
 
 **Edge.** Every `*.syncbay.app` and custom-domain request enters through the Vercel proxy, which resolves the hostname to the live deployment and forwards to the runner.
 
@@ -98,7 +99,7 @@ sequenceDiagram
   C->>C: Create Deployment + job row, claim hostname
   Note over C,O: The live instance keeps serving the address
   C->>R: Signed build request
-  R->>R: Clone, build image (Nixpacks or Dockerfile)
+  R->>R: Clone, detect stack, build image (Dockerfile, template or Nixpacks)
   R->>A: Start container on a new host port
   loop up to 120 s
     R->>A: GET /health, then /
@@ -141,7 +142,7 @@ Status: **Shipped** (in production code with a real test), **Partial**, **Planne
 | Identity (3.1) | GitHub, Google and password sign-in; workspaces; roles | Shipped | OWNER / ADMIN / MEMBER; invitations by email |
 | Projects (3.2) | Projects, environments, PR preview environments | Shipped | Preview gets its own address, sleeps when idle, removed on PR close |
 | Services (3.3) | GitHub-connected services; branch, root directory, build and start commands | Shipped | Push webhook triggers a deploy |
-| Build (3.4) | Dockerfile and buildpack builds; clean rebuild | Shipped | Nixpacks 1.30; Node 22 when the project pins nothing; 2 builds at once |
+| Build (3.4) | Dockerfile and buildpack builds; clean rebuild | Shipped | **v1.5: generated Dockerfiles for Node, Next.js, Angular/React/Vue SPAs, static sites, Python, Go, Rust, PHP, Java, Ruby, Deno, Bun (§17)**; Nixpacks as a fallback; 2 builds at once |
 | Deploy (3.5) | Health-checked releases, rollback, restart, pause | Shipped | **v1.3: zero-downtime; failed release leaves the live version up** |
 | Deploy (3.5) | Canary releases with automatic rollback | Shipped | Uses real per-deployment 5xx counts |
 | Network (3.6) | Generated subdomain and custom domains | Shipped | **v1.3: one owner per hostname** |
@@ -150,10 +151,12 @@ Status: **Shipped** (in production code with a real test), **Partial**, **Planne
 | Variables (3.7) | Per-service variables, `${{ service.VAR }}` references, secrets masked | Partial | Values not yet encrypted at rest (§10 R-03) |
 | Databases (3.8) | One-click Postgres, Redis, MySQL; connection variables injected | Shipped | Query Studio for browsing and safe queries |
 | Databases (3.8) | Backups and point-in-time restore | Planned | §10 R-02 |
-| Storage (3.9) | Persistent volumes | Partial | Mounted and persistent; size limit not enforced |
+| Storage (3.9) | Persistent volumes | Partial | Mounted and persistent; **browsable in the Data view (§18)**; size limit not enforced |
+| Data (new) | See what is in databases, buckets and volumes; test their connections | Shipped | **v1.5 Data view (§18)** |
 | Storage (3.9) | Object storage buckets | Shipped | Cloudflare R2; needs R2 keys configured |
 | Observability (3.10) | Build and runtime logs, CPU/memory, traffic and latency | Shipped | Stored 30–35 days |
-| Observability (3.10) | Alerts on crash, error rate, resource limits | Planned | §10 R-01 |
+| Observability (3.10) | Crash detection and automatic restart | Shipped | **v1.5: health monitor probes every live app each minute and restarts it after two failures (§9.3)** |
+| Observability (3.10) | Alerts on crash, error rate, resource limits (email, webhook) | Planned | §10 R-01 |
 | Feature flags (3.11) | Flags per environment | Planned | Data model only |
 | Billing (3.12) | Usage metering, spending cap, Stripe cards and invoices | Shipped | No card data touches Syncbay |
 | API (3.13) | REST API with tokens, OpenAPI, CLI, GitHub webhooks | Shipped | |
@@ -264,6 +267,43 @@ Two security problems were found while designing the staff console and fixed fir
 1. **Session cookies reached customer apps.** The login cookie is scoped to `.syncbay.app` so the wake button works on service hosts. The edge forwarded every request header, so a customer's app received the session token of everyone who visited it. Syncbay cookies are now removed before traffic is forwarded, at the edge and again in the runner.
 2. **Password hashes in API responses.** Two workspace endpoints returned whole user rows (including `passwordHash` and `totpSecret`) to other members. They now return name, email and avatar only.
 
+### 9.3 "502 Bad gateway" on a live site — 17 November 2026
+
+A customer's site on `portfolio.syncbay.app` returned Cloudflare's *502 Bad gateway* although its deployment was ACTIVE.
+
+| Finding | Evidence | Fix in v1.5 |
+| --- | --- | --- |
+| The runner host never received v1.3 or v1.4 | `/health` reported no `version`, uptime since 9 November | **Runner auto-updater** on the host (`updater` service): pulls `main` every 10 minutes and rebuilds the runner when its code changed; the result is on `/health` and the dashboard |
+| The old runner mapped the wrong container port, so the proxy got "socket hang up" | Fixed in v1.3 code, still running on the host | Applied once the host updates |
+| Nothing noticed that a live app stopped answering | No probe between deploys | **Health monitor** (every minute): two failed probes → restart in place, else redeploy the same build; cooldown, audit entry |
+| Visitors saw a CDN error page | The runner answered 502 JSON | Browsers get a self-refreshing "restarting" page (HTTP 503) while an app is down |
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant Cron as Cron (every minute)
+  participant M as Health monitor
+  participant R as Runner
+  participant A as App instance
+  Cron->>M: monitorServiceHealth()
+  M->>R: GET /health (runner itself)
+  alt runner down
+    M-->>Cron: skip (no healing during a runner outage)
+  else runner up
+    M->>R: GET /health, then / with x-target-port
+    R->>A: proxy
+    alt answers below 500
+      M->>M: healthFailures = 0
+    else second failure in a row
+      M->>M: claim heal (still live, not paused, nothing deploying, cooldown passed)
+      M->>R: restart (same port) or redeploy the same build
+      M->>M: audit "service.auto_healed"
+    end
+  end
+```
+
+The Vercel runtime logs for 16–17 November showed no request errors; three cron runs could not reach the Prisma Postgres pool for a moment (transient, recovered on the next run).
+
 ## 10. Recommendations
 
 Ordered by priority. Effort is engineering time for one developer.
@@ -291,7 +331,7 @@ quadrantChart
 
 | ID | Recommendation | Why | Effort |
 | --- | --- | --- | --- |
-| **R-01** | **Monitor live instances.** Probe every live service each minute; mark CRASHED, restart, and email the owner | Today a crash after deploy is only noticed by visitors. This is the largest remaining gap for 24/7 operation | 3–4 days |
+| **R-01** | **Alert on incidents.** Probing and automatic restart shipped in v1.5; still to do: email/webhook to the owner, CRASHED state after repeated heals, error-rate alerts | Owners should hear about a crash before visitors do | 2 days |
 | **R-02** | **Database backups.** Nightly `pg_dump` to R2, 7-day retention, one-click restore | A single disk holds every customer database | 4–5 days |
 | **R-03** | **Encrypt secrets at rest.** Envelope-encrypt `EnvironmentVariable.value` and database URLs with a key outside the database | A database leak would expose every customer secret | 2–3 days |
 | **R-04** | **Isolate tenants on a runner.** One Docker network per environment; resource limits (`--memory`, `--cpus`, `--pids-limit`) per plan | Containers of different customers can reach each other and can starve the host | 5–7 days |
@@ -301,6 +341,10 @@ quadrantChart
 | **R-08** | **Public status page and uptime numbers** from the R-01 probes | Trust for paying customers; cheap once R-01 exists | 1–2 days |
 | **R-09** | **Templates.** One-click Next.js, Express, FastAPI, Laravel with a database | Shortens time-to-first-deploy for new users | 3–4 days |
 | **R-10** | **Local payment rails** (JazzCash, Easypaisa, bank transfer) | The regional pricing wedge from v0.1 §2.1 is untested without them | 2–3 weeks |
+| **R-11** | **Least-privilege database access for the dashboard.** Provision a read-only role per managed database and use it for Query Studio and the Data view | Read mode now refuses dangerous statements and drops superuser rights, but a dedicated role is the real boundary | 2 days |
+| **R-12** | **Sandbox builds.** Rootless Docker or a socket proxy for the runner; builds in a user namespace | Customer Dockerfiles build on the host's Docker daemon (§14) | 4–5 days |
+| **R-13** | **Registry mirror and retry.** Pull-through cache for Docker Hub on each runner; one retry on 429/5xx | Docker Hub rate limits failed some cold builds during validation (§19) | 1 day |
+| **R-14** | **Show the builder in the dashboard.** Report strategy and detected stack in the build status | Users should see "Built with the Syncbay Django template" | 0.5 day |
 
 **Operational actions for the operator, outside the code:**
 
@@ -313,10 +357,10 @@ quadrantChart
 
 | Requirement | Target | Current |
 | --- | --- | --- |
-| Time to first deploy | under 5 minutes from sign-in | Met for Dockerfile and warm Nixpacks builds; cold Nixpacks builds take 4–6 minutes (R-06) |
+| Time to first deploy | under 5 minutes from sign-in | Met: template builds take 4–106 s cold in validation (§19); cold Nixpacks builds take 4–6 minutes (R-06) |
 | Redeploy downtime | none | Met since v1.3 |
 | Failed release impact | none on the live version | Met since v1.3 |
-| Service availability | 99.5 % per month on a single runner | Not measured (R-01, R-08) |
+| Service availability | 99.5 % per month on a single runner | Probed every minute since v1.5 (`lastHealthyAt`); monthly figure not yet reported (R-08) |
 | Start-up window | configurable, default 120 s | Met |
 | Secret handling | never in logs or command lines; encrypted at rest | Logs and commands met; at-rest encryption open (R-03) |
 | Control-plane ↔ runner | signed, replay-proof | Met (HMAC-SHA256, single-use nonce) |
@@ -328,18 +372,21 @@ quadrantChart
 
 ```mermaid
 gantt
-  title Syncbay roadmap after v1.3
+  title Syncbay roadmap after v1.5
   dateFormat YYYY-MM-DD
   axisFormat %b %Y
   section Reliability
-  R-01 Health monitoring and alerts   :r1, 2026-11-16, 5d
+  R-01 Alerts on incidents            :r1, 2026-11-18, 2d
+  R-13 Registry mirror and retry      :r13, after r1, 1d
   R-05 Persist runner state           :r5, after r1, 3d
   R-08 Status page                    :r8, after r5, 2d
   section Data safety
-  R-03 Encrypt secrets at rest        :r3, 2026-11-16, 3d
+  R-11 Read-only DB role              :r11, 2026-11-18, 2d
+  R-03 Encrypt secrets at rest        :r3, after r11, 3d
   R-02 Database backups and restore   :r2, after r3, 5d
   section Platform
   R-04 Tenant isolation and limits    :r4, 2026-12-01, 7d
+  R-12 Sandbox builds                 :r12, after r4, 5d
   R-06 Build cache and base images    :r6, after r4, 5d
   R-07 Runner fleet                   :r7, 2027-01-05, 20d
   section Growth
@@ -349,8 +396,9 @@ gantt
 
 | Release | Theme | Exit criteria |
 | --- | --- | --- |
-| v1.4 (Dec 2026) | Operate with confidence | A crashed service restarts and its owner is told within 2 minutes; nightly backups restore cleanly; secrets encrypted |
-| v1.5 (Jan 2027) | Safe multi-tenancy | Tenants on one runner are network-isolated and resource-limited; warm builds under 90 seconds |
+| v1.5 (Nov 2026, this release) | Apps stay up; any stack builds | A crashed service restarts within 2–3 minutes; 11 stacks deploy without a Dockerfile; data is visible in the dashboard |
+| v1.6 (Dec 2026) | Operate with confidence | Owners are alerted; nightly backups restore cleanly; secrets encrypted; dashboard DB access through a read-only role |
+| v1.7 (Jan 2027) | Safe multi-tenancy | Tenants on one runner are network-isolated and resource-limited; builds sandboxed; warm builds under 90 seconds |
 | v2.0 (Q1 2027) | Scale out and sell | Two or more runners with automatic placement; public status page; first paying workspaces on local payment rails |
 
 ## 13. Success metrics
@@ -374,7 +422,8 @@ gantt
 | Nixpacks is in maintenance mode upstream | Newer runtimes missing | Dockerfile path always available; evaluate Railpack (R-06) |
 | Vercel function limits change | Long deploys stall | Deploys are job rows resumed by cron; no step depends on one long request |
 | Secrets leak from the control-plane database | Customer breach | R-03; values already kept out of logs and command lines |
-| Docker socket in the runner container | Runner compromise equals host compromise | Signed, replay-proof requests; only 443 exposed; consider rootless Docker or a socket proxy |
+| Docker socket in the runner container | Runner compromise equals host compromise | Signed, replay-proof requests; only 443 exposed; repository files never followed through symlinks and runner secrets never passed to apps (v1.5, §19.3); R-12 |
+| Docker Hub rate limits | Cold template builds fail | R-13 mirror; the live version keeps serving when a release fails |
 
 ## 15. Open questions
 
@@ -499,6 +548,110 @@ erDiagram
 | 6 | CSV exports, saved views, assigned account managers | Day-to-day CRM work |
 | 7 | Consent-based read-only impersonation (1 hour, customer notified) | Faster support without broad access |
 
+## 17. Build any common stack (v1.5)
+
+Most repositories have no Dockerfile. Until v1.4 they depended on Nixpacks, which is slow on a cold runner (2–3 minutes downloading Nix packages), needs ghcr.io, and is in maintenance mode upstream. v1.5 adds a Syncbay builder: the runner reads the repository's manifests and writes `Dockerfile.syncbay` from official Docker Hub images.
+
+```mermaid
+flowchart TD
+  start([Build request]) --> forced{SYNCBAY_BUILDER /<br/>RUNNER_BUILDER set?}
+  forced -->|dockerfile / template / nixpacks| want[Use that builder<br/>or fail with a clear reason]
+  forced -->|auto| df{Repository has<br/>a Dockerfile?}
+  df -->|yes| docker[Build the repo's Dockerfile]
+  df -->|no| detect{Stack detected?}
+  detect -->|yes| tpl[Write Dockerfile.syncbay<br/>for that stack and build it]
+  detect -->|no| nix{Nixpacks installed?}
+  nix -->|yes| nixpacks[Nixpacks build]
+  nix -->|no| refuse[Fail: say what is missing.<br/>Never run unsandboxed on a Docker host]
+  docker --> run[Start on PORT, probe /health then /,<br/>find the real port if needed]
+  tpl --> run
+  nixpacks --> run
+```
+
+| Stack | Detected from | Image | Verified end to end |
+| --- | --- | --- | --- |
+| Node.js (Express, Nest, Fastify …) | `package.json`, or a lone `server.js`/`index.js` | `node:22-bookworm-slim` | Express |
+| Next.js, Nuxt, Remix, SvelteKit, Astro | framework dependency | `node:22` | Next.js 15 |
+| Angular, React (Vite/CRA), Vue, Svelte | SPA build tooling | build in `node`, serve with `nginx:1.27-alpine` (SPA fallback) | Angular 19, React + Vite |
+| Static site | `index.html` | `nginx:1.27-alpine` | plain HTML |
+| Python: Flask, FastAPI, Django, Procfile | `requirements.txt`, `pyproject.toml`, Poetry, uv, Pipenv | `python:3.12-slim` + gunicorn/uvicorn | Flask, FastAPI, Django |
+| Go | `go.mod` | `golang` → `debian-slim` | net/http |
+| Rust | `Cargo.toml` | `rust` → `debian-slim` | std server |
+| PHP, Laravel | `composer.json`, `index.php`, `artisan` | `php:8.3-apache` | Composer app |
+| Java (Maven, Gradle) | `pom.xml`, `build.gradle` | Temurin JDK → JRE | unit tests only |
+| Ruby (Rack, Rails) | `Gemfile` + `config.ru` | `ruby:3.3-slim` | unit tests only |
+| Deno, Bun | `deno.json`, `bun.lock` | `denoland/deno`, `oven/bun` | unit tests only |
+
+Rules the builder keeps:
+
+- Every image listens on `$PORT` on `0.0.0.0`; the service's build and start commands replace the defaults.
+- User files are never overwritten; generated files never follow a symlink the repository planted (§19.3).
+- Proxy variables reach `docker build` by name only; a corporate CA (`RUNNER_BUILD_CA_FILE`) is trusted in every downloading stage and removed after the build.
+- A failed template build is not retried with Nixpacks (it would double the build time); the error names `SYNCBAY_BUILDER=nixpacks` and "add a Dockerfile" as the ways out.
+
+## 18. Data view (v1.5)
+
+Customers asked to *see* what their services store. Every project now has a **Data** page (`/dashboard/projects/:id/data`), linked from the project, Databases and Buckets pages.
+
+```mermaid
+flowchart LR
+  ui[Data page] -->|tRPC, workspace member| cp[Control plane]
+  cp -->|SELECT 1 / PING,<br/>50-row read-only preview| db[(Postgres / MySQL / Redis)]
+  cp -->|HeadBucket, ListObjectsV2,<br/>5-min presigned GET| r2[(R2 / S3 bucket)]
+  cp -->|signed GET /api/volumes/:id/...| runner[Runner]
+  runner -->|path guard, no symlink escape| vol[(Volume)]
+```
+
+| Resource | Test connection | Browse | Limits and access |
+| --- | --- | --- | --- |
+| Database | `SELECT 1` / `PING` + server version, runner health; unreachable and auth hints (incl. the `ssh -N -L` tunnel) | tables and columns, 50-row preview; Redis key types and values | read-only, 10 s timeout, values over 64 KiB cut; viewers see structure only |
+| Bucket | HeadBucket + list one object | folders, objects, pagination, download | download links last 5 minutes; viewers cannot download or upload |
+| Volume | runner stat | directories, text preview up to 64 KiB, binary type and size | `..`, absolute paths, NUL, FIFOs, devices and symlinks leaving the volume are refused; viewers cannot open files |
+
+## 19. Validation and security review (v1.5)
+
+Three agents tested the release independently: a deploy matrix through the real control-plane path, a security audit of the new surfaces, and a code review of the whole diff. Every confirmed finding was fixed before merge and has a regression test.
+
+### 19.1 Deploy matrix
+
+Each project was a git repository without a Dockerfile, deployed through `scheduleDeployment()` → engine → signed webhook → a real runner daemon → Docker, and fetched through the runner proxy as a visitor would. Cold rebuilds used `--no-cache`.
+
+| Stack | ACTIVE | Builder | HTTP 200 via proxy | Secret in logs or image | Cold rebuild |
+| --- | --- | --- | --- | --- | --- |
+| Express | yes | template | yes | no | 12 s |
+| Next.js 15 | yes | template | yes | no | 52 s |
+| React + Vite (deep route) | yes | template | yes | no | 20 s |
+| Static HTML | yes | template | yes | no | 36 s |
+| Flask | yes | template | yes | no | 34 s |
+| FastAPI | yes | template | yes | no | 42 s |
+| Django | yes | template | yes | no | 54 s |
+| Go net/http | yes | template | yes | no | 20 s |
+| Rust std | yes | template | yes | no | 92 s |
+| PHP | yes | template | yes | no | 62 s |
+| Angular 19 (deep link) | yes | template | yes | no | 106 s |
+
+Also verified: a fast redeploy answered 28 of 28 probes with HTTP 200 while switching versions; a failed rebuild left the live version serving; `docker kill` of a live app was healed by the health monitor in two cron runs; a deploy handed off by the 240 s poll budget was resumed by the recovery cron and went ACTIVE; a Python app that crashes on import failed with its own traceback.
+
+### 19.2 Test suites
+
+All five merge gates (prisma generate, typecheck, knip, lint, build) pass, and so do the runner unit tests, the real-Docker runner suites (deploys, stacks, database provisioning) and the control-plane suites `test:deploy`, `test:availability`, `test:data`, `test:query`, `test:observe`, `test:projects`, `test:admin`, `test:domains`, `test:analytics`, `test:billing`, `test:r2`, `test:devops`, `test:terminal-stateless` against real Postgres, Redis, runner daemons, Docker and an S3-compatible store.
+
+### 19.3 Security findings fixed in this release
+
+| Severity | Finding | Fix |
+| --- | --- | --- |
+| Critical | A repository could plant symlinks (`Dockerfile.syncbay`, `.dockerignore`, the CA file) so the root runner overwrote host files or copied its own environment into the image | Runner-owned files are written with `O_EXCL` after removing the entry; repo files are read with `O_NOFOLLOW`, regular and in-tree only |
+| Critical | A repository with no recognised stack ran as a native host process with the runner's secrets in its environment | Refused on Docker hosts with a clear message; native processes never inherit `RUNNER_*`/`SYNCBAY_*`/cloud credentials; a lone `server.js` is now built in a container |
+| High | `rootDir` could point outside the repository | Validated in the API and again on the runner (no `..`, absolute paths or symlinked escapes) |
+| High | A FIFO in a volume froze the runner daemon | Only regular files are opened, non-blocking |
+| High | Viewers received database passwords and could mint bucket upload links | Masked for viewers; presigned URLs need MEMBER or above |
+| High | The health monitor could resume a service paused during a probe, or put an old build over a new release | The heal claim re-checks the service's state |
+| High | Healthy apps could be restarted every 15 minutes (SSH/simulated runners, apps whose `/` returns 5xx) | Probe `/health` then `/`; skip modes without a probe path |
+| Medium | Query Studio read mode on a superuser connection could run `COPY … TO PROGRAM` or read server files | Statement allowlist, dangerous functions refused, `SET LOCAL ROLE pg_read_all_data`; R-11 for a dedicated role |
+| Medium | Huge values were returned whole (20 MB) | Values capped at 64 KiB |
+| Medium | Updates could cut in-flight builds | The updater builds first and waits until the runner is idle |
+| Low | Manifest values could inject Dockerfile lines; URL masking edge cases; Redis key names visible to viewers; a malformed `%`-escape could stop the daemon; resumed deploys duplicated their log; ports busy on 0.0.0.0 were handed out | All fixed |
+
 ## Appendix A — Runner settings added in v1.3
 
 | Variable | Default | Purpose |
@@ -511,15 +664,29 @@ erDiagram
 
 ## Appendix B — Updating a runner
 
+Once, by hand (this also starts the auto-updater):
+
 ```bash
 cd /opt/syncbay && git pull && docker compose -f deploy/alibaba-ecs/docker-compose.yml up -d --build
-curl -fsS https://runner.syncbay.app/health
+curl -fsS https://runner.syncbay.app/health   # "version": "1.5.0"
 ```
 
-Running app and database containers are not interrupted by a runner update.
+After that the `updater` service pulls `main` every 10 minutes, builds the new runner image, waits until no deploy is building, then swaps the runner. Docker apps and Docker databases keep running; apps and databases running as native processes inside the runner container restart with it. `RUNNER_AUTO_UPDATE=false` turns it off.
 
 ## Appendix C — Settings added in v1.4
 
 | Variable | Where | Purpose |
 | --- | --- | --- |
 | `SUPER_ADMIN_EMAILS` | Vercel | Emails that are always super admin (GitHub or Google sign-in required) |
+
+## Appendix D — Settings added in v1.5
+
+| Variable | Where | Default | Purpose |
+| --- | --- | --- | --- |
+| `SYNCBAY_BUILDER` | service variable | `auto` | `auto`, `template`, `nixpacks` or `dockerfile` for one service |
+| `RUNNER_BUILDER` | runner host | `auto` | Same, for every service on the runner |
+| `RUNNER_BUILD_CA_FILE` | runner host | none | CA bundle that build steps trust (corporate or egress proxy) |
+| `RUNNER_BUILD_NETWORK` | runner host | default | `host` runs `docker build --network host` |
+| `RUNNER_VOLUME_ACCESS` | runner host | `auto` | How the Data view reads Docker volumes: `direct` (mountpoint) or `container` (read-only helper) |
+| `RUNNER_VOLUME_HELPER_IMAGE` | runner host | `busybox:1.36.1` | Image of that helper |
+| `SYNCBAY_REPO_DIR`, `RUNNER_AUTO_UPDATE`, `RUNNER_AUTO_UPDATE_INTERVAL` | runner host `.env` | `/opt/syncbay`, `true`, `600` | Auto-updater |

@@ -278,6 +278,8 @@ model Service {
   scaleToZero        Boolean   @default(false)
   idleTimeoutSecs    Int       @default(1800)
   isPaused           Boolean   @default(false)
+  // Health monitor: when the instance was last restarted automatically.
+  lastAutoHealAt     DateTime?
   // Set by Syncbay staff (moderation). Unlike isPaused, the customer cannot lift it.
   moderationLockedAt DateTime?
   moderationReason   String?
@@ -344,6 +346,10 @@ model Deployment {
   // Team A: where the running instance lives, so lifecycle ops (stop/restart/rollback) reach it
   assignedPort     Int?
   runnerDriver     String? // webhook | ssh | queue | local
+  // Health monitor (cron): consecutive failed probes of the live instance and the last result.
+  healthFailures   Int              @default(0)
+  lastProbeAt      DateTime?
+  lastHealthyAt    DateTime?
   job              DeploymentJob?
 
   service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)

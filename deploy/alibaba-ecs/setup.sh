@@ -33,5 +33,13 @@ if [ ! -f .env ]; then
   exit 0
 fi
 
+# The auto-updater needs the absolute path of this checkout.
+REPO_DIR="$(cd ../.. && pwd)"
+if grep -q '^SYNCBAY_REPO_DIR=' .env; then
+  sed -i "s#^SYNCBAY_REPO_DIR=.*#SYNCBAY_REPO_DIR=${REPO_DIR}#" .env
+else
+  printf '\nSYNCBAY_REPO_DIR=%s\n' "$REPO_DIR" >> .env
+fi
+
 docker compose up -d --build
 echo "[setup] Runner is starting. Check: curl -fsS https://\$(grep ^RUNNER_DOMAIN= .env | cut -d= -f2)/health"

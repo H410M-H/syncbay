@@ -121,7 +121,7 @@ async function main() {
     );
     assert.strictEqual(stripPlatformCookies("__Secure-next-auth.session-token=abc"), null);
     ok("workspace.bySlug / auditLog return no password hash or TOTP secret; session cookies are stripped before proxying");
-    assert.deepStrictEqual([isRunnerOutdated(null), isRunnerOutdated("1.3.9"), isRunnerOutdated("1.4.0"), isRunnerOutdated("1.10.0")], [true, true, false, false]);
+    assert.deepStrictEqual([isRunnerOutdated(null), isRunnerOutdated("1.4.9"), isRunnerOutdated("1.5.0"), isRunnerOutdated("1.10.0")], [true, true, false, false]);
     ok("a runner that reports no version, or one older than the minimum, is flagged as outdated");
 
     // ─── 2. Matrix ───────────────────────────────────────────────────────────

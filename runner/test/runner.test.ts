@@ -498,3 +498,7 @@ import "./traffic.test.ts";
 import "./build-hints.test.ts";
 import "./redact.test.ts";
 import "./launch.test.ts";
+// Volume path guard + read-only volume routes (runner/src/volume-files.ts)
+import "./volume-files.test.ts";
+// Stack detection + generated Dockerfiles (runner/src/stacks/)
+import "./stacks.test.ts";

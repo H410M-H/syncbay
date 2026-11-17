@@ -714,6 +714,9 @@ function ProjectConsoleContent() {
             <Link href={`/dashboard/buckets/new?projectId=${project.id}`} className="btn btn-secondary btn-sm">
               🪣 Attach Bucket
             </Link>
+            <Link href={`/dashboard/projects/${project.id}/data`} className="btn btn-secondary btn-sm">
+              🗂 Data
+            </Link>
           </div>
         </div>
       </div>

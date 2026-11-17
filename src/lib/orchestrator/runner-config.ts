@@ -35,10 +35,12 @@ export interface RunnerHealth {
   version?: string | null;
   /** True when the runner is older than MIN_RUNNER_VERSION: the host must update its image. */
   outdated?: boolean;
+  /** Last result of the host's auto-updater, when one runs (deploy/alibaba-ecs updater service). */
+  update?: { result: string; checkedAt: string; commit?: string; message?: string } | null;
 }
 
 /** Oldest runner release this control plane is written for (see runner/src/version.ts). */
-export const MIN_RUNNER_VERSION = "1.4.0";
+export const MIN_RUNNER_VERSION = "1.5.0";
 
 /** Compares dotted versions ("1.3.0" < "1.4.0"); a missing version counts as older. */
 export function isRunnerOutdated(version: string | null | undefined, min = MIN_RUNNER_VERSION): boolean {
@@ -55,6 +57,14 @@ export interface RunnerToolchain {
   docker: boolean;
   buildx: string | null;
   nixpacks: string | null;
+}
+
+function parseUpdate(raw: unknown): RunnerHealth["update"] {
+  if (!raw || typeof raw !== "object") return null;
+  const u = raw as Record<string, unknown>;
+  if (typeof u.result !== "string") return null;
+  const str = (v: unknown, n: number) => (typeof v === "string" && v ? v.slice(0, n) : undefined);
+  return { result: u.result.slice(0, 32), checkedAt: str(u.checkedAt, 40) ?? "", commit: str(u.commit, 40), message: str(u.message, 400) };
 }
 
 function parseToolchain(raw: unknown): RunnerToolchain | undefined {
@@ -260,6 +270,7 @@ export async function checkRunnerHealth(): Promise<RunnerHealth> {
       toolchain: parseToolchain(body.toolchain),
       version,
       outdated: isRunnerOutdated(version),
+      update: parseUpdate(body.update),
     };
   } catch (err) {
     const e = err as { name?: string; message?: string; cause?: { code?: string } };

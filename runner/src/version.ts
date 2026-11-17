@@ -5,5 +5,8 @@
  *
  * 1.3.0  start-up window, port detection, private database networking (PR #19)
  * 1.4.0  session cookies stripped from proxied traffic; version on /health
+ * 1.5.0  stack templates: generated Dockerfiles for Node/SPA/Python/Go/Rust/PHP/Java/Ruby/Deno/Bun
+ *        (RUNNER_BUILDER / SYNCBAY_BUILDER, RUNNER_BUILD_CA_FILE, RUNNER_BUILD_NETWORK); read-only
+ *        volume routes /api/volumes/:id/{stat,files,file}; health-monitor restarting page; update status
  */
-export const RUNNER_VERSION = "1.4.0";
+export const RUNNER_VERSION = "1.5.0";

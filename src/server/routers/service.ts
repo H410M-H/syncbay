@@ -8,6 +8,12 @@ import { restartServiceInstance, stopServiceInstances } from "@/lib/orchestrator
 import { setServicePaused } from "@/lib/orchestrator/service-actions";
 import { surfaceRunnerConfigErrors } from "@/server/runner-preflight";
 
+/** A directory inside the repository: relative, no "..", no NUL (the runner checks again). */
+export const repoRootDir = z
+  .string()
+  .max(512)
+  .refine((p) => !p || (!/^[\\/]/.test(p) && !p.split(/[\\/]/).includes("..") && !p.includes("\0")), "The root directory must be a path inside the repository");
+
 export const serviceRouter = createTRPCRouter({
   /** List services in an environment */
   list: protectedProcedure
@@ -115,7 +121,7 @@ export const serviceRouter = createTRPCRouter({
         sourceType: z.enum(["github", "docker", "empty"]),
         repoUrl: z.string().url().optional(),
         branch: z.string().optional(),
-        rootDir: z.string().optional(),
+        rootDir: repoRootDir.optional(),
         dockerImage: z.string().optional(),
         port: z.number().int().min(1).max(65535).optional(),
         buildCommand: z.string().optional(),
@@ -174,7 +180,7 @@ export const serviceRouter = createTRPCRouter({
         name: z.string().min(1).max(64).optional(),
         buildCommand: z.string().optional().nullable(),
         startCommand: z.string().optional().nullable(),
-        rootDir: z.string().optional().nullable(),
+        rootDir: repoRootDir.optional().nullable(),
         dockerImage: z.string().optional().nullable(),
         port: z.number().int().min(1).max(65535).optional().nullable(),
         instanceType: z.string().optional(),

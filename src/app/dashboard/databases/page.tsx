@@ -242,7 +242,7 @@ export default function DatabasesPage() {
                     </div>
                   </div>
 
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
                     {db.environment?.project?.id && (
                       <Link
                         href={`/dashboard/projects/${db.environment.project.id}?tab=databases`}
@@ -250,6 +250,16 @@ export default function DatabasesPage() {
                         style={{ fontSize: "0.75rem" }}
                       >
                         📊 Query Studio
+                      </Link>
+                    )}
+                    {db.environment?.project?.id && (
+                      <Link
+                        href={`/dashboard/projects/${db.environment.project.id}/data?focus=${encodeURIComponent(`db:${db.id}`)}`}
+                        className="btn btn-secondary btn-sm"
+                        style={{ fontSize: "0.75rem" }}
+                        aria-label={`Data in ${db.name}`}
+                      >
+                        🗂 Data
                       </Link>
                     )}
                     {canDeleteDb && (

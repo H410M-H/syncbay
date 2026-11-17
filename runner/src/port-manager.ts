@@ -46,7 +46,10 @@ export class PortManager {
   /**
    * Tests whether a port is currently available on the host operating system.
    */
-  public async isSocketAvailable(port: number, host: string = "127.0.0.1"): Promise<boolean> {
+  public async isSocketAvailable(port: number, host?: string): Promise<boolean> {
+    // `docker run -p PORT:…` and most apps bind every interface; a port can be free on 127.0.0.1 and
+    // still taken on 0.0.0.0 (an outbound connection's ephemeral port), so check both.
+    if (host === undefined) return (await this.isSocketAvailable(port, "0.0.0.0")) && (await this.isSocketAvailable(port, "127.0.0.1"));
     return new Promise((resolve) => {
       const server = net.createServer();
 

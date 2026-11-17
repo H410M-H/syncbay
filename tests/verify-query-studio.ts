@@ -97,10 +97,15 @@ async function main() {
     const before = await countCustomers();
     await assert.rejects(
       () => executeQuery(pg, "INSERT INTO customers (email) VALUES ('evil@example.test')"),
-      /read-only transaction/
+      /Read mode runs SELECT/
     );
-    await assert.rejects(() => executeQuery(pg, "COMMIT; INSERT INTO customers (email) VALUES ('evil2@example.test')"), /multiple commands/);
-    await assert.rejects(() => executeQuery(pg, "UPDATE customers SET name = 'x' WHERE id = 1"), /read-only transaction/);
+    await assert.rejects(() => executeQuery(pg, "COMMIT; INSERT INTO customers (email) VALUES ('evil2@example.test')"), /Read mode runs SELECT/);
+    await assert.rejects(() => executeQuery(pg, "UPDATE customers SET name = 'x' WHERE id = 1"), /Read mode runs SELECT/);
+    // A data-modifying CTE passes the statement check but not the READ ONLY transaction.
+    await assert.rejects(() => executeQuery(pg, "WITH x AS (INSERT INTO customers (email) VALUES ('evil3@example.test') RETURNING id) SELECT * FROM x"), /read-only transaction|data-modifying statement/);
+    // Server-side functions that reach outside the database are refused in read mode.
+    await assert.rejects(() => executeQuery(pg, "SELECT pg_read_file('/etc/hostname')"), /does not allow pg_read_file/);
+    await assert.rejects(() => executeQuery(pg, "COPY (SELECT 1) TO PROGRAM 'id'"), /Read mode runs SELECT/);
     assert.strictEqual(await countCustomers(), before);
   });
 
