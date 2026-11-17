@@ -45,7 +45,7 @@ In Vercel → Project → Settings → Environment Variables (Production):
 Then redeploy. New deployments are dispatched to the ECS runner, and requests to their `*.syncbay.app` hosts are proxied to it.
 
 ## Updating the runner
-The `updater` service does this automatically: every 10 minutes it pulls `main` and, when runner code changed, rebuilds and restarts the runner (apps and databases keep running). Its last result is on `/health` under `update` and on the dashboard; `docker compose -f deploy/alibaba-ecs/docker-compose.yml logs updater` shows the details. Set `RUNNER_AUTO_UPDATE=false` in `.env` to update by hand only.
+The `updater` service does this automatically: every 10 minutes it pulls `main` and, when runner code changed, builds the new runner image, waits until no deploy is building (up to 10 minutes), then restarts the runner. Docker apps and Docker databases keep running; apps and databases running as native processes inside the runner container restart with it. Its last result is on `/health` under `update` and on the dashboard; `docker compose -f deploy/alibaba-ecs/docker-compose.yml logs updater` shows the details. Set `RUNNER_AUTO_UPDATE=false` in `.env` to update by hand only.
 
 The updater only exists after the first update that includes it, so a server set up before November 2026 needs this once. To update by hand at any time:
 ```bash
@@ -76,7 +76,7 @@ curl -fsS https://runner.syncbay.app/health   # "version" must match runner/src/
 - **Behind NAT instead** (a home machine, or a host with no public IP): keep Cloudflare Tunnel (`TUNNEL_DRIVER=cloudflare` with `CLOUDFLARE_TUNNEL_TOKEN`) and drop the caddy service. Use the tunnel hostname as `RUNNER_URL`.
 
 ## Supported stacks
-Without a Dockerfile, the runner reads the repository's manifests and generates `Dockerfile.syncbay` (plus `Dockerfile.syncbay.dockerignore`; a repo's `.dockerignore` is reused). Every image listens on `$PORT` on `0.0.0.0`; a service with no port set uses the stack's port below. The service's build and start commands replace the defaults. The deploy log names the detected stack and prints hints (for example Django's `ALLOWED_HOSTS`). "e2e" marks stacks built, started and answered HTTP 200 in `cd runner && npm run test:stacks` (real Docker).
+Without a Dockerfile, the runner reads the repository's manifests and generates `Dockerfile.syncbay` (plus `Dockerfile.syncbay.dockerignore`; a repo's `.dockerignore` is reused). Every image listens on `$PORT` on `0.0.0.0` (the service's port, 3000 when none is set); the port column below is what an image uses when it runs without `$PORT`. The service's build and start commands replace the defaults. The deploy log names the detected stack and prints hints (for example Django's `ALLOWED_HOSTS`). "e2e" marks stacks built, started and answered HTTP 200 in `cd runner && npm run test:stacks` (real Docker).
 
 | Stack | Detected from | Image | Default start | Port | e2e |
 | --- | --- | --- | --- | --- | --- |

@@ -45,10 +45,16 @@ export function BucketBrowser({ bucket, storageConfigured, focused }: { bucket: 
 
   const download = async (key: string) => {
     setDownloadError(null);
+    // Open the tab inside the click (popup blockers refuse window.open after an await), then point
+    // it at the presigned URL once it is known.
+    const tab = window.open("about:blank", "_blank");
+    if (tab) tab.opener = null;
     try {
       const res = await presign.mutateAsync({ bucketId: bucket.id, key, operation: "get", expiresInSeconds: 300 });
-      window.open(res.url, "_blank", "noopener,noreferrer");
+      if (tab) tab.location.href = res.url;
+      else window.location.assign(res.url);
     } catch (err) {
+      tab?.close();
       setDownloadError(errorText(err));
     }
   };

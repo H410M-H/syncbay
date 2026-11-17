@@ -950,6 +950,10 @@ server.listen(port, "0.0.0.0", () => {
         let buildCmd: string;
         let buildProcEnv: Record<string, string> = {};
         const cleanupAfterBuild: string[] = [];
+        // A CA copy left by an earlier build that stopped before its cleanup (a fast redeploy reuses
+        // the clone) must never reach an image, and a repo file of that name could be a symlink that
+        // copyFile would write through. Remove whatever is there before any build.
+        await fs.rm(path.join(sourceDir, BUILD_CA_FILE), { force: true }).catch(() => null);
         if (chosen === "dockerfile") {
           log(`Dockerfile detected at ${dockerfilePath} — using Docker build strategy${forced}`);
           if (stack) log(`(Detected ${describeStack(stack)}; set SYNCBAY_BUILDER=template to build with the Syncbay ${stack.id} template instead)`);

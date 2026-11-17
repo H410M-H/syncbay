@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { redactSecrets } from "./redact.ts";
 
 /**
  * Last result of the host's auto-updater (deploy/alibaba-ecs/auto-update.sh writes
@@ -23,7 +24,8 @@ export function readUpdateStatus(stateDir = process.env.RUNNER_STATE_DIR): Updat
       result: raw.result.slice(0, 32),
       commit: typeof raw.commit === "string" ? raw.commit.slice(0, 40) : undefined,
       branch: typeof raw.branch === "string" ? raw.branch.slice(0, 64) : undefined,
-      message: typeof raw.message === "string" ? raw.message.slice(0, 400) : undefined,
+      // Served on the public /health: git and build errors can quote a remote URL with a token.
+      message: typeof raw.message === "string" ? redactSecrets(raw.message).slice(0, 400) : undefined,
     };
   } catch {
     return null;

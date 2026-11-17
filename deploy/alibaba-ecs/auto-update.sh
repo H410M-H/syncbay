@@ -32,6 +32,18 @@ fi
 command -v git >/dev/null 2>&1 || apk add --no-cache git >/dev/null 2>&1 || { status error "" "git is not available"; exec sleep infinity; }
 git config --global --add safe.directory "$REPO"
 
+# True while the runner reports a build in progress (its /health "activeJobs").
+runner_busy() {
+  docker compose -f "$COMPOSE_FILE" exec -T runner \
+    node -e 'fetch("http://127.0.0.1:"+(process.env.RUNNER_PORT||8080)+"/health").then(r=>r.json()).then(h=>process.exit(h.activeJobs>0?0:1)).catch(()=>process.exit(1))' \
+    >/dev/null 2>&1
+}
+wait_until_idle() {
+  i=0
+  while [ $i -lt 60 ] && runner_busy; do sleep 10; i=$((i + 1)); done
+  return 0
+}
+
 while true; do
   if ! cd "$REPO" 2>/dev/null; then
     status error "" "repository not found at $REPO (set SYNCBAY_REPO_DIR)"
@@ -50,11 +62,16 @@ while true; do
         sleep "$INTERVAL"
         continue
       fi
-      git diff --quiet "$LOCAL" "$REMOTE" -- runner deploy/alibaba-ecs || NEED_BUILD=1
+      # Compare with HEAD after the merge: a checkout that is ahead of origin stays where it is.
+      git diff --quiet "$LOCAL" HEAD -- runner deploy/alibaba-ecs || NEED_BUILD=1
     fi
     if [ "$NEED_BUILD" = "0" ]; then
-      status up-to-date "$(git rev-parse --short HEAD)" "$([ "$LOCAL" != "$REMOTE" ] && echo 'pulled; no runner changes')"
-    elif docker compose -f "$COMPOSE_FILE" up -d --build runner caddy >/tmp/update.log 2>&1; then
+      status up-to-date "$(git rev-parse --short HEAD)" "$([ "$LOCAL" != "$(git rev-parse HEAD)" ] && echo 'pulled; no runner changes')"
+    # Build first while the old runner keeps serving, then wait (up to 10 min) until no deploy is
+    # building, and only then swap the container, so an update never cuts a build in half.
+    elif docker compose -f "$COMPOSE_FILE" build runner >/tmp/update.log 2>&1 \
+      && wait_until_idle \
+      && docker compose -f "$COMPOSE_FILE" up -d --no-build runner caddy >>/tmp/update.log 2>&1; then
       rm -f "$STATUS_DIR/rebuild-pending"
       status updated "$(git rev-parse --short HEAD)" "runner rebuilt and restarted"
     else
