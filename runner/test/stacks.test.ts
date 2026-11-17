@@ -597,4 +597,9 @@ test("stacks: service variables are declared as ARGs in build stages only", () =
   assert.ok(!/^ARG /m.test(stages[stages.length - 1]), "the runtime stage gets no build args");
   const flask = detectStack(stackFilesFor(writeFixture(FASTAPI)))!;
   assert.match(generateDockerfile(flask, { port: 8000, buildArgs: ["SECRET_KEY"] }), /^FROM [^\n]+\nARG SECRET_KEY$/m);
+  // PHP's final stage runs Composer and the build command, so it gets the args as well.
+  const php = detectStack(stackFilesFor(writeFixture({ "composer.json": JSON.stringify({ require: { php: ">=8.1" } }), "index.php": "<?php echo 1;" })))!;
+  const phpStages = generateDockerfile(php, { port: 8080, buildCommand: "php build.php", buildArgs: ["APP_KEY"] }).split(/^FROM /m).slice(1);
+  assert.ok(phpStages.length > 1, "Composer builds are multi-stage");
+  for (const stage of phpStages) assert.match(stage, /^ARG APP_KEY$/m, stage.split("\n")[0]);
 });

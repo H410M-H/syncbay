@@ -438,16 +438,21 @@ const BUILD_ARG_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** Set by the platform at run time; never a build argument. */
 const RUNTIME_ONLY = new Set(["PORT", "HOST", "HOSTNAME", "HTTP_PORT", "SERVER_PORT"]);
 
+/** Final-stage bases that only run the built artefact (no install or build steps happen there). */
+const RUNTIME_ONLY_BASE = /^FROM\s+(nginx:|debian:|eclipse-temurin:\S+-jre|ruby:\S+-slim)/;
+
 /**
- * Declares the service's variables as `ARG`s in the build stages: after every `FROM` of a single-
- * stage image, or of every stage but the last one of a multi-stage image (the runtime stage gets
- * the values from `docker run -e` instead, so they stay out of its layers).
+ * Declares the service's variables as `ARG`s in every stage that installs or builds: all stages,
+ * except a last stage on a pure runtime base (nginx, debian-slim, a JRE, ruby-slim), which gets
+ * the values from `docker run -e` instead so they stay out of its layers. (PHP's final stage, for
+ * example, runs Composer and the service's build command, so it gets them.)
  */
 function withBuildArgs(lines: string[], names: string[] = []): string[] {
   const args = [...new Set(names)].filter((n) => BUILD_ARG_NAME.test(n) && !RUNTIME_ONLY.has(n)).sort();
   if (args.length === 0) return lines;
   const fromIdx = lines.map((l, i) => (/^FROM\s/.test(l) ? i : -1)).filter((i) => i >= 0);
-  const stages = fromIdx.length > 1 ? fromIdx.slice(0, -1) : fromIdx;
+  const last = fromIdx[fromIdx.length - 1];
+  const stages = fromIdx.length > 1 && RUNTIME_ONLY_BASE.test(lines[last]) ? fromIdx.slice(0, -1) : fromIdx;
   const out: string[] = [];
   lines.forEach((line, i) => {
     out.push(line);
