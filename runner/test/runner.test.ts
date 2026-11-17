@@ -498,3 +498,4 @@ import "./traffic.test.ts";
 import "./build-hints.test.ts";
 import "./redact.test.ts";
 import "./launch.test.ts";
+import "./stacks.test.ts";

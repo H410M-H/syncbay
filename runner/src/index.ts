@@ -61,7 +61,7 @@ export interface JobState {
   logs: string[];
   containerId?: string;
   assignedPort?: number;
-  strategy?: "dockerfile" | "nixpacks";
+  strategy?: "dockerfile" | "template" | "nixpacks";
   startedAt: string;
   completedAt?: string;
   error?: string;
