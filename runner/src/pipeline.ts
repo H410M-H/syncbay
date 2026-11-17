@@ -3,13 +3,14 @@
  *
  * Implements end-to-end execution lifecycle:
  * 1. Git clone & workspace checkout
- * 2. Build detection (Dockerfile vs Nixpacks)
+ * 2. Build detection (Dockerfile → Syncbay stack template → Nixpacks → native process)
  * 3. Container compilation & image tagging
  * 4. Dynamic port allocation & container launch
  * 5. Health probe verification
  */
 
 import { exec, execSync, spawn, type ChildProcess } from "node:child_process";
+import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { promisify } from "node:util";
@@ -18,6 +19,16 @@ import { ensureBuildx, withBuildToolHint } from "./build-hints.ts";
 import { redactSecrets } from "./redact.ts";
 import { dockerVolumeFlags, prepareNativeVolumes, type VolumeMount } from "./volumes.ts";
 import { COMMON_APP_PORTS, Semaphore, containerEnv, parseListeningPorts, pickNodeVersion, shq, tailText } from "./launch.ts";
+import {
+  BUILD_CA_FILE,
+  GENERATED_DOCKERFILE,
+  GENERATED_DOCKERIGNORE,
+  detectStack,
+  generateDockerfile,
+  generateDockerignore,
+  type DetectedStack,
+  type StackFiles,
+} from "./stacks/index.ts";
 
 const execAsync = promisify(exec);
 
@@ -66,10 +77,15 @@ export interface PipelineOptions {
   onLog?: (line: string) => void;
 }
 
+/** How the image was built: the user's Dockerfile, a Syncbay stack template, or Nixpacks (also the native fallback). */
+export type BuildStrategy = "dockerfile" | "template" | "nixpacks";
+
 export interface PipelineResult {
   success: boolean;
   jobId: string;
-  strategy: "dockerfile" | "nixpacks";
+  strategy: BuildStrategy;
+  /** Detected stack, e.g. "python/FastAPI" (set whenever a stack was recognised). */
+  stack?: string;
   containerId?: string;
   assignedPort?: number;
   /** Port the app listens on inside its container (may differ from the requested one after auto-detection). */
@@ -102,6 +118,9 @@ const MAX_LAUNCH_SPECS = 200;
 
 /** Number of trailing stderr lines kept to explain a startup crash. */
 const STARTUP_STDERR_LINES = 25;
+
+/** Marks a workspace whose app is the runner's own starter (not a customer project). */
+const STARTER_MARKER = ".syncbay-starter";
 
 /** Build artifacts and caches removed by a clean rebuild (cleanBuild: true). */
 const CLEAN_BUILD_PURGE_PATHS = ["node_modules", "dist", ".next", "build", "out", ".turbo", ".cache"];
@@ -359,6 +378,79 @@ function createDefaultExecutor(): PipelineExecutor {
     return new MockPipelineExecutor();
   }
 }
+
+// ─── BUILD STRATEGY SELECTION ─────────────────────────────────────────────────
+
+type BuilderPreference = "auto" | "template" | "nixpacks" | "dockerfile";
+const BUILDER_PREFERENCES: BuilderPreference[] = ["auto", "template", "nixpacks", "dockerfile"];
+
+/**
+ * The builder a deploy should use: the service's `SYNCBAY_BUILDER` variable, else the runner's
+ * `RUNNER_BUILDER`, else `auto` (Dockerfile → stack template → Nixpacks → native process).
+ */
+export function builderPreference(
+  serviceEnv?: Record<string, string>,
+  runnerEnv: NodeJS.ProcessEnv = process.env
+): { preference: BuilderPreference; source: string; invalid?: string } {
+  for (const [source, raw] of [
+    ["SYNCBAY_BUILDER", serviceEnv?.SYNCBAY_BUILDER],
+    ["RUNNER_BUILDER", runnerEnv.RUNNER_BUILDER],
+  ] as const) {
+    const value = (raw || "").trim().toLowerCase();
+    if (!value) continue;
+    if ((BUILDER_PREFERENCES as string[]).includes(value)) return { preference: value as BuilderPreference, source };
+    return { preference: "auto", source, invalid: raw };
+  }
+  return { preference: "auto", source: "default" };
+}
+
+/** Largest file the stack detector reads (manifests are small; this keeps a stray blob out of memory). */
+const STACK_FILE_MAX_BYTES = 512 * 1024;
+
+/** Synchronous, read-only view of a source directory for `detectStack()`. */
+export function stackFilesFor(dir: string): StackFiles {
+  const resolve = (rel: string) => path.join(dir, rel);
+  return {
+    exists: (rel) => fsSync.existsSync(resolve(rel)),
+    read: (rel) => {
+      try {
+        const file = resolve(rel);
+        const stat = fsSync.statSync(file);
+        if (!stat.isFile() || stat.size > STACK_FILE_MAX_BYTES) return null;
+        return fsSync.readFileSync(file, "utf8");
+      } catch {
+        return null;
+      }
+    },
+    list: (rel) => {
+      try {
+        return fsSync.readdirSync(resolve(rel));
+      } catch {
+        return [];
+      }
+    },
+  };
+}
+
+/** Proxy variables Docker passes to RUN steps as predefined build args. */
+const PROXY_BUILD_ARGS = ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"];
+
+/**
+ * Extra `docker build` flags from the runner's environment: `--network` from `RUNNER_BUILD_NETWORK`
+ * (host | none | default) and `--build-arg NAME` for each proxy variable that is set. Only names go
+ * on the command line; Docker reads the values from the CLI's environment, so a proxy URL with
+ * credentials never reaches the build log.
+ */
+export function dockerBuildFlags(env: NodeJS.ProcessEnv = process.env): string[] {
+  const flags: string[] = [];
+  const network = (env.RUNNER_BUILD_NETWORK || "").trim().toLowerCase();
+  if (["host", "none", "default"].includes(network)) flags.push(`--network ${network}`);
+  for (const name of PROXY_BUILD_ARGS) if (env[name]) flags.push(`--build-arg ${name}`);
+  return flags;
+}
+
+const describeStack = (stack: DetectedStack) => `${stack.label}${stack.framework ? ` (${stack.framework})` : ""}`;
+const stackTag = (stack: DetectedStack | null) => (stack ? `${stack.id}${stack.framework ? `/${stack.framework}` : ""}` : undefined);
 
 // ─── BUILD PIPELINE IMPLEMENTATION ───────────────────────────────────────────
 
@@ -646,7 +738,8 @@ export class BuildPipeline {
       return env;
     };
     let containerId: string | undefined;
-    let strategy: "dockerfile" | "nixpacks" = "nixpacks";
+    let strategy: BuildStrategy = "nixpacks";
+    let stack: DetectedStack | null = null;
     let childExitCode: number | null = null;
     let childErrorMsg: string | null = null;
     let childStdioClosed = false;
@@ -754,7 +847,13 @@ export class BuildPipeline {
                       (await this.executor.fileExists(path.join(sourceDir, "dist", "index.html"))) ||
                       (await this.executor.fileExists(path.join(sourceDir, "build", "index.html"))) ||
                       (await this.executor.fileExists(path.join(sourceDir, "out", "index.html")));
-      if (!hasPkg && !hasDf && !hasIdx && !hasHtml && !options.repoUrl) {
+      // The platform's own starter app is not a customer project: it keeps the Nixpacks/native path.
+      const starterMarker = path.join(sourceDir, STARTER_MARKER);
+      let provisionedStarter = !options.repoUrl && fsSync.existsSync(starterMarker);
+      // A workspace that already holds a recognised project (go.mod, requirements.txt …) is never overwritten.
+      if (!hasPkg && !hasDf && !hasIdx && !hasHtml && !options.repoUrl && !detectStack(stackFilesFor(sourceDir))) {
+        provisionedStarter = true;
+        await fs.writeFile(starterMarker, "Starter app written by the Syncbay runner\n", "utf8").catch(() => null);
         const starter = `const http = require("http");
 const port = parseInt(process.env.PORT || "${targetPort}", 10);
 const server = http.createServer((req, res) => {
@@ -792,7 +891,7 @@ server.listen(port, "0.0.0.0", () => {
         }
       }
 
-      // Step 3: Determine build strategy (Dockerfile vs Nixpacks vs Native process)
+      // Step 3: Determine build strategy (Dockerfile → Syncbay stack template → Nixpacks → native process)
       const dockerfilePath = options.dockerfile
         ? path.join(sourceDir, options.dockerfile)
         : path.join(sourceDir, "Dockerfile");
@@ -806,23 +905,97 @@ server.listen(port, "0.0.0.0", () => {
         await ensureBuildx((line) => log(line.replace(/^\[runner-daemon\] /, "")));
       }
 
-      if (hasDocker && (hasDockerfile || hasNixpacks)) {
-        strategy = hasDockerfile ? "dockerfile" : "nixpacks";
-        const label = hasDockerfile ? "Docker" : "Nixpacks";
+      const builder = builderPreference(options.environmentVariables);
+      if (builder.invalid !== undefined) {
+        log(`[pipeline:warn] ${builder.source}="${builder.invalid}" is not a builder (auto, template, nixpacks, dockerfile); using auto`);
+      }
+      stack = provisionedStarter ? null : detectStack(stackFilesFor(sourceDir));
+      const forced = builder.preference === "auto" ? "" : ` (${builder.source}=${builder.preference})`;
+      let chosen: BuildStrategy | null = null;
+      if (builder.preference !== "auto" && !hasDocker) {
+        throw new PipelineStepError(`${builder.source}=${builder.preference} needs Docker, which is not available on this runner`, 1);
+      }
+      switch (builder.preference) {
+        case "dockerfile":
+          if (!hasDockerfile) throw new PipelineStepError(`${builder.source}=dockerfile, but there is no Dockerfile at ${dockerfilePath}`, 1);
+          chosen = "dockerfile";
+          break;
+        case "template":
+          if (!stack) {
+            throw new PipelineStepError(
+              `${builder.source}=template, but no supported stack was detected in ${sourceDir} (Node.js, static sites, Python, Go, Rust, PHP, Java, Ruby, Deno, Bun). Add a Dockerfile or use SYNCBAY_BUILDER=nixpacks.`,
+              1
+            );
+          }
+          chosen = "template";
+          break;
+        case "nixpacks":
+          if (!hasNixpacks) throw new PipelineStepError(`${builder.source}=nixpacks, but Nixpacks is not installed on this runner`, 1);
+          chosen = "nixpacks";
+          break;
+        default:
+          chosen = !hasDocker ? null : hasDockerfile ? "dockerfile" : stack ? "template" : hasNixpacks ? "nixpacks" : null;
+      }
+      if (!chosen && stack) log(`Detected ${describeStack(stack)} from ${stack.reason}, but Docker is not available on this runner; running it as a native process`);
+
+      if (chosen) {
+        strategy = chosen;
+        const label = chosen === "dockerfile" ? "Docker" : chosen === "template" ? `Syncbay ${stack!.id} template` : "Nixpacks";
         const appEnv = await runtimeEnv("docker");
+        // Without an explicit service port, a template image listens on its stack's conventional port.
+        const appPort = chosen === "template" && !options.targetPort ? stack!.port : targetPort;
 
         // Values travel in the CLI's process environment (`-e KEY`, `--env KEY`), never on the
         // command line, so they cannot inject shell syntax and are not written to the build log.
         let buildCmd: string;
         let buildProcEnv: Record<string, string> = {};
-        if (hasDockerfile) {
-          log(`Dockerfile detected at ${dockerfilePath} — using Docker build strategy`);
+        const cleanupAfterBuild: string[] = [];
+        if (chosen === "dockerfile") {
+          log(`Dockerfile detected at ${dockerfilePath} — using Docker build strategy${forced}`);
+          if (stack) log(`(Detected ${describeStack(stack)}; set SYNCBAY_BUILDER=template to build with the Syncbay ${stack.id} template instead)`);
           buildCmd = `docker build -t ${imageTag} -f ${shq(dockerfilePath)}`;
           if (options.cleanBuild) buildCmd += " --no-cache";
+          for (const flag of dockerBuildFlags()) buildCmd += ` ${flag}`;
           if (options.buildCommand) buildCmd += ` --build-arg BUILD_CMD=${shq(options.buildCommand)}`;
           buildCmd += ` ${shq(sourceDir)}`;
+        } else if (chosen === "template") {
+          const tpl = stack!;
+          log(`Detected ${describeStack(tpl)} from ${tpl.reason}; building with the Syncbay ${tpl.id} template${forced}`);
+          for (const note of tpl.notes) log(`Hint: ${note}`);
+          // A corporate / egress-proxy CA the build steps must trust (copied into the context, removed after the build).
+          let extraCaCert = false;
+          const caSource = (process.env.RUNNER_BUILD_CA_FILE || "").trim();
+          if (caSource) {
+            const caCopy = path.join(sourceDir, BUILD_CA_FILE);
+            try {
+              await fs.copyFile(caSource, caCopy);
+              cleanupAfterBuild.push(caCopy);
+              extraCaCert = true;
+              log(`Build steps trust the CA certificates from RUNNER_BUILD_CA_FILE`);
+            } catch (err: any) {
+              log(`[pipeline:warn] RUNNER_BUILD_CA_FILE could not be read (${err?.code || err?.message || err}); building without it`);
+            }
+          }
+          const nodeVersion = /^v?(\d+)/.exec(appEnv.NODE_VERSION || appEnv.NIXPACKS_NODE_VERSION || "")?.[1];
+          const generated = generateDockerfile(tpl, {
+            buildCommand: options.buildCommand,
+            startCommand: options.startCommand,
+            port: appPort,
+            nodeMajor: nodeVersion,
+            extraCaCert,
+          });
+          const generatedPath = path.join(sourceDir, GENERATED_DOCKERFILE);
+          await fs.writeFile(generatedPath, generated, "utf8");
+          // BuildKit reads <Dockerfile>.dockerignore first, so the user's .dockerignore is never touched.
+          const userIgnore = await fs.readFile(path.join(sourceDir, ".dockerignore"), "utf8").catch(() => null);
+          await fs.writeFile(path.join(sourceDir, GENERATED_DOCKERIGNORE), generateDockerignore(tpl, userIgnore), "utf8");
+          log(`Generated ${GENERATED_DOCKERFILE}: ${(generated.match(/^FROM \S+/gm) || []).map((l) => l.slice(5)).join(" → ")}`);
+          buildCmd = `docker build -t ${imageTag} -f ${shq(generatedPath)}`;
+          if (options.cleanBuild) buildCmd += " --no-cache";
+          for (const flag of dockerBuildFlags()) buildCmd += ` ${flag}`;
+          buildCmd += ` ${shq(sourceDir)}`;
         } else {
-          log(`Using Nixpacks automated runtime detection & Docker containerization`);
+          log(`Using Nixpacks automated runtime detection & Docker containerization${forced}`);
           const nixEnv = containerEnv(appEnv);
           buildProcEnv = nixEnv.env;
           buildCmd = `nixpacks build ${shq(sourceDir)} --name ${imageTag}`;
@@ -847,24 +1020,39 @@ server.listen(port, "0.0.0.0", () => {
         }
 
         log(`Compiling container image: ${buildCmd}`);
-        const buildRes = await buildSlots.run(
-          () => this.executor.execute(buildCmd, { cwd: sourceDir, env: buildProcEnv as NodeJS.ProcessEnv, onLog: log }),
-          (ahead) => log(`Waiting for a build slot (${ahead} build(s) ahead on this runner)`)
-        );
+        const buildStartedAt = Date.now();
+        const buildRes = await buildSlots
+          .run(
+            () => this.executor.execute(buildCmd, { cwd: sourceDir, env: buildProcEnv as NodeJS.ProcessEnv, onLog: log }),
+            (ahead) => log(`Waiting for a build slot (${ahead} build(s) ahead on this runner)`)
+          )
+          .finally(async () => {
+            for (const file of cleanupAfterBuild) await fs.rm(file, { force: true }).catch(() => null);
+          });
         if (buildRes.exitCode !== 0) {
           // The cause is at the end of the output; the full log was already streamed line by line.
           const detail = tailText(`${buildRes.stdout}\n${buildRes.stderr}`) || `no output`;
           log(`[build:error] ${label} build failed (exit code ${buildRes.exitCode})`);
-          throw new PipelineStepError(withBuildToolHint(`${label} build failed (exit code ${buildRes.exitCode}). Last output:\n${detail}`), buildRes.exitCode);
+          // A template failure is not retried with Nixpacks (that would double the build time); say how to switch.
+          const templateHint =
+            chosen === "template"
+              ? `\nThe generated Dockerfile is ${GENERATED_DOCKERFILE} in the build directory. ${
+                  hasNixpacks ? "Set SYNCBAY_BUILDER=nixpacks to try Nixpacks, or add" : "Add"
+                } a Dockerfile to the repository to build it your way.`
+              : "";
+          throw new PipelineStepError(
+            withBuildToolHint(`${label} build failed (exit code ${buildRes.exitCode}). Last output:\n${detail}${templateHint}`),
+            buildRes.exitCode
+          );
         }
-        log(`${label} build succeeded for image ${imageTag}`);
+        log(`${label} build succeeded for image ${imageTag} in ${((Date.now() - buildStartedAt) / 1000).toFixed(1)}s`);
 
         assignedPort = await this.portManager.allocatePort(options.serviceId, jobId);
-        log(`Assigned dynamic host port: ${assignedPort} (target container port: ${targetPort})`);
+        log(`Assigned dynamic host port: ${assignedPort} (target container port: ${appPort})`);
 
-        // A Dockerfile image gets a custom start command as its CMD; a Nixpacks image already has
-        // it baked in (--start-cmd), and its bash entrypoint would mis-parse extra arguments.
-        const startArgs = hasDockerfile && options.startCommand ? ` sh -c ${shq(options.startCommand)}` : "";
+        // A Dockerfile image gets a custom start command as its CMD; Nixpacks and template images
+        // already have it baked in (Nixpacks' bash entrypoint would also mis-parse extra arguments).
+        const startArgs = chosen === "dockerfile" && options.startCommand ? ` sh -c ${shq(options.startCommand)}` : "";
         dockerLaunch = async (appPort: number) => {
           const runEnv = containerEnv(appEnv, { PORT: String(appPort) }, { HOST: "0.0.0.0" });
           const runCmd = `docker run -d --name ${containerName} --restart unless-stopped -p {{PORT}}:${appPort} ${dockerVolumeFlags(options.volumes)} ${runEnv.dockerFlags.join(" ")} ${imageTag}${startArgs}`
@@ -892,7 +1080,7 @@ server.listen(port, "0.0.0.0", () => {
           log(`Container launched successfully with ID: ${id}`);
           return id;
         };
-        containerPort = targetPort;
+        containerPort = appPort;
         containerId = await dockerLaunch(containerPort);
       } else {
         // Containerless native process execution mode (Termux / Linux host without Docker daemon)
@@ -1305,6 +1493,7 @@ server.listen(port, "0.0.0.0");
         success: true,
         jobId,
         strategy,
+        stack: stackTag(stack),
         containerId,
         assignedPort,
         containerPort,
@@ -1334,6 +1523,7 @@ server.listen(port, "0.0.0.0");
         success: false,
         jobId,
         strategy,
+        stack: stackTag(stack),
         containerId,
         assignedPort,
         imageTag,

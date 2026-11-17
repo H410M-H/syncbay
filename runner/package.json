@@ -1,6 +1,6 @@
 {
   "name": "@syncbay/runner",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "private": true,
   "description": "Syncbay standalone containerized build & execution runner agent daemon",
   "type": "module",
@@ -16,6 +16,7 @@
     "test": "node ../node_modules/tsx/dist/cli.mjs test/runner.test.ts",
     "test:provision": "node ../node_modules/tsx/dist/cli.mjs test/db-provisioning.test.ts",
     "test:docker": "node ../node_modules/tsx/dist/cli.mjs test/docker-e2e.test.ts",
+    "test:stacks": "node ../node_modules/tsx/dist/cli.mjs test/stacks-e2e.test.ts",
     "start:dist": "node dist/index.js"
   },
   "engines": {

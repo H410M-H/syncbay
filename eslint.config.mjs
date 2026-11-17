@@ -14,6 +14,8 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     "tests/**",
     "graphify-out/**",
+    ".claude/**",
+    "runner/dist/**",
     ".runner_workspace/**",
     ".runner_logs/**",
     ".agents/**",

@@ -40,7 +40,7 @@ export interface RunnerHealth {
 }
 
 /** Oldest runner release this control plane is written for (see runner/src/version.ts). */
-export const MIN_RUNNER_VERSION = "1.4.0";
+export const MIN_RUNNER_VERSION = "1.5.0";
 
 /** Compares dotted versions ("1.3.0" < "1.4.0"); a missing version counts as older. */
 export function isRunnerOutdated(version: string | null | undefined, min = MIN_RUNNER_VERSION): boolean {
