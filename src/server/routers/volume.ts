@@ -6,8 +6,107 @@
 import { z } from "zod";
 import { createTRPCRouter, protectedProcedure } from "@/server/trpc";
 import { TRPCError } from "@trpc/server";
+import type { TRPCContext } from "@/server/trpc";
+import {
+  VolumeRunnerError,
+  listVolumeFiles,
+  readVolumeFile,
+  statVolume,
+  toVolumePreview,
+} from "@/lib/volumes/volume-access";
+
+/** A volume the caller may see (any member), with the caller's role. NOT_FOUND otherwise. */
+async function loadVolumeForMember(db: TRPCContext["db"], userId: string, volumeId: string) {
+  const volume = await db.volume.findFirst({
+    where: {
+      id: volumeId,
+      service: {
+        deletedAt: null,
+        environment: { project: { deletedAt: null, workspace: { members: { some: { userId } } } } },
+      },
+    },
+    select: {
+      id: true,
+      name: true,
+      mountPath: true,
+      service: { select: { environment: { select: { project: { select: { workspace: { select: { members: { where: { userId }, select: { role: true } } } } } } } } } },
+    },
+  });
+  if (!volume) throw new TRPCError({ code: "NOT_FOUND", message: "Volume not found" });
+  const role = volume.service.environment.project.workspace.members[0]?.role;
+  return { id: volume.id, name: volume.name, mountPath: volume.mountPath, role };
+}
+
+/** Runner answers → tRPC errors; the hint travels in the message. */
+function toVolumeTrpcError(err: unknown): TRPCError {
+  if (err instanceof TRPCError) return err;
+  if (err instanceof VolumeRunnerError) {
+    const code =
+      err.code === "NO_RUNNER" || err.code === "RUNNER_OUTDATED"
+        ? "PRECONDITION_FAILED"
+        : err.status === 400 || err.status === 409
+        ? "BAD_REQUEST"
+        : err.status === 403
+        ? "FORBIDDEN"
+        : err.status === 404
+        ? "NOT_FOUND"
+        : "INTERNAL_SERVER_ERROR";
+    return new TRPCError({ code, message: err.hint ? `${err.message}. ${err.hint}` : err.message });
+  }
+  return new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: (err as Error)?.message || "Volume access failed" });
+}
+
+const volumePath = z
+  .string()
+  .max(4096)
+  .refine((p) => !p.includes("\0"), { message: "Path contains a NUL byte" })
+  .default("");
 
 export const volumeRouter = createTRPCRouter({
+  /** Connection test: asks the hosting runner whether it holds the volume and can read it. */
+  checkConnection: protectedProcedure
+    .input(z.object({ volumeId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const volume = await loadVolumeForMember(ctx.db, ctx.session.user.id, input.volumeId);
+      const started = Date.now();
+      try {
+        const stat = await statVolume(volume.id);
+        return { ok: true as const, latencyMs: Date.now() - started, backend: stat.backend, access: stat.access, entries: stat.entries, truncated: stat.truncated };
+      } catch (err) {
+        if (!(err instanceof VolumeRunnerError)) throw toVolumeTrpcError(err);
+        return { ok: false as const, latencyMs: Date.now() - started, error: err.message, hint: err.hint, code: err.code };
+      }
+    }),
+
+  /** Directory listing inside the volume (≤ 500 entries), from the runner. Any member. */
+  listFiles: protectedProcedure
+    .input(z.object({ volumeId: z.string(), path: volumePath }))
+    .query(async ({ ctx, input }) => {
+      const volume = await loadVolumeForMember(ctx.db, ctx.session.user.id, input.volumeId);
+      try {
+        const listing = await listVolumeFiles(volume.id, input.path);
+        return { volumeId: volume.id, name: volume.name, mountPath: volume.mountPath, ...listing };
+      } catch (err) {
+        throw toVolumeTrpcError(err);
+      }
+    }),
+
+  /** File preview (≤ 64 KiB of text; binary files report size and type only). Not for viewers. */
+  readFile: protectedProcedure
+    .input(z.object({ volumeId: z.string(), path: z.string().min(1).max(4096) }))
+    .query(async ({ ctx, input }) => {
+      const volume = await loadVolumeForMember(ctx.db, ctx.session.user.id, input.volumeId);
+      if (!volume.role || volume.role === "VIEWER") {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Viewers cannot read file contents" });
+      }
+      if (input.path.includes("\0")) throw new TRPCError({ code: "BAD_REQUEST", message: "Path contains a NUL byte" });
+      try {
+        return { volumeId: volume.id, ...toVolumePreview(await readVolumeFile(volume.id, input.path)) };
+      } catch (err) {
+        throw toVolumeTrpcError(err);
+      }
+    }),
+
   /**
    * List all persistent volumes mounted to a service
    */

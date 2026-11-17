@@ -17,6 +17,7 @@ import {
   DeleteBucketCommand,
   DeleteObjectsCommand,
   GetObjectCommand,
+  HeadBucketCommand,
   ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
@@ -191,15 +192,16 @@ export interface ListedObject {
 
 export async function listObjects(
   bucketRef: string,
-  opts: { prefix?: string; maxKeys?: number; continuationToken?: string } = {},
+  opts: { prefix?: string; maxKeys?: number; continuationToken?: string; delimiter?: string } = {},
   deps?: StorageDeps
-): Promise<{ objects: ListedObject[]; nextContinuationToken: string | null; isTruncated: boolean }> {
+): Promise<{ objects: ListedObject[]; prefixes: string[]; nextContinuationToken: string | null; isTruncated: boolean }> {
   const res = await s3For(deps).send(
     new ListObjectsV2Command({
       Bucket: bucketRef,
       Prefix: opts.prefix || undefined,
       MaxKeys: Math.min(Math.max(opts.maxKeys ?? 100, 1), 1000),
       ContinuationToken: opts.continuationToken || undefined,
+      Delimiter: opts.delimiter || undefined,
     })
   );
   return {
@@ -209,9 +211,23 @@ export async function listObjects(
       lastModified: o.LastModified ?? null,
       etag: o.ETag ?? null,
     })),
+    // "Folders" when a delimiter is given (CommonPrefixes); always empty without one.
+    prefixes: (res.CommonPrefixes ?? []).map((p) => p.Prefix ?? "").filter(Boolean),
     nextContinuationToken: res.NextContinuationToken ?? null,
     isTruncated: !!res.IsTruncated,
   };
+}
+
+/**
+ * Connectivity test: `HeadBucket`, then `ListObjectsV2` with `MaxKeys: 1` (proves the keys may
+ * list). Throws StorageNotConfiguredError without keys, and the S3 error otherwise.
+ */
+export async function checkBucket(bucketRef: string, deps?: StorageDeps): Promise<{ latencyMs: number; hasObjects: boolean }> {
+  const s3 = s3For(deps);
+  const started = Date.now();
+  await s3.send(new HeadBucketCommand({ Bucket: bucketRef }));
+  const page = await s3.send(new ListObjectsV2Command({ Bucket: bucketRef, MaxKeys: 1 }));
+  return { latencyMs: Date.now() - started, hasObjects: (page.KeyCount ?? page.Contents?.length ?? 0) > 0 };
 }
 
 function isNoSuchBucket(err: unknown) {
@@ -295,4 +311,5 @@ export const storageProvider = {
   listObjects,
   generatePresignedUrl,
   isStorageConfigured,
+  checkBucket,
 };

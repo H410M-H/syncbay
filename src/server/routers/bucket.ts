@@ -20,6 +20,29 @@ function toTrpcError(err: unknown): TRPCError {
   return new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Object storage error: ${e?.message ?? "unknown"}` });
 }
 
+/** Error + actionable hint for a failed bucket check (no secrets: S3 errors carry none). */
+function describeStorageFailure(err: unknown): { error: string; hint?: string } {
+  if (err instanceof StorageNotConfiguredError) {
+    return {
+      error: err.message,
+      hint: "R2 keys are not configured on Syncbay: set R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY, plus CLOUDFLARE_ACCOUNT_ID (or R2_ENDPOINT).",
+    };
+  }
+  const e = err as { name?: string; message?: string; code?: string; $metadata?: { httpStatusCode?: number } };
+  const status = e?.$metadata?.httpStatusCode;
+  const message = e?.message && e.message !== "UnknownError" ? e.message : `${e?.name ?? "Error"}${status ? ` (HTTP ${status})` : ""}`;
+  if (e?.name === "NoSuchBucket" || e?.name === "NotFound" || status === 404) {
+    return { error: "The bucket does not exist on the storage server", hint: "It may have been deleted outside Syncbay. Delete this record and create the bucket again." };
+  }
+  if (status === 403 || e?.name === "AccessDenied" || e?.name === "InvalidAccessKeyId" || e?.name === "SignatureDoesNotMatch") {
+    return { error: message, hint: "The storage server refused Syncbay's R2 keys. Check R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY and that the token covers this bucket." };
+  }
+  if (/ECONNREFUSED|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|fetch failed|socket hang up/i.test(`${e?.code ?? ""} ${e?.message ?? ""} ${e?.name ?? ""}`)) {
+    return { error: message, hint: "The S3 endpoint is unreachable from Syncbay. Check CLOUDFLARE_ACCOUNT_ID / R2_ENDPOINT." };
+  }
+  return { error: message };
+}
+
 const memberScope = (userId: string, roles?: Array<"OWNER" | "ADMIN" | "MEMBER">) => ({
   deletedAt: null,
   workspace: { members: { some: roles ? { userId, role: { in: roles } } : { userId } } },
@@ -84,6 +107,8 @@ export const bucketRouter = createTRPCRouter({
         prefix: z.string().max(1024).optional(),
         cursor: z.string().max(2048).optional(),
         limit: z.number().int().min(1).max(1000).default(100),
+        /** "/" groups keys into folder prefixes (returned as `prefixes`). */
+        delimiter: z.literal("/").optional(),
       })
     )
     .query(async ({ ctx, input }) => {
@@ -96,9 +121,28 @@ export const bucketRouter = createTRPCRouter({
           prefix: input.prefix,
           continuationToken: input.cursor,
           maxKeys: input.limit,
+          delimiter: input.delimiter,
         });
       } catch (err) {
         throw toTrpcError(err);
+      }
+    }),
+
+  /** Connection test: HeadBucket + ListObjectsV2 (MaxKeys 1) with the platform's R2 keys. Never throws for storage errors. */
+  checkConnection: protectedProcedure
+    .input(z.object({ bucketId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const bucket = await ctx.db.bucket.findFirst({
+        where: { id: input.bucketId, project: memberScope(ctx.session.user.id) },
+        select: { id: true, r2BucketRef: true },
+      });
+      if (!bucket) throw new TRPCError({ code: "NOT_FOUND", message: "Bucket not found" });
+      const started = Date.now();
+      try {
+        const res = await storageProvider.checkBucket(bucket.r2BucketRef);
+        return { ok: true as const, latencyMs: res.latencyMs, hasObjects: res.hasObjects };
+      } catch (err) {
+        return { ok: false as const, latencyMs: Date.now() - started, ...describeStorageFailure(err) };
       }
     }),
 

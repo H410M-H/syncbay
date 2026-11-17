@@ -16,6 +16,7 @@
 import { Client as PgClient, type QueryConfig } from "pg";
 import Redis from "ioredis";
 import mysql from "mysql2/promise";
+import { redactSecrets } from "@/lib/telemetry/redact";
 
 export type QueryProvider = "POSTGRES" | "REDIS" | "MYSQL";
 export type QueryMode = "read" | "write";
@@ -47,6 +48,9 @@ export interface TableColumnSchema {
 
 export interface TableSchema {
   tableName: string;
+  /** Raw schema (Postgres) and table name, for exact identifier quoting (see preview.ts). */
+  schema?: string;
+  name?: string;
   columns: TableColumnSchema[];
   rowCountEstimate: number;
 }
@@ -147,10 +151,10 @@ function normalizeRows(rows: Record<string, unknown>[]): Record<string, any>[] {
 
 // ─── Postgres ─────────────────────────────────────────────────────────────────
 
-async function withPg<T>(connectionUrl: string, fn: (client: PgClient) => Promise<T>): Promise<T> {
+async function withPg<T>(connectionUrl: string, fn: (client: PgClient) => Promise<T>, connectTimeoutMs = CONNECT_TIMEOUT_MS): Promise<T> {
   const client = new PgClient({
     connectionString: connectionUrl,
-    connectionTimeoutMillis: CONNECT_TIMEOUT_MS,
+    connectionTimeoutMillis: connectTimeoutMs,
     application_name: "syncbay-query-studio",
   });
   await client.connect();
@@ -233,7 +237,7 @@ async function introspectPostgres(target: QueryTarget): Promise<TableSchema[]> {
       const tableName = r.table_schema === "public" ? r.table_name : key;
       let table = tables.get(key);
       if (!table) {
-        table = { tableName, columns: [], rowCountEstimate: countMap.get(key) ?? 0 };
+        table = { tableName, schema: r.table_schema, name: r.table_name, columns: [], rowCountEstimate: countMap.get(key) ?? 0 };
         tables.set(key, table);
       }
       table.columns.push({
@@ -250,8 +254,8 @@ async function introspectPostgres(target: QueryTarget): Promise<TableSchema[]> {
 
 // ─── MySQL ────────────────────────────────────────────────────────────────────
 
-async function withMysql<T>(connectionUrl: string, fn: (conn: mysql.Connection) => Promise<T>): Promise<T> {
-  const conn = await mysql.createConnection({ uri: connectionUrl, connectTimeout: CONNECT_TIMEOUT_MS, multipleStatements: false });
+async function withMysql<T>(connectionUrl: string, fn: (conn: mysql.Connection) => Promise<T>, connectTimeoutMs = CONNECT_TIMEOUT_MS): Promise<T> {
+  const conn = await mysql.createConnection({ uri: connectionUrl, connectTimeout: connectTimeoutMs, multipleStatements: false });
   try {
     return await fn(conn);
   } finally {
@@ -315,7 +319,7 @@ async function introspectMysql(target: QueryTarget): Promise<TableSchema[]> {
     for (const r of cols as any[]) {
       let table = tables.get(r.t);
       if (!table) {
-        table = { tableName: r.t, columns: [], rowCountEstimate: countMap.get(r.t) ?? 0 };
+        table = { tableName: r.t, name: r.t, columns: [], rowCountEstimate: countMap.get(r.t) ?? 0 };
         tables.set(r.t, table);
       }
       table.columns.push({
@@ -359,10 +363,10 @@ export function parseRedisCommand(line: string): string[] {
   return args;
 }
 
-function connectRedis(connectionUrl: string, timeoutMs: number): Redis {
+function connectRedis(connectionUrl: string, timeoutMs: number, connectTimeoutMs = CONNECT_TIMEOUT_MS): Redis {
   return new Redis(connectionUrl, {
     lazyConnect: true,
-    connectTimeout: CONNECT_TIMEOUT_MS,
+    connectTimeout: connectTimeoutMs,
     commandTimeout: timeoutMs,
     maxRetriesPerRequest: 0,
     enableOfflineQueue: false,
@@ -370,8 +374,8 @@ function connectRedis(connectionUrl: string, timeoutMs: number): Redis {
   });
 }
 
-async function withRedis<T>(connectionUrl: string, timeoutMs: number, fn: (r: Redis) => Promise<T>): Promise<T> {
-  const redis = connectRedis(connectionUrl, timeoutMs);
+async function withRedis<T>(connectionUrl: string, timeoutMs: number, fn: (r: Redis) => Promise<T>, connectTimeoutMs = CONNECT_TIMEOUT_MS): Promise<T> {
+  const redis = connectRedis(connectionUrl, timeoutMs, connectTimeoutMs);
   redis.on("error", () => null);
   await redis.connect();
   try {
@@ -499,6 +503,33 @@ async function introspectRedis(target: QueryTarget): Promise<TableSchema[]> {
 
 const UNREACHABLE = /ETIMEDOUT|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ENOTFOUND|connection timeout|timeout expired|connect timeout|Connection is closed/i;
 
+function isUnreachable(err: unknown): boolean {
+  const message = (err as Error)?.message || String(err);
+  const code = (err as { code?: string })?.code || "";
+  return UNREACHABLE.test(`${code} ${message}`);
+}
+
+/** `host:port` and port of a connection URL, without its credentials. */
+function endpointOf(connectionUrl: string): { where: string; port: string; host: string } {
+  try {
+    const url = new URL(connectionUrl);
+    return { where: `${url.hostname}:${url.port}`, port: url.port, host: url.hostname };
+  } catch {
+    return { where: "the database", port: "", host: "" };
+  }
+}
+
+/** What to do about an unreachable database port (shared by Query Studio and the connection test). */
+function unreachableAdvice(connectionUrl: string): string {
+  const { port, host } = endpointOf(connectionUrl);
+  return (
+    `Services on the same runner connect over the private network and are not affected. ` +
+    `For Query Studio and external tools, open TCP port ${port || "of the database"} in the runner host's firewall or security group ` +
+    `(set RUNNER_DB_PORT_RANGE on the runner to keep database ports in one small range), ` +
+    `or use an SSH tunnel from your computer: ssh -N -L 15432:127.0.0.1:${port || "<db-port>"} root@${host || "<runner-host>"}.`
+  );
+}
+
 /**
  * A network failure gets an answer the user can act on. The control plane connects from outside
  * the runner, so a database on a self-hosted runner is reachable only when its port is open.
@@ -507,23 +538,9 @@ async function reachable<T>(target: QueryTarget, run: () => Promise<T>): Promise
   try {
     return await run();
   } catch (err) {
-    const message = (err as Error)?.message || String(err);
+    if (!isUnreachable(err)) throw err;
     const code = (err as { code?: string })?.code || "";
-    if (!UNREACHABLE.test(`${code} ${message}`)) throw err;
-    let where = "the database";
-    let port = "";
-    try {
-      const url = new URL(target.connectionUrl);
-      where = `${url.hostname}:${url.port}`;
-      port = url.port;
-    } catch {
-      // keep the generic wording
-    }
-    throw new Error(
-      `Could not reach ${where} (${code || "connection timed out"}). Services on the same runner connect over the private network and are not affected. ` +
-        `For Query Studio and external tools, open TCP port ${port || "of the database"} in the runner host's firewall or security group ` +
-        `(set RUNNER_DB_PORT_RANGE on the runner to keep database ports in one small range).`
-    );
+    throw new Error(`Could not reach ${endpointOf(target.connectionUrl).where} (${code || "connection timed out"}). ${unreachableAdvice(target.connectionUrl)}`);
   }
 }
 
@@ -551,4 +568,103 @@ export async function getDatabaseSchema(target: QueryTarget): Promise<TableSchem
   return reachable(target, () =>
     target.provider === "REDIS" ? introspectRedis(target) : target.provider === "MYSQL" ? introspectMysql(target) : introspectPostgres(target)
   );
+}
+
+// ─── Connection test ──────────────────────────────────────────────────────────
+
+export interface ConnectionCheck {
+  ok: boolean;
+  latencyMs: number;
+  serverVersion?: string;
+  error?: string;
+  hint?: string;
+}
+
+const CHECK_TIMEOUT_MS = 3_000;
+const AUTH_FAILED = /28P01|password authentication failed|WRONGPASS|NOAUTH|invalid password|ER_ACCESS_DENIED|Access denied/i;
+
+/** Credentials never appear in what the connection test returns. */
+function scrub(text: string, connectionUrl: string): string {
+  let out = redactSecrets(text);
+  try {
+    const password = decodeURIComponent(new URL(connectionUrl).password || "");
+    if (password.length >= 4) out = out.split(password).join("***");
+  } catch {
+    // unparsable URL: nothing more to strip
+  }
+  return out;
+}
+
+/**
+ * Opens a real connection with a short timeout and runs the cheapest round trip:
+ * Postgres `SELECT 1` + `SHOW server_version`, MySQL `SELECT VERSION()`, Redis `PING` + `INFO server`.
+ * Never throws; simulated `sb-db-*` instances report ok:false.
+ */
+export async function checkConnection(target: QueryTarget, options: { timeoutMs?: number } = {}): Promise<ConnectionCheck> {
+  const timeoutMs = Math.min(Math.max(options.timeoutMs ?? CHECK_TIMEOUT_MS, 250), QUERY_TIMEOUT_MS);
+  const started = Date.now();
+  if (!target.connectionUrl) {
+    return { ok: false, latencyMs: 0, error: "Database has no connection URL yet", hint: "Wait for provisioning to finish, or re-create the database." };
+  }
+  if (/\.syncbay-db\.internal\b/.test(target.connectionUrl)) {
+    return {
+      ok: false,
+      latencyMs: 0,
+      error: "This is a simulated sb-db-* instance with no server behind it.",
+      hint: "Configure a runner (RUNNER_URL) and create the database again to get a real server.",
+    };
+  }
+  try {
+    let serverVersion: string | undefined;
+    if (target.provider === "REDIS") {
+      serverVersion = await withRedis(
+        target.connectionUrl,
+        timeoutMs,
+        async (redis) => {
+          const pong = await redis.ping();
+          if (pong !== "PONG") throw new Error(`Unexpected PING reply: ${String(pong).slice(0, 40)}`);
+          const info = await redis.info("server");
+          return info.match(/^redis_version:(.+)$/m)?.[1]?.trim();
+        },
+        timeoutMs
+      );
+    } else if (target.provider === "MYSQL") {
+      serverVersion = await withMysql(
+        target.connectionUrl,
+        async (conn) => {
+          const [rows] = await conn.query({ sql: "SELECT VERSION() AS v", timeout: timeoutMs });
+          return String((rows as Array<{ v: unknown }>)[0]?.v ?? "") || undefined;
+        },
+        timeoutMs
+      );
+    } else {
+      serverVersion = await withPg(
+        target.connectionUrl,
+        async (client) => {
+          await client.query(`SET statement_timeout = ${Math.floor(timeoutMs)}`);
+          await client.query("SELECT 1");
+          const res = await client.query("SHOW server_version");
+          return String(res.rows[0]?.server_version ?? "") || undefined;
+        },
+        timeoutMs
+      );
+    }
+    return { ok: true, latencyMs: Date.now() - started, serverVersion };
+  } catch (err) {
+    const latencyMs = Date.now() - started;
+    const code = (err as { code?: string })?.code || "";
+    const message = scrub((err as Error)?.message || String(err), target.connectionUrl);
+    if (isUnreachable(err)) {
+      return {
+        ok: false,
+        latencyMs,
+        error: `Could not reach ${endpointOf(target.connectionUrl).where} (${code || "connection timed out"})`,
+        hint: unreachableAdvice(target.connectionUrl),
+      };
+    }
+    if (AUTH_FAILED.test(`${code} ${message}`)) {
+      return { ok: false, latencyMs, error: message, hint: "The server answered but refused the stored credentials. Re-create the database or update its connection URL." };
+    }
+    return { ok: false, latencyMs, error: message };
+  }
 }

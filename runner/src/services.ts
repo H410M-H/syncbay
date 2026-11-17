@@ -10,11 +10,15 @@
  *   POST   /api/terminals/:id/input       write to the session's stdin
  *   GET    /api/terminals/:id/stream      SSE output stream
  *   DELETE /api/terminals/:id             kill the session
+ *   GET    /api/volumes/:id/stat          which backend holds the volume, top-level entry count
+ *   GET    /api/volumes/:id/files?path=   list a directory (≤ 500 entries: name, type, size, mtime)
+ *   GET    /api/volumes/:id/file?path=    read a file (≤ 64 KiB, base64 + truncated flag)
+ *                                         (read-only; path guard in volume-files.ts)
  *
  * Signing: canonical `${ts}.${nonce}.${METHOD}.${path}.${payload}` (see signRequest in
  * runner-driver.ts and runner/src/request-auth.ts); POST payload is the raw body, GET/DELETE
- * payload is the request pathname. The daemon's verifier consumes the `X-Syncbay-Nonce`, so
- * every signed request is single-use.
+ * payload is the request pathname plus its query string (so `?path=` is signed too). The daemon's
+ * verifier consumes the `X-Syncbay-Nonce`, so every signed request is single-use.
  * Database mode (RUNNER_DB_MODE, default auto): Docker when `docker info` works,
  * otherwise native processes when initdb/pg_ctl or redis-server exist on the host,
  * otherwise (or RUNNER_DRIVER=mock) a simulated record whose health is always healthy.
@@ -29,6 +33,7 @@ import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { PortManager, defaultPortManager } from "./port-manager.ts";
 import { NativeDatabaseManager } from "./native-db.ts";
 import { parsePortRange, rewriteDatabaseUrls, type DatabaseTarget } from "./db-network.ts";
+import { VolumeAccessError, VolumeBrowser } from "./volume-files.ts";
 
 export type SignatureVerifier = (
   payload: string,
@@ -48,6 +53,8 @@ export interface RunnerServicesOptions {
   dbPortManager?: PortManager;
   terminalIdleMs?: number;
   workspaceRoot?: string;
+  /** Read-only volume access (state dir / access mode overrides in tests). */
+  volumes?: VolumeBrowser;
 }
 
 type ManagedDbProvider = "POSTGRES" | "REDIS" | "MYSQL";
@@ -126,6 +133,7 @@ export class RunnerServices {
   private readonly terminals = new Map<string, TerminalSession>();
   private dockerProbe: Promise<boolean> | null = null;
   private scriptProbe: Promise<boolean> | null = null;
+  private readonly volumes: VolumeBrowser;
 
   constructor(options: RunnerServicesOptions = {}) {
     this.portManager = options.portManager || defaultPortManager;
@@ -137,6 +145,7 @@ export class RunnerServices {
     this.dbPortManager = options.dbPortManager || (dbRange ? new PortManager({ rangeStart: dbRange.start, rangeEnd: dbRange.end }) : this.portManager);
     this.terminalIdleMs = options.terminalIdleMs ?? 10 * 60 * 1000;
     this.workspaceRoot = options.workspaceRoot || path.join(process.cwd(), ".runner_workspace");
+    this.volumes = options.volumes || new VolumeBrowser();
   }
 
   /** Returns true when the request was handled by this module. */
@@ -150,11 +159,14 @@ export class RunnerServices {
     const method = (req.method || "GET").toUpperCase();
     const isDb = pathname === "/api/databases" || pathname.startsWith("/api/databases/");
     const isTerm = pathname === "/api/terminals" || pathname.startsWith("/api/terminals/");
-    if (!isDb && !isTerm) return false;
+    const isVol = pathname === "/api/volumes" || pathname.startsWith("/api/volumes/");
+    if (!isDb && !isTerm && !isVol) return false;
 
     const signature = req.headers["x-syncbay-signature"] as string | undefined;
     const timestamp = req.headers["x-syncbay-timestamp"] as string | undefined;
-    const signedPayload = method === "POST" ? body : pathname;
+    // Canonical payload: POST = raw body; GET/DELETE = pathname + query string (empty for most routes).
+    const url = new URL(req.url || "/", "http://runner.invalid");
+    const signedPayload = method === "POST" ? body : `${pathname}${url.search}`;
     if (!verify(signedPayload, signature, timestamp)) {
       sendJson(res, 401, { error: "Unauthorized: Invalid or missing HMAC signature" });
       return true;
@@ -164,7 +176,15 @@ export class RunnerServices {
     const [id, action] = segments;
 
     try {
-      if (isDb) {
+      if (isVol) {
+        if (method === "GET" && segments.length === 2 && ["stat", "files", "file"].includes(action)) {
+          return await this.volumeRoute(res, id, action, url.searchParams.get("path")), true;
+        }
+        // Always answer with a `code`: the control plane reads a 404 *without* one as a runner
+        // that predates these routes ("runner needs updating").
+        sendJson(res, 404, { error: "Unknown volume route", code: "UNKNOWN_ROUTE", path: pathname });
+        return true;
+      } else if (isDb) {
         await this.recoverDockerDatabases();
         if (method === "POST" && segments.length === 0) return await this.createDatabase(res, body), true;
         if (method === "DELETE" && segments.length === 1) return await this.deleteDatabase(res, id), true;
@@ -176,7 +196,7 @@ export class RunnerServices {
         if (method === "DELETE" && segments.length === 1) return this.closeTerminal(res, id), true;
       }
     } catch (err: any) {
-      sendJson(res, 500, { error: err?.message || "Internal runner error" });
+      sendJson(res, 500, { error: err?.message || "Internal runner error", code: "RUNNER_ERROR" });
       return true;
     }
 
@@ -503,6 +523,19 @@ export class RunnerServices {
       latencyMs: Date.now() - startedAt,
       output: (probe.stdout || probe.stderr).trim().slice(0, 300),
     });
+  }
+
+  // ─── Volumes (read-only Data view) ─────────────────────────────────────────
+
+  private async volumeRoute(res: http.ServerResponse, id: string, action: string, rawPath: string | null): Promise<void> {
+    try {
+      if (action === "stat") return sendJson(res, 200, await this.volumes.stat(id));
+      if (action === "files") return sendJson(res, 200, { id, ...(await this.volumes.list(id, rawPath ?? "")) });
+      return sendJson(res, 200, { id, ...(await this.volumes.read(id, rawPath ?? "")) });
+    } catch (err) {
+      if (err instanceof VolumeAccessError) return sendJson(res, err.status, { error: err.message, code: err.code });
+      throw err;
+    }
   }
 
   // ─── Terminal sessions ────────────────────────────────────────────────────

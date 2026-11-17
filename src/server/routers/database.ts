@@ -10,6 +10,8 @@ import {
   parseDatabaseUrl,
 } from "@/lib/database-provider";
 import { DatabaseProvider } from "@prisma/client";
+import { checkConnection, type QueryProvider } from "@/lib/query-studio/engine";
+import { getRunnerBaseUrl } from "@/lib/runner-client";
 
 export const databaseRouter = createTRPCRouter({
   /**
@@ -137,6 +139,52 @@ export const databaseRouter = createTRPCRouter({
         mode: result.mode,
         message: result.message,
         lastHealthAt: updated.lastHealthAt,
+      };
+    }),
+
+  /**
+   * Connection test: a real connection with a short timeout (Postgres `SELECT 1` + version,
+   * MySQL `SELECT VERSION()`, Redis `PING` + `INFO server`), plus the runner's own health probe
+   * when a runner provisioned the database. Read-only: nothing is persisted.
+   */
+  checkConnection: protectedProcedure
+    .input(z.object({ databaseId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const instance = await ctx.db.databaseInstance.findFirst({
+        where: {
+          id: input.databaseId,
+          environment: {
+            project: {
+              deletedAt: null,
+              workspace: { members: { some: { userId: ctx.session.user.id } } },
+            },
+          },
+        },
+        select: { id: true, provider: true, status: true, connectionUrl: true, containerId: true, partnerDbId: true },
+      });
+      if (!instance) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Database instance not found" });
+      }
+      if (instance.status === "PROVISIONING" || instance.status === "DELETING" || instance.status === "FAILED") {
+        return {
+          ok: false,
+          latencyMs: 0,
+          error: `The database is ${instance.status.toLowerCase()}`,
+          hint: instance.status === "FAILED" ? "Provisioning failed. Delete it and create it again." : "Try again once it is ACTIVE.",
+          runner: null,
+        };
+      }
+
+      const runnerManaged = Boolean(instance.containerId && getRunnerBaseUrl());
+      const [conn, runnerProbe] = await Promise.all([
+        checkConnection({ provider: instance.provider as QueryProvider, connectionUrl: instance.connectionUrl }),
+        runnerManaged ? checkDatabaseHealth(instance) : Promise.resolve(null),
+      ]);
+      return {
+        ...conn,
+        runner: runnerProbe
+          ? { healthy: runnerProbe.healthy, latencyMs: runnerProbe.latencyMs ?? null, message: runnerProbe.message?.slice(0, 300) ?? null }
+          : null,
       };
     }),
 
