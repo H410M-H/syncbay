@@ -585,3 +585,16 @@ test("stacks: a plain server.js without package.json is a Node app with nothing 
   assert.ok(!/npm (ci|install)/.test(df) && !/COPY package\.json/.test(df), df);
   assert.match(df, /node server\.js/);
 });
+
+test("stacks: service variables are declared as ARGs in build stages only", () => {
+  const vite = detectStack(stackFilesFor(writeFixture({ "package.json": JSON.stringify({ scripts: { build: "vite build" }, devDependencies: { vite: "5" } }), "index.html": "<html></html>" })))!;
+  const df = generateDockerfile(vite, { port: 8080, buildArgs: ["VITE_API", "PORT", "bad-name", "NPM_TOKEN"] });
+  const stages = df.split(/^FROM /m).slice(1);
+  assert.ok(stages.length > 1, "SPA builds are multi-stage");
+  assert.match(stages[0], /^ARG NPM_TOKEN$/m);
+  assert.match(stages[0], /^ARG VITE_API$/m);
+  assert.ok(!/ARG (PORT|bad-name)/.test(df), "runtime-only and invalid names are skipped");
+  assert.ok(!/^ARG /m.test(stages[stages.length - 1]), "the runtime stage gets no build args");
+  const flask = detectStack(stackFilesFor(writeFixture(FASTAPI)))!;
+  assert.match(generateDockerfile(flask, { port: 8000, buildArgs: ["SECRET_KEY"] }), /^FROM [^\n]+\nARG SECRET_KEY$/m);
+});

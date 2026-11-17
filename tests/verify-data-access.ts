@@ -336,6 +336,13 @@ async function main() {
       data: { environmentId: prodEnv.id, name: "pending", provider: "POSTGRES", region: "local", status: "PROVISIONING", connectionUrl: "" },
     });
 
+    // Viewers never receive the password: not in the URL, the credentials or the CLI command.
+    const pgPassword = new URL(inspectUrl).password;
+    for (const seen of [await asViewer.database.byId({ databaseId: extPg.id }), ...(await asViewer.database.list({ environmentId: prodEnv.id }))]) {
+      assert.ok(!JSON.stringify(seen).includes(`:${pgPassword}@`) && seen.credentials.password === "", `viewer sees no password: ${seen.credentials.cliCommand}`);
+    }
+    assert.ok(JSON.stringify(await asOwner.database.byId({ databaseId: extPg.id })).includes(`:${pgPassword}@`), "owners still get the full URL");
+    ok("viewers get masked connection URLs, credentials and CLI commands; owners the real ones");
     const pgCheck = await asViewer.database.checkConnection({ databaseId: extPg.id });
     assert.strictEqual(pgCheck.ok, true, JSON.stringify(pgCheck));
     assert.match(pgCheck.serverVersion || "", /^\d+/);

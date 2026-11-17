@@ -431,7 +431,29 @@ export function generateDockerfile(stack: DetectedStack, opts: DockerfileOptions
       body = deno(stack, opts);
       break;
   }
-  return [...header(stack), ...body, ""].join("\n");
+  return withBuildArgs([...header(stack), ...body], opts.buildArgs).concat("").join("\n");
+}
+
+const BUILD_ARG_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** Set by the platform at run time; never a build argument. */
+const RUNTIME_ONLY = new Set(["PORT", "HOST", "HOSTNAME", "HTTP_PORT", "SERVER_PORT"]);
+
+/**
+ * Declares the service's variables as `ARG`s in the build stages: after every `FROM` of a single-
+ * stage image, or of every stage but the last one of a multi-stage image (the runtime stage gets
+ * the values from `docker run -e` instead, so they stay out of its layers).
+ */
+function withBuildArgs(lines: string[], names: string[] = []): string[] {
+  const args = [...new Set(names)].filter((n) => BUILD_ARG_NAME.test(n) && !RUNTIME_ONLY.has(n)).sort();
+  if (args.length === 0) return lines;
+  const fromIdx = lines.map((l, i) => (/^FROM\s/.test(l) ? i : -1)).filter((i) => i >= 0);
+  const stages = fromIdx.length > 1 ? fromIdx.slice(0, -1) : fromIdx;
+  const out: string[] = [];
+  lines.forEach((line, i) => {
+    out.push(line);
+    if (stages.includes(i)) out.push(...args.map((a) => `ARG ${a}`));
+  });
+  return out;
 }
 
 const IGNORE_COMMON = [".git", ".DS_Store", "Dockerfile.syncbay", "Dockerfile.syncbay.dockerignore", "*.log"];
