@@ -3,7 +3,11 @@
  *
  * HMAC-protected routes mounted by RunnerDaemon.handleRequest:
  *   POST   /api/databases                 provision postgres:16-alpine | redis:7-alpine | mysql:8 (Docker),
- *                                         or a native Postgres/Redis server (see native-db.ts)
+ *                                         or a native Postgres/Redis server (see native-db.ts).
+ *                                         Body `{ id, name, provider, extensions?, engine? }`:
+ *                                         `extensions: ["vector"]` uses pgvector/pgvector:pg16 and runs
+ *                                         CREATE EXTENSION once the server is up; `engine: "valkey"`
+ *                                         (provider REDIS) uses valkey/valkey:8-alpine.
  *   DELETE /api/databases/:id             remove container + named volume (or stop + rm data dir), release port
  *   GET    /api/databases/:id/health      pg_isready / redis-cli ping / mysqladmin ping
  *   POST   /api/terminals                 spawn `docker exec -i <container> sh` or `sh` in the job workspace
@@ -63,6 +67,8 @@ type DbBackend = "docker" | "native" | "mock";
 interface ManagedDbRecord {
   id: string;
   provider: ManagedDbProvider;
+  /** Postgres extensions installed at provisioning. */
+  extensions?: string[];
   containerName: string;
   containerId: string;
   host: string;
@@ -86,6 +92,52 @@ interface TerminalSession {
 /** util-linux `script` allocates a pty so interactive shells behave (prompts, echo, job control). */
 const PTY_WRAPPER = process.env.RUNNER_PTY_WRAPPER || "script";
 const SAFE_ID = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/;
+
+/** Postgres extensions a managed database can be created with. */
+export const SUPPORTED_PG_EXTENSIONS = ["vector"] as const;
+
+export interface DatabaseImageRequest {
+  provider: ManagedDbProvider;
+  extensions?: string[];
+  engine?: string;
+}
+
+/**
+ * Docker image for a managed database. pgvector needs its own Postgres build; Valkey is a
+ * wire-compatible Redis server. RUNNER_PGVECTOR_IMAGE / RUNNER_VALKEY_IMAGE override the defaults.
+ */
+export function databaseImageFor(req: DatabaseImageRequest): string {
+  if (req.provider === "MYSQL") return "mysql:8";
+  if (req.provider === "REDIS") {
+    return req.engine === "valkey" ? process.env.RUNNER_VALKEY_IMAGE?.trim() || "valkey/valkey:8-alpine" : "redis:7-alpine";
+  }
+  return req.extensions?.includes("vector") ? process.env.RUNNER_PGVECTOR_IMAGE?.trim() || "pgvector/pgvector:pg16" : "postgres:16-alpine";
+}
+
+/** Provider a managed-db container runs, read back from its image name (recovery after a restart). */
+export function providerFromImage(image: string): ManagedDbProvider {
+  const lower = image.toLowerCase();
+  if (lower.includes("redis") || lower.includes("valkey")) return "REDIS";
+  if (lower.includes("mysql")) return "MYSQL";
+  return "POSTGRES";
+}
+
+/**
+ * Validates the `extensions` / `engine` options of POST /api/databases.
+ * Returns an error message, or null when the request is acceptable.
+ */
+export function validateDatabaseOptions(req: DatabaseImageRequest): string | null {
+  const exts = req.extensions || [];
+  for (const ext of exts) {
+    if (!(SUPPORTED_PG_EXTENSIONS as readonly string[]).includes(ext)) {
+      return `Unsupported extension: ${String(ext).slice(0, 40)}. Supported: ${SUPPORTED_PG_EXTENSIONS.join(", ")}`;
+    }
+  }
+  if (exts.length && req.provider !== "POSTGRES") return "extensions are only supported for POSTGRES";
+  if (req.engine !== undefined && req.engine !== "valkey") return `Unsupported engine: ${String(req.engine).slice(0, 40)}`;
+  if (req.engine === "valkey" && req.provider !== "REDIS") return "engine valkey requires provider REDIS";
+  return null;
+}
 const MAX_BUFFER = 64 * 1024;
 
 interface ExecResult {
@@ -279,7 +331,7 @@ export class RunnerServices {
             const id = String(info.Config?.Labels?.["syncbay.managed-db"] || "").toLowerCase();
             if (!id || this.databases.has(id)) continue;
             const image = String(info.Config?.Image || "");
-            const provider: ManagedDbProvider = image.includes("redis") ? "REDIS" : image.includes("mysql") ? "MYSQL" : "POSTGRES";
+            const provider: ManagedDbProvider = providerFromImage(image);
             const bindings = Object.values(info.HostConfig?.PortBindings || {}) as Array<Array<{ HostPort?: string }> | null>;
             const port = Number(bindings[0]?.[0]?.HostPort);
             const envList: string[] = info.Config?.Env || [];
@@ -351,6 +403,10 @@ export class RunnerServices {
     if (provider !== "POSTGRES" && provider !== "REDIS" && provider !== "MYSQL") {
       return sendJson(res, 400, { error: `Unsupported provider: ${provider}. Supported: POSTGRES, REDIS, MYSQL` });
     }
+    const extensions: string[] = Array.isArray(params.extensions) ? [...new Set(params.extensions.map((e: unknown) => String(e)))] : [];
+    const engine = typeof params.engine === "string" && params.engine ? params.engine : undefined;
+    const optionError = validateDatabaseOptions({ provider, extensions, engine });
+    if (optionError) return sendJson(res, 400, { error: optionError });
     const id = typeof params.id === "string" && SAFE_ID.test(params.id) ? params.id.toLowerCase() : `db${crypto.randomBytes(6).toString("hex")}`;
 
     const existing = this.databases.get(id);
@@ -372,15 +428,17 @@ export class RunnerServices {
     if (backend === "docker") {
       const env = { ...process.env, SB_DB_PASSWORD: password, POSTGRES_PASSWORD: password, REDIS_PASSWORD: password, MYSQL_ROOT_PASSWORD: password };
       const common = ["run", "-d", "--name", containerName, "--label", `syncbay.managed-db=${id}`, "--restart", "unless-stopped"];
+      const image = databaseImageFor({ provider, extensions, engine });
+      const serverBinary = engine === "valkey" ? "valkey-server" : "redis-server";
       const args =
         provider === "POSTGRES"
           ? [...common, "-e", "POSTGRES_PASSWORD", "-e", "POSTGRES_USER=postgres", "-e", "POSTGRES_DB=main",
-             "-p", `${port}:5432`, "-v", `${containerName}-data:/var/lib/postgresql/data`, "postgres:16-alpine"]
+             "-p", `${port}:5432`, "-v", `${containerName}-data:/var/lib/postgresql/data`, image]
           : provider === "MYSQL"
           ? [...common, "-e", "MYSQL_ROOT_PASSWORD", "-e", "MYSQL_DATABASE=main",
-             "-p", `${port}:3306`, "-v", `${containerName}-data:/var/lib/mysql`, "mysql:8"]
-          : [...common, "-e", "REDIS_PASSWORD", "-p", `${port}:6379`, "-v", `${containerName}-data:/data`, "redis:7-alpine",
-             "sh", "-c", 'exec redis-server --appendonly yes --requirepass "$REDIS_PASSWORD"'];
+             "-p", `${port}:3306`, "-v", `${containerName}-data:/var/lib/mysql`, image]
+          : [...common, "-e", "REDIS_PASSWORD", "-p", `${port}:6379`, "-v", `${containerName}-data:/data`, image,
+             "sh", "-c", `exec ${serverBinary} --appendonly yes --requirepass "$REDIS_PASSWORD"`];
       // Passwords travel via the docker client's environment (`-e NAME` without value), never argv.
       const result = await run("docker", args, env, 300000);
       if (result.code !== 0) {
@@ -388,10 +446,19 @@ export class RunnerServices {
         return sendJson(res, 500, { error: `docker run failed: ${result.stderr.trim().slice(0, 500)}` });
       }
       containerId = result.stdout.trim().split("\n").pop()!.slice(0, 12) || containerName;
+      if (provider === "POSTGRES" && extensions.length) {
+        const installed = await this.installDockerExtensions(containerName, extensions);
+        if (!installed.ok) {
+          await run("docker", ["rm", "-f", containerName], undefined, 60000);
+          await run("docker", ["volume", "rm", "-f", `${containerName}-data`], undefined, 60000);
+          this.dbPortManager.releasePort(port);
+          return sendJson(res, 500, { error: installed.error });
+        }
+      }
     } else if (backend === "native") {
       const listen = process.env.RUNNER_DB_LISTEN || (/^(127\.|localhost$)/.test(host) ? "127.0.0.1" : "*");
       try {
-        await this.native.provision({ id, provider: provider as "POSTGRES" | "REDIS", port, host, listen, password });
+        await this.native.provision({ id, provider: provider as "POSTGRES" | "REDIS", port, host, listen, password, extensions });
       } catch (err: any) {
         this.dbPortManager.releaseServicePort(`db:${id}`);
         await this.native.destroy(id).catch(() => null);
@@ -411,6 +478,7 @@ export class RunnerServices {
     const record: ManagedDbRecord = {
       id,
       provider,
+      extensions,
       containerName,
       containerId,
       host,
@@ -421,6 +489,32 @@ export class RunnerServices {
     };
     this.databases.set(id, record);
     sendJson(res, 201, this.publicRecord(record));
+  }
+
+  /**
+   * Waits for a fresh Postgres container to accept TCP connections (the image's init phase runs a
+   * socket-only server first, so `-h 127.0.0.1` only answers once the real server is up), then
+   * runs CREATE EXTENSION for each requested extension.
+   */
+  private async installDockerExtensions(containerName: string, extensions: string[]): Promise<{ ok: true } | { ok: false; error: string }> {
+    const timeoutMs = Number(process.env.RUNNER_DB_READY_TIMEOUT_MS) || 120000;
+    const deadline = Date.now() + timeoutMs;
+    const sql = extensions.map((e) => `CREATE EXTENSION IF NOT EXISTS "${e.replace(/"/g, "")}";`).join(" ");
+    let last = "";
+    while (Date.now() < deadline) {
+      const r = await run(
+        "docker",
+        ["exec", containerName, "psql", "-h", "127.0.0.1", "-U", "postgres", "-d", "main", "-v", "ON_ERROR_STOP=1", "-qAtc", sql],
+        undefined,
+        20000
+      );
+      if (r.code === 0) return { ok: true };
+      last = (r.stderr || r.stdout).trim();
+      // A missing extension will not appear by waiting.
+      if (/could not open extension control file|extension .* is not available/i.test(last)) break;
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    return { ok: false, error: `CREATE EXTENSION ${extensions.join(", ")} failed: ${last.slice(0, 400) || "database did not become ready"}` };
   }
 
   /** In-memory record, or a native instance recovered from its meta.json after a restart. */
@@ -448,6 +542,7 @@ export class RunnerServices {
     return {
       id: record.id,
       provider: record.provider,
+      extensions: record.extensions || [],
       connectionUrl: record.connectionUrl,
       host: record.host,
       port: record.port,
@@ -510,7 +605,7 @@ export class RunnerServices {
     if (!provider) {
       const inspect = await run("docker", ["inspect", "-f", "{{.Config.Image}}", containerName], undefined, 10000);
       if (inspect.code !== 0) return sendJson(res, 404, { id, healthy: false, status: "missing" });
-      provider = inspect.stdout.includes("redis") ? "REDIS" : inspect.stdout.includes("mysql") ? "MYSQL" : "POSTGRES";
+      provider = providerFromImage(inspect.stdout);
     }
 
     const probe =

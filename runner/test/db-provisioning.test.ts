@@ -4,7 +4,9 @@
  *   native  RunnerServices forced to mode "native": real initdb/pg_ctl and redis-server
  *           processes, checked with psql / redis-cli, then deleted (data dir removed).
  *   docker  mode "docker": a real postgres:16-alpine container (skipped when
- *           `docker info` fails), checked with psql through the mapped port.
+ *           `docker info` fails), checked with psql through the mapped port; a
+ *           pgvector/pgvector:pg16 container (extensions ["vector"], pg_extension checked)
+ *           and a valkey/valkey:8-alpine container (engine "valkey").
  *   volumes dockerVolumeFlags / prepareNativeVolumes on a temp state dir.
  *
  * Run: cd runner && npm run test:provision   (ports 45500-45999)
@@ -175,6 +177,84 @@ test("docker Postgres: postgres:16-alpine container, health, real query, delete"
   } finally {
     spawnSync("docker", ["rm", "-f", "syncbay-db-pgdocker1"]);
     spawnSync("docker", ["volume", "rm", "-f", "syncbay-db-pgdocker1-data"]);
+    server.close();
+  }
+});
+
+test("docker Postgres + pgvector: extensions [vector] uses pgvector/pgvector:pg16 and creates the extension", { skip: !dockerOk && "docker unavailable" }, async () => {
+  const services = new RunnerServices({ mode: "docker", portManager: new PortManager({ rangeStart: 45910, rangeEnd: 45999 }) });
+  const { server, call } = await serve(services);
+  try {
+    const created = await call("POST", "/api/databases", { id: "pgvec1", provider: "POSTGRES", extensions: ["vector"] });
+    assert.strictEqual(created.status, 201, JSON.stringify(created.json));
+    assert.deepStrictEqual(created.json.extensions, ["vector"]);
+    const image = spawnSync("docker", ["inspect", "-f", "{{.Config.Image}}", "syncbay-db-pgvec1"], { encoding: "utf8" }).stdout.trim();
+    assert.strictEqual(image, "pgvector/pgvector:pg16");
+    // The runner answered only after CREATE EXTENSION succeeded, so it is there right away.
+    assert.strictEqual(psql(created.json.connectionUrl, "SELECT extname FROM pg_extension WHERE extname = 'vector'"), "vector");
+    assert.strictEqual(psql(created.json.connectionUrl, "SELECT '[1,2,3]'::vector <-> '[1,2,4]'::vector"), "1");
+    assert.strictEqual((await call("GET", "/api/databases/pgvec1/health")).json.healthy, true);
+    const bad = await call("POST", "/api/databases", { id: "pgvec2", provider: "POSTGRES", extensions: ["postgis"] });
+    assert.strictEqual(bad.status, 400);
+    assert.match(bad.json.error, /Unsupported extension: postgis/);
+    assert.strictEqual((await call("DELETE", "/api/databases/pgvec1")).json.deleted, true);
+  } finally {
+    spawnSync("docker", ["rm", "-f", "syncbay-db-pgvec1"]);
+    spawnSync("docker", ["volume", "rm", "-f", "syncbay-db-pgvec1-data"]);
+    server.close();
+  }
+});
+
+test("docker Valkey: engine valkey runs valkey/valkey:8-alpine with requirepass, health, delete", { skip: !dockerOk && "docker unavailable" }, async () => {
+  const services = new RunnerServices({ mode: "docker", portManager: new PortManager({ rangeStart: 45910, rangeEnd: 45999 }) });
+  const { server, call } = await serve(services);
+  try {
+    const created = await call("POST", "/api/databases", { id: "valkey1", provider: "REDIS", engine: "valkey" });
+    assert.strictEqual(created.status, 201, JSON.stringify(created.json));
+    assert.match(created.json.connectionUrl, /^redis:\/\/default:/);
+    const image = spawnSync("docker", ["inspect", "-f", "{{.Config.Image}}", "syncbay-db-valkey1"], { encoding: "utf8" }).stdout.trim();
+    assert.strictEqual(image, "valkey/valkey:8-alpine");
+    let healthy = false;
+    for (let i = 0; i < 30 && !healthy; i++) {
+      healthy = (await call("GET", "/api/databases/valkey1/health")).json.healthy === true;
+      if (!healthy) await new Promise((r) => setTimeout(r, 500));
+    }
+    assert.ok(healthy, "PING through redis-cli (valkey-cli) inside the container");
+    const info = spawnSync("docker", ["exec", "syncbay-db-valkey1", "sh", "-c", 'valkey-cli -a "$REDIS_PASSWORD" --no-auth-warning INFO server'], { encoding: "utf8" });
+    assert.match(info.stdout, /valkey_version:8\./);
+    assert.strictEqual((await call("DELETE", "/api/databases/valkey1")).json.deleted, true);
+  } finally {
+    spawnSync("docker", ["rm", "-f", "syncbay-db-valkey1"]);
+    spawnSync("docker", ["volume", "rm", "-f", "syncbay-db-valkey1-data"]);
+    server.close();
+  }
+});
+
+test("native Postgres: extensions [vector] without pgvector on the host fails clearly and cleans up", { skip: !providers.includes("POSTGRES") && "initdb not installed" }, async () => {
+  const hasVector = (() => {
+    try {
+      const share = execFileSync("pg_config", ["--sharedir"], { encoding: "utf8" }).trim();
+      return fs.existsSync(path.join(share, "extension", "vector.control"));
+    } catch {
+      return false;
+    }
+  })();
+  const services = new RunnerServices({ mode: "native", native: nativeMgr, portManager: new PortManager({ rangeStart: 45600, rangeEnd: 45699 }), dbHost: "127.0.0.1" });
+  const { server, call } = await serve(services);
+  try {
+    const created = await call("POST", "/api/databases", { id: "pgvecnative1", provider: "POSTGRES", extensions: ["vector"] });
+    if (hasVector) {
+      assert.strictEqual(created.status, 201, JSON.stringify(created.json));
+      assert.strictEqual(psql(created.json.connectionUrl, "SELECT extname FROM pg_extension WHERE extname = 'vector'"), "vector");
+      await call("DELETE", "/api/databases/pgvecnative1");
+    } else {
+      assert.strictEqual(created.status, 500);
+      assert.match(created.json.error, /CREATE EXTENSION vector failed/);
+      assert.match(created.json.error, /pgvector is not installed on this runner host/);
+      assert.strictEqual(fs.existsSync(nativeMgr.dirFor("pgvecnative1")), false, "data dir removed");
+    }
+  } finally {
+    await nativeMgr.destroy("pgvecnative1").catch(() => null);
     server.close();
   }
 });
