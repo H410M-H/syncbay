@@ -3,10 +3,9 @@ import { z } from "zod";
 import { createTRPCRouter, protectedProcedure } from "@/server/trpc";
 import { TRPCError } from "@trpc/server";
 import {
-  provisionManagedDatabase,
+  createManagedDatabase,
   destroyManagedDatabase,
   checkDatabaseHealth,
-  attachDatabaseVariables,
   detachDatabaseVariables,
   parseDatabaseUrl,
 } from "@/lib/database-provider";
@@ -235,54 +234,17 @@ export const databaseRouter = createTRPCRouter({
         throw new TRPCError({ code: "FORBIDDEN", message: "Environment not found or insufficient permissions to provision database" });
       }
 
-      // 2. Record the instance as PROVISIONING, then provision on the runner / provider
-      const pending = await ctx.db.databaseInstance.create({
-        data: {
-          environmentId: env.id,
-          name: input.name,
-          provider: input.provider,
-          region: input.region,
-          connectionUrl: "",
-          status: "PROVISIONING",
-        },
-      });
-
-      let provisionResult;
+      // 2. PROVISIONING → runner / provider → ACTIVE, then URL variables for the environment's services
+      let dbInstance;
       try {
-        provisionResult = await provisionManagedDatabase({
-          id: pending.id,
-          projectId: env.projectId,
-          environmentId: env.id,
-          name: input.name,
-          provider: input.provider,
-          region: input.region,
-        });
+        dbInstance = await createManagedDatabase(
+          ctx.db,
+          { workspaceId: env.project.workspaceId, projectId: env.projectId, environmentId: env.id },
+          { name: input.name, provider: input.provider, region: input.region }
+        );
       } catch (err: any) {
-        await ctx.db.databaseInstance.update({ where: { id: pending.id }, data: { status: "FAILED" } }).catch(() => null);
-        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Database provisioning failed: ${err.message}` });
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: err?.message || "Database provisioning failed" });
       }
-
-      const dbInstance = await ctx.db.databaseInstance.update({
-        where: { id: pending.id },
-        data: {
-          partnerDbId: provisionResult.partnerDbId,
-          connectionUrl: provisionResult.connectionUrl,
-          host: provisionResult.host,
-          port: provisionResult.port,
-          containerId: provisionResult.containerId,
-          status: "ACTIVE",
-          lastHealthAt: new Date(),
-        },
-      });
-
-      // 3. Inject <NAME>_URL + DATABASE_URL / REDIS_URL into existing services (never overriding user keys)
-      await attachDatabaseVariables(ctx.db, {
-        workspaceId: env.project.workspaceId,
-        environmentId: env.id,
-        name: input.name,
-        provider: input.provider,
-        connectionUrl: provisionResult.connectionUrl,
-      });
 
       return {
         ...dbInstance,

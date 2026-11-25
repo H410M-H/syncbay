@@ -101,8 +101,11 @@ export function parseTemplateManifest(input: string | unknown): TemplateManifest
     keys.add(v.key);
   }
   const services: ManifestService[] = m.services.map((s) => ({ ...s, env: s.env ?? defaultServiceEnvKey(s.type) }));
+  const serviceKeys = new Set<string>();
   for (const s of services) {
     if (keys.has(s.env)) throw new ManifestError(`Invalid syncbay.json: ${s.env} is both a service URL and an env entry`);
+    if (serviceKeys.has(s.env)) throw new ManifestError(`Invalid syncbay.json: two services write ${s.env}`);
+    serviceKeys.add(s.env);
   }
 
   return {

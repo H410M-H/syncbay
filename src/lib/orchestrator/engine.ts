@@ -388,7 +388,7 @@ export async function executeDeployment(
     log(`[deploy] Application container/process ${containerId || "active"} initialized on port ${targetPort}`, "system");
 
     // Phase 3: Blue/Green Health Check Verification
-    const healthPath = (service as any)?.healthCheckUrl || "/health";
+    const healthPath = service?.healthCheckUrl || "/health";
     log(`[health] Running blue/green health probe on port ${targetPort}${healthPath}...`, "stdout");
     const { primaryProbeUrl, rootProbeUrl, probeHeaders } = resolveProbeTargets(driver, runnerMeta, targetPort, healthPath);
     let isHealthy = false;

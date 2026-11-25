@@ -18,6 +18,7 @@ import { rdRouter } from "@/server/routers/rd";
 import { billingRouter } from "@/server/routers/billing";
 import { analyticsRouter } from "@/server/routers/analytics";
 import { dataRouter } from "@/server/routers/data";
+import { templateRouter } from "@/server/routers/template";
 
 /**
  * Root tRPC router — all sub-routers are merged here.
@@ -42,6 +43,7 @@ export const appRouter = createTRPCRouter({
   billing: billingRouter,
   analytics: analyticsRouter,
   data: dataRouter,
+  template: templateRouter,
   admin: adminRouter,
 });
 

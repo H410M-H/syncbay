@@ -2,7 +2,8 @@
  * Syncbay PaaS — Managed Database Provider (R6 Core)
  * Provisions, parses, and manages PostgreSQL, Redis/Valkey, and MySQL database instances.
  * With RUNNER_URL set, the runner provisions the database: Docker containers (postgres:16-alpine,
- * redis:7-alpine, mysql:8) or, without Docker, native Postgres/Redis processes. Without a runner
+ * redis:7-alpine, mysql:8; pgvector/pgvector:pg16 for `extensions: ["vector"]`, valkey/valkey:8-alpine
+ * for `engine: "valkey"`) or, without Docker, native Postgres/Redis processes. Without a runner
  * a simulated `sb-db-*` instance is returned (it has no server; Query Studio refuses it).
  */
 
@@ -128,6 +129,10 @@ export async function provisionManagedDatabase(params: {
   name: string;
   provider: ManagedProvider;
   region?: string;
+  /** Postgres extensions to install (runner 1.6.0+): "vector" = pgvector. */
+  extensions?: string[];
+  /** Redis-compatible server to run: "valkey" (runner 1.6.0+). */
+  engine?: "valkey";
 }): Promise<ProvisionResult> {
   const provider = params.provider;
   const region = params.region || "us-east-1";
@@ -135,7 +140,13 @@ export async function provisionManagedDatabase(params: {
   if (getRunnerBaseUrl()) {
     const runnerDb = await runnerJson<RunnerDatabaseResponse>("/api/databases", {
       method: "POST",
-      body: { id: params.id, name: params.name, provider },
+      body: {
+        id: params.id,
+        name: params.name,
+        provider,
+        ...(params.extensions?.length ? { extensions: params.extensions } : {}),
+        ...(params.engine ? { engine: params.engine } : {}),
+      },
       timeoutMs: 320000,
     });
     const creds = parseDatabaseUrl(runnerDb.connectionUrl, provider);
@@ -329,6 +340,75 @@ export async function detachDatabaseVariables(client: VariableClient, target: Da
     where: { workspaceId: target.workspaceId, serviceId: null, key: { in: keys }, value: target.connectionUrl },
   });
   return svcResult.count + wsResult.count;
+}
+
+type DatabaseCreateClient = Pick<PrismaClient, "databaseInstance" | "environmentVariable" | "service">;
+
+export class DatabaseProvisionError extends Error {}
+
+/**
+ * The one database creation path (database.create and template deploys): records the instance as
+ * PROVISIONING, provisions it on the runner (or simulates it), marks it ACTIVE (FAILED on error,
+ * then throws DatabaseProvisionError) and injects its URL variables into the environment's services.
+ */
+export async function createManagedDatabase(
+  client: DatabaseCreateClient,
+  target: { workspaceId: string; projectId: string; environmentId: string },
+  input: { name: string; provider: ManagedProvider; region?: string; extensions?: string[]; engine?: "valkey" }
+) {
+  const region = input.region || "us-east-1";
+  const extensions = input.provider === "POSTGRES" ? [...new Set(input.extensions || [])] : [];
+  const pending = await client.databaseInstance.create({
+    data: {
+      environmentId: target.environmentId,
+      name: input.name,
+      provider: input.provider,
+      region,
+      connectionUrl: "",
+      status: "PROVISIONING",
+      extensions,
+    },
+  });
+
+  let provisionResult: ProvisionResult;
+  try {
+    provisionResult = await provisionManagedDatabase({
+      id: pending.id,
+      projectId: target.projectId,
+      environmentId: target.environmentId,
+      name: input.name,
+      provider: input.provider,
+      region,
+      extensions,
+      engine: input.provider === "REDIS" ? input.engine : undefined,
+    });
+  } catch (err: any) {
+    await client.databaseInstance.update({ where: { id: pending.id }, data: { status: "FAILED" } }).catch(() => null);
+    throw new DatabaseProvisionError(`Database provisioning failed: ${err?.message || err}`);
+  }
+
+  const instance = await client.databaseInstance.update({
+    where: { id: pending.id },
+    data: {
+      partnerDbId: provisionResult.partnerDbId,
+      connectionUrl: provisionResult.connectionUrl,
+      host: provisionResult.host,
+      port: provisionResult.port,
+      containerId: provisionResult.containerId,
+      status: "ACTIVE",
+      lastHealthAt: new Date(),
+    },
+  });
+
+  // <NAME>_URL + DATABASE_URL / REDIS_URL into existing services (never overriding user keys)
+  await attachDatabaseVariables(client, {
+    workspaceId: target.workspaceId,
+    environmentId: target.environmentId,
+    name: input.name,
+    provider: input.provider,
+    connectionUrl: provisionResult.connectionUrl,
+  });
+  return instance;
 }
 
 /**
