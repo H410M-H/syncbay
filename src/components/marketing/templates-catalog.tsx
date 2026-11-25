@@ -3,87 +3,33 @@
 import React from "react";
 import Link from "next/link";
 import { TiltCard } from "@/components/ui/tilt-card";
+import {
+  formatTemplateMetrics,
+  listTemplates,
+  templateDeployHref,
+  type CatalogTemplate,
+  type TemplateCategory,
+} from "@/lib/templates/catalog";
 
-interface Template {
-  id: string;
-  title: string;
-  description: string;
-  runtime: string;
-  icon: string;
-  stars: string;
-  tags: string[];
-  gradient: string;
-  glowColor: string;
+const TEMPLATES = listTemplates();
+
+/** Card colours per catalog category (presentation only). */
+const CATEGORY_STYLE: Record<TemplateCategory, { gradient: string; glowColor: string }> = {
+  FRONTEND: { gradient: "linear-gradient(135deg, rgba(6,182,212,0.18), rgba(59,130,246,0.12))", glowColor: "rgba(6,182,212,0.3)" },
+  API: { gradient: "linear-gradient(135deg, rgba(124,58,237,0.18), rgba(236,72,153,0.12))", glowColor: "rgba(124,58,237,0.3)" },
+  AI: { gradient: "linear-gradient(135deg, rgba(236,72,153,0.18), rgba(124,58,237,0.12))", glowColor: "rgba(236,72,153,0.3)" },
+  REALTIME: { gradient: "linear-gradient(135deg, rgba(6,182,212,0.18), rgba(16,185,129,0.12))", glowColor: "rgba(6,182,212,0.3)" },
+  DATA: { gradient: "linear-gradient(135deg, rgba(59,130,246,0.18), rgba(124,58,237,0.12))", glowColor: "rgba(59,130,246,0.3)" },
+  MICROSERVICES: { gradient: "linear-gradient(135deg, rgba(34,197,94,0.18), rgba(6,182,212,0.12))", glowColor: "rgba(34,197,94,0.3)" },
+};
+
+const SERVICE_NAME: Record<string, string> = { postgres: "Postgres", redis: "Redis", valkey: "Valkey" };
+
+/** "Postgres + pgvector · Redis" for a template's backing services. */
+function servicesLabel(t: CatalogTemplate): string {
+  if (t.services.length === 0) return "No database";
+  return t.services.map((s) => SERVICE_NAME[s.type] + (s.extensions?.includes("vector") ? " + pgvector" : "")).join(" · ");
 }
-
-const TEMPLATES: Template[] = [
-  {
-    id: "nextjs-postgres",
-    title: "Next.js 16 & PostgreSQL",
-    description: "App Router, Server Actions, Tailwind CSS, Prisma ORM, and attached serverless Postgres.",
-    runtime: "Node.js 20",
-    icon: "▲",
-    stars: "14.2k",
-    tags: ["React 19", "Prisma", "Postgres", "Tailwind"],
-    gradient: "linear-gradient(135deg, rgba(6,182,212,0.18), rgba(59,130,246,0.12))",
-    glowColor: "rgba(6,182,212,0.3)",
-  },
-  {
-    id: "fastapi-redis",
-    title: "Python FastAPI & Redis",
-    description: "Async Python REST API with Pydantic v2, JWT authentication, and high-speed Redis caching.",
-    runtime: "Python 3.11",
-    icon: "⚡",
-    stars: "9.8k",
-    tags: ["FastAPI", "Redis", "Pydantic", "Uvicorn"],
-    gradient: "linear-gradient(135deg, rgba(124,58,237,0.18), rgba(236,72,153,0.12))",
-    glowColor: "rgba(124,58,237,0.3)",
-  },
-  {
-    id: "go-fiber",
-    title: "Go Fiber Microservice",
-    description: "Ultra-fast Golang HTTP framework with sub-millisecond response times and low memory footprint.",
-    runtime: "Go 1.22",
-    icon: "🐹",
-    stars: "7.4k",
-    tags: ["Go", "Fiber", "Microservices", "Docker"],
-    gradient: "linear-gradient(135deg, rgba(34,197,94,0.18), rgba(6,182,212,0.12))",
-    glowColor: "rgba(34,197,94,0.3)",
-  },
-  {
-    id: "rust-axum",
-    title: "Rust Axum Edge Worker",
-    description: "Memory-safe, high-concurrency API server built on Tokio, Tower, and Hyper with zero GC.",
-    runtime: "Rust 1.78",
-    icon: "🦀",
-    stars: "6.1k",
-    tags: ["Rust", "Axum", "Tokio", "High-Perf"],
-    gradient: "linear-gradient(135deg, rgba(245,158,11,0.18), rgba(239,68,68,0.12))",
-    glowColor: "rgba(245,158,11,0.3)",
-  },
-  {
-    id: "node-express-ws",
-    title: "Node.js & WebSockets",
-    description: "Real-time pub/sub architecture with Socket.io, cluster support, and Redis backplane.",
-    runtime: "Node.js 20",
-    icon: "🔌",
-    stars: "8.3k",
-    tags: ["Express", "Socket.io", "Redis", "Real-Time"],
-    gradient: "linear-gradient(135deg, rgba(6,182,212,0.18), rgba(16,185,129,0.12))",
-    glowColor: "rgba(6,182,212,0.3)",
-  },
-  {
-    id: "django-celery",
-    title: "Django 5 & Celery Workers",
-    description: "Full-stack Python batteries-included framework with async background workers and PostgreSQL.",
-    runtime: "Python 3.12",
-    icon: "🦄",
-    stars: "11.5k",
-    tags: ["Django", "Celery", "Postgres", "Redis"],
-    gradient: "linear-gradient(135deg, rgba(59,130,246,0.18), rgba(124,58,237,0.12))",
-    glowColor: "rgba(59,130,246,0.3)",
-  },
-];
 
 export function TemplatesCatalog() {
   return (
@@ -104,17 +50,20 @@ export function TemplatesCatalog() {
           1-Click Production Templates
         </h2>
         <p className="text-sm font-medium" style={{ color: "#94a3b8" }}>
-          Production-grade starter kits with database, caching, and CI/CD pre-configured.
+          Open-source starter apps with their databases declared in <code>syncbay.json</code>: Syncbay provisions them and deploys the app.
         </p>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {TEMPLATES.map((tpl) => (
-          <TiltCard key={tpl.id} glowColor={tpl.glowColor} intensity={14}>
+        {TEMPLATES.map((tpl) => {
+          const look = CATEGORY_STYLE[tpl.category];
+          const metrics = formatTemplateMetrics(tpl.metrics);
+          return (
+          <TiltCard key={tpl.slug} glowColor={look.glowColor} intensity={14}>
             <div
               className="p-6 rounded-2xl h-full flex flex-col justify-between"
               style={{
-                background: tpl.gradient,
+                background: look.gradient,
               }}
             >
               <div>
@@ -137,26 +86,31 @@ export function TemplatesCatalog() {
                         color: "#38bdf8",
                       }}
                     >
-                      {tpl.runtime}
-                    </span>
-                    <span
-                      className="text-xs font-semibold flex items-center gap-1"
-                      style={{ color: "#facc15" }}
-                    >
-                      ★ {tpl.stars}
+                      {servicesLabel(tpl)}
                     </span>
                   </div>
                 </div>
 
                 <h3 className="text-base font-extrabold text-white mb-2 tracking-tight">
-                  {tpl.title}
+                  {tpl.name}
                 </h3>
                 <p className="text-xs font-medium leading-relaxed mb-4 text-slate-300">
                   {tpl.description}
                 </p>
 
+                {metrics.length > 0 && (
+                  <dl className="flex flex-wrap gap-x-4 gap-y-1 mb-4 text-[11px] font-mono text-slate-300">
+                    {metrics.map((m) => (
+                      <div key={m.label} className="flex gap-1">
+                        <dt className="text-slate-400">{m.label}</dt>
+                        <dd className="text-white font-bold">{m.value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                )}
+
                 <div className="flex flex-wrap gap-1.5 mb-6">
-                  {tpl.tags.map((tag) => (
+                  {tpl.stack.map((tag) => (
                     <span
                       key={tag}
                       className="px-2.5 py-1 rounded-md text-[10px] font-medium"
@@ -173,7 +127,7 @@ export function TemplatesCatalog() {
               </div>
 
               <Link
-                href="/dashboard/projects/new"
+                href={templateDeployHref(tpl)}
                 className="w-full block py-2.5 rounded-xl text-center text-xs font-bold transition-all duration-200 hover:scale-[1.02]"
                 style={{
                   background: "linear-gradient(135deg, rgba(6,182,212,0.9), rgba(59,130,246,0.9))",
@@ -185,7 +139,8 @@ export function TemplatesCatalog() {
               </Link>
             </div>
           </TiltCard>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

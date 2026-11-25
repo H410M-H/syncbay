@@ -3,6 +3,8 @@
  * Tracks weekly version drops, developer tech stack trends, and enterprise roadmap demands.
  */
 
+import { listTemplates, type CatalogTemplate } from "@/lib/templates/catalog";
+
 export interface WeeklyVersionDrop {
   version: string;
   releaseDate: string;
@@ -11,20 +13,6 @@ export interface WeeklyVersionDrop {
   features: string[];
   performanceGains: string;
   status: "RELEASED" | "UPCOMING" | "IN_RESEARCH";
-}
-
-export interface TrendingStack {
-  id: string;
-  name: string;
-  category: "FRONTEND" | "AI_AGENTS" | "MICROSERVICES" | "DATABASE" | "EDGE";
-  growthPercent: number;
-  githubStarsTrend: string;
-  runtime: string;
-  defaultBuildpack: string;
-  deployTimeSec: number;
-  description: string;
-  demoUrl: string;
-  templateRepo: string;
 }
 
 export interface RDStrategyInsight {
@@ -123,75 +111,6 @@ const WEEKLY_DROPS: WeeklyVersionDrop[] = [
   },
 ];
 
-// ─── 2. Trending Developer Tech Stacks ────────────────────────────────────────
-const TRENDING_STACKS: TrendingStack[] = [
-  {
-    id: "tmpl_nextjs16",
-    name: "Next.js 16 + React 19 Starter",
-    category: "FRONTEND",
-    growthPercent: 142,
-    githubStarsTrend: "+4.8k this month",
-    runtime: "Node.js 22 LTS",
-    defaultBuildpack: "nixpacks/nodejs",
-    deployTimeSec: 14,
-    description: "App Router, Server Actions, Tailwind CSS 4, and 0ms cold starts on Syncbay edge POPs.",
-    demoUrl: "https://demo-nextjs.syncbay.app",
-    templateRepo: "https://github.com/syncbay/nextjs-starter",
-  },
-  {
-    id: "tmpl_fastapi_ai",
-    name: "Python FastAPI + AI Agent Hub",
-    category: "AI_AGENTS",
-    growthPercent: 215,
-    githubStarsTrend: "+8.2k this month",
-    runtime: "Python 3.12",
-    defaultBuildpack: "nixpacks/python",
-    deployTimeSec: 18,
-    description: "Production LLM orchestrator with streaming SSE tokens, LangChain/LlamaIndex, and async pgvector.",
-    demoUrl: "https://demo-ai-agent.syncbay.app",
-    templateRepo: "https://github.com/syncbay/fastapi-agent-hub",
-  },
-  {
-    id: "tmpl_rust_axum",
-    name: "Rust Axum High-Throughput Edge API",
-    category: "MICROSERVICES",
-    growthPercent: 188,
-    githubStarsTrend: "+5.1k this month",
-    runtime: "Rust 1.80+",
-    defaultBuildpack: "nixpacks/rust",
-    deployTimeSec: 26,
-    description: "Ultra-fast compiled web service delivering 120,000 requests/sec with minimal memory footprint (<15MB).",
-    demoUrl: "https://demo-rust-axum.syncbay.app",
-    templateRepo: "https://github.com/syncbay/rust-axum-service",
-  },
-  {
-    id: "tmpl_go_gin",
-    name: "Go Gin Microservice & gRPC Bridge",
-    category: "MICROSERVICES",
-    growthPercent: 110,
-    githubStarsTrend: "+3.4k this month",
-    runtime: "Go 1.23",
-    defaultBuildpack: "nixpacks/go",
-    deployTimeSec: 12,
-    description: "High concurrency microservice with native gRPC, automated Prometheus metrics, and managed PostgreSQL.",
-    demoUrl: "https://demo-go-service.syncbay.app",
-    templateRepo: "https://github.com/syncbay/go-gin-starter",
-  },
-  {
-    id: "tmpl_postgres_valkey",
-    name: "PostgreSQL 16 + Valkey Cache Cluster",
-    category: "DATABASE",
-    growthPercent: 165,
-    githubStarsTrend: "+6.7k this month",
-    runtime: "Database Cluster",
-    defaultBuildpack: "dockerfile",
-    deployTimeSec: 8,
-    description: "Pre-configured managed PostgreSQL 16 with pgvector extension and lightning-fast Valkey caching.",
-    demoUrl: "https://demo-db-cluster.syncbay.app",
-    templateRepo: "https://github.com/syncbay/postgres-valkey-stack",
-  },
-];
-
 // ─── 3. R&D Strategic Insights ───────────────────────────────────────────────
 const STRATEGIC_INSIGHTS: RDStrategyInsight[] = [
   {
@@ -244,9 +163,9 @@ export function getWeeklyVersionDrops(): WeeklyVersionDrop[] {
   return WEEKLY_DROPS;
 }
 
-export function getTrendingStacks(category?: string): TrendingStack[] {
-  if (!category || category === "ALL") return TRENDING_STACKS;
-  return TRENDING_STACKS.filter((s) => s.category.toUpperCase() === category.toUpperCase());
+/** Developer stacks Syncbay ships templates for: the template catalog (templates/index.json). */
+export function getTrendingStacks(category?: string): CatalogTemplate[] {
+  return listTemplates(category);
 }
 
 export function getStrategicInsights(): RDStrategyInsight[] {
