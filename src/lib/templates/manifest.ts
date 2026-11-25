@@ -220,15 +220,15 @@ export async function fetchTemplateManifest(source: TemplateSource, opts: { toke
       signal: AbortSignal.timeout(timeoutMs),
       redirect: "follow",
     });
-  } catch (err: any) {
-    return { status: "unreachable", error: `Could not reach GitHub: ${err?.message || err}`, defaultBranch };
+  } catch (err) {
+    return { status: "unreachable", error: `Could not reach GitHub: ${err instanceof Error ? err.message : String(err)}`, defaultBranch };
   }
   if (res.status === 404) return { status: "absent", defaultBranch };
   if (!res.ok) return { status: "unreachable", error: `GitHub answered HTTP ${res.status} for syncbay.json`, defaultBranch };
   try {
     const manifest = parseTemplateManifest(await readCapped(res));
     return { status: "found", manifest, defaultBranch };
-  } catch (err: any) {
+  } catch (err) {
     return { status: "invalid", error: err instanceof ManifestError ? err.message : "syncbay.json could not be read", defaultBranch };
   }
 }

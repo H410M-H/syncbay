@@ -1,11 +1,15 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { Suspense, useRef, useState } from "react";
 import { trpc } from "@/lib/trpc-client";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { signIn } from "next-auth/react";
 import { BackButton } from "@/components/ui/back-button";
+import { TemplateDeployPanel, type TemplateDeployRequest } from "@/components/dashboard/template-deploy-panel";
+
+/** `?template=<owner>/<repo>` (also set by /new and the "Deploy to Syncbay" button). */
+const TEMPLATE_PARAM = /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/;
 
 interface WizardProgress {
   key: string;
@@ -16,7 +20,22 @@ interface WizardProgress {
 }
 
 export default function NewProjectPage() {
+  return (
+    <Suspense fallback={null}>
+      <NewProjectFromParams />
+    </Suspense>
+  );
+}
+
+function NewProjectFromParams() {
+  const raw = useSearchParams().get("template");
+  return <NewProjectWizard template={raw && TEMPLATE_PARAM.test(raw) ? raw : null} />;
+}
+
+function NewProjectWizard({ template: initialTemplate }: { template: string | null }) {
   const router = useRouter();
+  const [template, setTemplate] = useState<string | null>(initialTemplate);
+  const [isDeployingTemplate, setIsDeployingTemplate] = useState(false);
   const [selectedRepo, setSelectedRepo] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"github" | "custom">("github");
 
@@ -44,6 +63,7 @@ export default function NewProjectPage() {
   const createProject = trpc.project.create.useMutation();
   const setupWebhook = trpc.github.setupWebhook.useMutation();
   const createService = trpc.service.create.useMutation();
+  const provisionTemplate = trpc.template.provision.useMutation();
   const triggerDeploy = trpc.deployment.trigger.useMutation();
 
   const [workspaceId, setWorkspaceId] = useState<string>("");
@@ -65,7 +85,8 @@ export default function NewProjectPage() {
     key: string;
     workspaceId: string;
     projectName: string;
-    service: { name: string; sourceType: "github"; repoUrl: string; branch: string };
+    /** Creates the service (and, for a template, its databases and variables) in the new environment. */
+    createService: (environmentId: string) => Promise<{ id: string }>;
     commitMessage: string;
     afterProjectCreated?: () => Promise<void>;
   }): Promise<boolean> => {
@@ -94,7 +115,7 @@ export default function NewProjectPage() {
 
       // 2. Service (reused on retry)
       if (!progress.serviceId) {
-        const service = await createService.mutateAsync({ environmentId: progress.environmentId, ...plan.service });
+        const service = await plan.createService(progress.environmentId);
         progress.serviceId = service.id;
       }
 
@@ -134,7 +155,8 @@ export default function NewProjectPage() {
       key: `github:${repo.fullName}`,
       workspaceId: targetWs,
       projectName: repo.name,
-      service: { name: "web", sourceType: "github", repoUrl: repo.htmlUrl, branch: repo.defaultBranch || "main" },
+      createService: (environmentId) =>
+        createService.mutateAsync({ environmentId, name: "web", sourceType: "github", repoUrl: repo.htmlUrl, branch: repo.defaultBranch || "main" }),
       commitMessage: "Initial deployment from Syncbay",
       // Setup GitHub Webhook (gracefully skipped if GitHub account not linked)
       afterProjectCreated: async () => {
@@ -173,10 +195,31 @@ export default function NewProjectPage() {
       key: `custom:${repoUrl}#${branch}:${derivedName}`,
       workspaceId: targetWs,
       projectName: derivedName,
-      service: { name: "web", sourceType: "github", repoUrl, branch },
+      createService: (environmentId) => createService.mutateAsync({ environmentId, name: "web", sourceType: "github", repoUrl, branch }),
       commitMessage: "Initial deployment from custom Git URL",
     });
     if (!keepGoing) setIsDeployingCustom(false);
+  };
+
+  /** Public template repositories need no GitHub connection: the runner clones them anonymously. */
+  const handleDeployTemplate = async (request: TemplateDeployRequest) => {
+    const targetWs = workspaceId || workspaces?.[0]?.id;
+    if (!targetWs) {
+      setWizardError({ message: "Please select a target workspace" });
+      return;
+    }
+    setIsDeployingTemplate(true);
+    const keepGoing = await runWizard({
+      key: `template:${request.source}:${request.projectName}`,
+      workspaceId: targetWs,
+      projectName: request.projectName,
+      createService: async (environmentId) => {
+        const result = await provisionTemplate.mutateAsync({ environmentId, source: request.source, env: request.env });
+        return { id: result.serviceId };
+      },
+      commitMessage: `Initial deployment from template ${request.source}`,
+    });
+    if (!keepGoing) setIsDeployingTemplate(false);
   };
 
   return (
@@ -243,6 +286,20 @@ export default function NewProjectPage() {
         </div>
       )}
 
+      {template && (
+        <TemplateDeployPanel
+          template={template}
+          disabled={Boolean(runnerProblem) || loadingWs}
+          busy={isDeployingTemplate}
+          onDeploy={handleDeployTemplate}
+          onCancel={() => {
+            setTemplate(null);
+            router.replace("/dashboard/projects/new");
+          }}
+        />
+      )}
+
+      {!template && (<>
       {/* Mode Tabs */}
       <div
         style={{
@@ -550,6 +607,7 @@ export default function NewProjectPage() {
           </form>
         </div>
       )}
+      </>)}
     </div>
   );
 }
