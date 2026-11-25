@@ -1,0 +1,305 @@
+{
+  "version": 1,
+  "templates": [
+    {
+      "slug": "nextjs-postgres",
+      "name": "Next.js 16 & PostgreSQL",
+      "description": "Team task board on the Next.js 16 App Router with Auth.js sign-in, Prisma migrations and a Tailwind 4 UI, backed by PostgreSQL.",
+      "stack": [
+        "Next.js 16",
+        "React 19",
+        "Prisma",
+        "Auth.js",
+        "Tailwind 4"
+      ],
+      "tags": [
+        "typescript",
+        "fullstack",
+        "auth"
+      ],
+      "category": "FRONTEND",
+      "icon": "▲",
+      "repo": "MSNS-DEV/syncbay-template-nextjs-postgres",
+      "repoUrl": "https://github.com/MSNS-DEV/syncbay-template-nextjs-postgres",
+      "deployUrl": "https://syncbay.app/new?template=MSNS-DEV/syncbay-template-nextjs-postgres",
+      "services": [
+        {
+          "type": "postgres"
+        }
+      ],
+      "port": 3000,
+      "metrics": {
+        "imageSizeMB": null,
+        "idleMemMB": null,
+        "coldStartMs": null
+      }
+    },
+    {
+      "slug": "fastapi-redis",
+      "name": "FastAPI & Redis",
+      "description": "Async REST API on FastAPI with Pydantic v2 validation, SQLAlchemy 2 models on PostgreSQL, JWT auth and Redis caching.",
+      "stack": [
+        "FastAPI",
+        "Pydantic v2",
+        "SQLAlchemy 2",
+        "JWT"
+      ],
+      "tags": [
+        "python",
+        "rest",
+        "cache"
+      ],
+      "category": "API",
+      "icon": "⚡",
+      "repo": "MSNS-DEV/syncbay-template-fastapi-redis",
+      "repoUrl": "https://github.com/MSNS-DEV/syncbay-template-fastapi-redis",
+      "deployUrl": "https://syncbay.app/new?template=MSNS-DEV/syncbay-template-fastapi-redis",
+      "services": [
+        {
+          "type": "postgres"
+        },
+        {
+          "type": "redis"
+        }
+      ],
+      "port": 8000,
+      "metrics": {
+        "imageSizeMB": null,
+        "idleMemMB": null,
+        "coldStartMs": null
+      }
+    },
+    {
+      "slug": "fastapi-ai-agent-hub",
+      "name": "FastAPI AI Agent Hub",
+      "description": "FastAPI service that runs agents against any OpenAI-compatible LLM API, streams replies over SSE and keeps embeddings in pgvector.",
+      "stack": [
+        "FastAPI",
+        "pgvector",
+        "SSE",
+        "OpenAI-compatible LLM"
+      ],
+      "tags": [
+        "python",
+        "ai",
+        "llm",
+        "vector"
+      ],
+      "category": "AI",
+      "icon": "🤖",
+      "repo": "MSNS-DEV/syncbay-template-fastapi-ai-agent-hub",
+      "repoUrl": "https://github.com/MSNS-DEV/syncbay-template-fastapi-ai-agent-hub",
+      "deployUrl": "https://syncbay.app/new?template=MSNS-DEV/syncbay-template-fastapi-ai-agent-hub",
+      "services": [
+        {
+          "type": "postgres",
+          "extensions": [
+            "vector"
+          ]
+        }
+      ],
+      "port": 8000,
+      "metrics": {
+        "imageSizeMB": null,
+        "idleMemMB": null,
+        "coldStartMs": null
+      }
+    },
+    {
+      "slug": "go-fiber",
+      "name": "Go Fiber URL Shortener",
+      "description": "Link shortener in Go on Fiber and pgx: create short links with optional aliases and redirect them, stored in PostgreSQL.",
+      "stack": [
+        "Go",
+        "Fiber",
+        "pgx"
+      ],
+      "tags": [
+        "go",
+        "rest"
+      ],
+      "category": "API",
+      "icon": "🐹",
+      "repo": "MSNS-DEV/syncbay-template-go-fiber",
+      "repoUrl": "https://github.com/MSNS-DEV/syncbay-template-go-fiber",
+      "deployUrl": "https://syncbay.app/new?template=MSNS-DEV/syncbay-template-go-fiber",
+      "services": [
+        {
+          "type": "postgres"
+        }
+      ],
+      "port": 8080,
+      "metrics": {
+        "imageSizeMB": null,
+        "idleMemMB": null,
+        "coldStartMs": null
+      }
+    },
+    {
+      "slug": "go-gin-grpc",
+      "name": "Go Gin + gRPC Inventory",
+      "description": "Inventory service in Go with a Gin REST API and a gRPC API over the same PostgreSQL data, plus Prometheus metrics.",
+      "stack": [
+        "Go",
+        "Gin",
+        "gRPC",
+        "Prometheus"
+      ],
+      "tags": [
+        "go",
+        "grpc",
+        "metrics"
+      ],
+      "category": "MICROSERVICES",
+      "icon": "🧩",
+      "repo": "MSNS-DEV/syncbay-template-go-gin-grpc",
+      "repoUrl": "https://github.com/MSNS-DEV/syncbay-template-go-gin-grpc",
+      "deployUrl": "https://syncbay.app/new?template=MSNS-DEV/syncbay-template-go-gin-grpc",
+      "services": [
+        {
+          "type": "postgres"
+        }
+      ],
+      "port": 8080,
+      "metrics": {
+        "imageSizeMB": null,
+        "idleMemMB": null,
+        "coldStartMs": null
+      }
+    },
+    {
+      "slug": "rust-axum",
+      "name": "Rust Axum Pastebin API",
+      "description": "Pastebin API in Rust on Axum and Tokio, with sqlx queries against PostgreSQL.",
+      "stack": [
+        "Rust",
+        "Axum",
+        "Tokio",
+        "sqlx"
+      ],
+      "tags": [
+        "rust",
+        "rest"
+      ],
+      "category": "API",
+      "icon": "🦀",
+      "repo": "MSNS-DEV/syncbay-template-rust-axum",
+      "repoUrl": "https://github.com/MSNS-DEV/syncbay-template-rust-axum",
+      "deployUrl": "https://syncbay.app/new?template=MSNS-DEV/syncbay-template-rust-axum",
+      "services": [
+        {
+          "type": "postgres"
+        }
+      ],
+      "port": 8080,
+      "metrics": {
+        "imageSizeMB": null,
+        "idleMemMB": null,
+        "coldStartMs": null
+      }
+    },
+    {
+      "slug": "node-websockets",
+      "name": "Node.js Realtime Chat",
+      "description": "Chat rooms on Node 22, Express and Socket.io, with the Redis adapter so several instances share messages.",
+      "stack": [
+        "Node 22",
+        "Express",
+        "Socket.io",
+        "Redis adapter"
+      ],
+      "tags": [
+        "javascript",
+        "websockets",
+        "realtime"
+      ],
+      "category": "REALTIME",
+      "icon": "🔌",
+      "repo": "MSNS-DEV/syncbay-template-node-websockets",
+      "repoUrl": "https://github.com/MSNS-DEV/syncbay-template-node-websockets",
+      "deployUrl": "https://syncbay.app/new?template=MSNS-DEV/syncbay-template-node-websockets",
+      "services": [
+        {
+          "type": "redis"
+        }
+      ],
+      "port": 3000,
+      "metrics": {
+        "imageSizeMB": null,
+        "idleMemMB": null,
+        "coldStartMs": null
+      }
+    },
+    {
+      "slug": "django-celery",
+      "name": "Django 5 & Celery Newsletter",
+      "description": "Newsletter app on Django 5 that hands sending to Celery workers through Redis, served by gunicorn on PostgreSQL.",
+      "stack": [
+        "Django 5",
+        "Celery",
+        "gunicorn"
+      ],
+      "tags": [
+        "python",
+        "background-jobs"
+      ],
+      "category": "DATA",
+      "icon": "🦄",
+      "repo": "MSNS-DEV/syncbay-template-django-celery",
+      "repoUrl": "https://github.com/MSNS-DEV/syncbay-template-django-celery",
+      "deployUrl": "https://syncbay.app/new?template=MSNS-DEV/syncbay-template-django-celery",
+      "services": [
+        {
+          "type": "postgres"
+        },
+        {
+          "type": "redis"
+        }
+      ],
+      "port": 8000,
+      "metrics": {
+        "imageSizeMB": null,
+        "idleMemMB": null,
+        "coldStartMs": null
+      }
+    },
+    {
+      "slug": "postgres-valkey",
+      "name": "Postgres + pgvector + Valkey Search",
+      "description": "Search API on Hono that stores embeddings in Postgres with pgvector and caches query results in Valkey.",
+      "stack": [
+        "Hono",
+        "pgvector",
+        "Valkey"
+      ],
+      "tags": [
+        "typescript",
+        "search",
+        "vector",
+        "cache"
+      ],
+      "category": "DATA",
+      "icon": "🔎",
+      "repo": "MSNS-DEV/syncbay-template-postgres-valkey",
+      "repoUrl": "https://github.com/MSNS-DEV/syncbay-template-postgres-valkey",
+      "deployUrl": "https://syncbay.app/new?template=MSNS-DEV/syncbay-template-postgres-valkey",
+      "services": [
+        {
+          "type": "postgres",
+          "extensions": [
+            "vector"
+          ]
+        },
+        {
+          "type": "valkey"
+        }
+      ],
+      "port": 3000,
+      "metrics": {
+        "imageSizeMB": null,
+        "idleMemMB": null,
+        "coldStartMs": null
+      }
+    }
+  ]
+}
