@@ -228,11 +228,12 @@ async function main() {
 
     children.push(startRunner(path.join(ROOT, "runner/src/index.ts"), PORT_A, stateA, { RUNNER_DB_MODE: "docker", RUNNER_DB_PORT_RANGE: DB_PORT_RANGE }));
     children.push(startRunner(path.join(ROOT, "runner/src/index.ts"), PORT_B, stateB, { RUNNER_DB_MODE: "mock", RUNNER_VOLUME_ACCESS: "container" }));
-    // The runner as of origin/main (before the volume routes), for the "runner needs updating" path.
+    // A runner from before the volume routes (the parent of the commit that added them; origin/main
+    // has them since PR #22), for the "runner needs updating" path.
     let oldRunner = false;
     try {
       fs.mkdirSync(stateOld, { recursive: true });
-      const archive = execFileSync("git", ["-C", ROOT, "archive", "origin/main", "runner/src"], { maxBuffer: 64 * 1024 * 1024 });
+      const archive = execFileSync("git", ["-C", ROOT, "archive", "0389be2^", "runner/src"], { maxBuffer: 64 * 1024 * 1024 });
       execFileSync("tar", ["-x", "-C", stateOld], { input: archive });
       children.push(startRunner(path.join(stateOld, "runner/src/index.ts"), PORT_OLD, path.join(stateOld, "state"), { RUNNER_DB_MODE: "mock" }));
       oldRunner = true;
