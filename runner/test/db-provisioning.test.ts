@@ -29,6 +29,7 @@ import { dockerVolumeFlags, prepareNativeVolumes } from "../src/volumes.ts";
 const PSQL = process.env.PSQL_BIN || "psql";
 const PG_ISREADY = process.env.PG_ISREADY_BIN || "pg_isready";
 const REDIS_CLI = process.env.REDIS_CLI_BIN || "redis-cli";
+const PG_CONFIG = process.env.PG_CONFIG_BIN || "pg_config";
 
 const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sb-runner-state-"));
 fs.chmodSync(stateRoot, 0o755); // the unprivileged DB user must traverse it when the runner is root
@@ -233,7 +234,7 @@ test("docker Valkey: engine valkey runs valkey/valkey:8-alpine with requirepass,
 test("native Postgres: extensions [vector] without pgvector on the host fails clearly and cleans up", { skip: !providers.includes("POSTGRES") && "initdb not installed" }, async () => {
   const hasVector = (() => {
     try {
-      const share = execFileSync("pg_config", ["--sharedir"], { encoding: "utf8" }).trim();
+      const share = execFileSync(PG_CONFIG, ["--sharedir"], { encoding: "utf8" }).trim();
       return fs.existsSync(path.join(share, "extension", "vector.control"));
     } catch {
       return false;
