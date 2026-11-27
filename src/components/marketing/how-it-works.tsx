@@ -17,65 +17,61 @@ interface WorkflowStep {
 const STEPS: WorkflowStep[] = [
   {
     step: "01",
-    badge: "Declarative GitOps",
-    title: "Connect Repo or Run `syncbay up`",
+    badge: "Connect GitHub",
+    title: "Pick a Repo or a Template",
     description:
-      "Push to GitHub or deploy directly from your local terminal with the Syncbay CLI. The platform detects your project structure, reads syncbay.json, and initializes ephemeral build sandboxes.",
-    codeTitle: "terminal — local environment",
-    codeSnippet: `# 1-line installation and instant deployment
-$ npm i -g syncbay
-$ syncbay up --project api-edge --env production
+      "Sign in with GitHub and choose a repository, or start from a one-click template. Pushes to your branch trigger a deploy through GitHub webhooks; pull requests get their own preview environment.",
+    codeTitle: "terminal — your machine",
+    codeSnippet: `# Every push to the deployed branch starts a new release
+$ git commit -am "feat: new checkout flow"
+$ git push origin main
 
-✔ Linked GitHub repo: github.com/acme/api-edge
-✔ Discovered syncbay.json manifest
-✔ Injected database context: PostgreSQL (iad1)`,
-    timing: "Immediate (0.2s)",
+# Opening a pull request creates a preview environment:
+#   web-pr-42.syncbay.app  (status posted back to the PR)`,
+    timing: "Triggered by git push",
     highlights: [
-      "Native GitHub App with automatic webhook triggers",
-      "Declarative syncbay.json manifest for services & databases",
-      "Local CLI support for rapid terminal-first deployment",
+      "GitHub sign-in; push and pull_request webhooks",
+      "PR previews with a syncbay/preview commit status",
+      "Templates declare their databases in syncbay.json",
     ],
   },
   {
     step: "02",
-    badge: "Smart Buildpack Engine",
-    title: "4-Phase Nixpacks Layered Compilation",
+    badge: "Build on the Runner",
+    title: "Dockerfile, Syncbay Template or Nixpacks",
     description:
-      "Forget complex multi-stage Dockerfiles. The Nixpacks buildpack engine automatically inspects your repository, installs system libraries, resolves dependencies, and compiles minimal OCI images with zero bloat.",
-    codeTitle: "buildpack log stream",
-    codeSnippet: `⚡ Nixpacks 4-Phase Build Engine:
-[1/4 Setup]   Found package.json -> Node.js 20.12.0
-[2/4 Install] Restoring cached node_modules (hit: 98.4%)
-[3/4 Build]   Running: npm run build (compiled in 14.2s)
-[4/4 Package] Created OCI artifact: sha256:8f3b20...
-✔ Layer caching saved 42.6s on build pipeline`,
-    timing: "14 – 28s average",
+      "The runner clones your repo and picks a build strategy: your own Dockerfile first, then a Syncbay-generated Dockerfile for the detected stack, then Nixpacks. Your files are never overwritten.",
+    codeTitle: "build log stream (sample)",
+    codeSnippet: `[pipeline] Setting up build workspace
+[pipeline] Cloning repository: git clone -- https://github.com/you/api
+Detected FastAPI from requirements.txt; building with the Syncbay python template
+Generated Dockerfile.syncbay: python:3.12-slim
+[pipeline] Compiling container image: docker build ...
+✔ Docker build succeeded`,
+    timing: "Up to 2 builds at once per runner",
     highlights: [
-      "Auto-detects Node.js, Python, Go, Rust, Ruby & Docker",
-      "Smart 4-phase caching for lightning fast rebuilds",
-      "Isolated ephemeral build containers with zero host contamination",
+      "Node/Next.js, static SPAs, Python, Go, Rust, PHP, Java, Ruby, Deno, Bun",
+      "Fast redeploys reuse the clone; clean rebuilds purge caches",
+      "Environment values never appear on a command line or in logs",
     ],
   },
   {
     step: "03",
-    badge: "Global Edge Mesh",
-    title: "Zero-Downtime Rollout Across 6 POPs",
+    badge: "Health-Gated Release",
+    title: "Zero-Downtime Switch Over",
     description:
-      "Your compiled application is simultaneously distributed to 6 edge regions worldwide. Automated HTTP health checks ensure 100% availability, rolling back instantly if any probe fails.",
-    codeTitle: "edge routing & telemetry",
-    codeSnippet: `🌍 Propagating to 6 Global Anycast POPs:
-✔ [iad1] N. Virginia   -> Healthy (200 OK, 8ms)
-✔ [sfo1] San Francisco -> Healthy (200 OK, 11ms)
-✔ [fra1] Frankfurt     -> Healthy (200 OK, 16ms)
-✔ [lhr1] London        -> Healthy (200 OK, 14ms)
-✔ [sin1] Singapore     -> Healthy (200 OK, 24ms)
-✔ [syd1] Sydney        -> Healthy (200 OK, 31ms)
-✨ Live at https://api-edge.syncbay.app (Auto-SSL Active)`,
-    timing: "Sub-second routing",
+      "The new version starts next to the live one and must answer its health check before traffic moves. If it fails, the live version keeps serving and the error is kept with the deployment. Roll back to any earlier build in one click.",
+    codeTitle: "release log (sample)",
+    codeSnippet: `[pipeline] Launching application container
+[health] Probing http://127.0.0.1:<port>/health
+✔ Health check passed — application is healthy and responding
+✔ Previous deployment marked SUPERSEDED and stopped
+✨ Live at https://api-production.syncbay.app`,
+    timing: "Start-up window: 120 s",
     highlights: [
-      "Anycast DNS routing requests to the nearest edge point",
-      "Automatic Let's Encrypt / Cloudflare SSL certificate provisioning",
-      "Blue/Green traffic switching with sub-second automated rollbacks",
+      "Live version serves until the new one answers /health",
+      "Failed releases leave the live version up",
+      "Instant rollback, restart and pause from the console",
     ],
   },
 ];
@@ -99,10 +95,10 @@ export function HowItWorks() {
           <span>🔄 Workflow Pipeline</span>
         </div>
         <h2 className="text-3xl sm:text-4xl md:text-5xl font-black text-white tracking-tight mb-4">
-          From `git push` to 6 Global POPs in 3 Steps
+          From `git push` to Live in 3 Steps
         </h2>
         <p className="text-base sm:text-lg font-medium leading-relaxed" style={{ color: "#94a3b8" }}>
-          No YAML nightmares, no cluster nodes to babysit. Deploy production-ready code with complete observability from commit to edge.
+          No YAML pipelines, no cluster nodes to babysit. Push code, watch the build log, and go live only when the new version is healthy.
         </p>
       </div>
 
@@ -257,8 +253,8 @@ export function HowItWorks() {
 
               {/* Terminal Footer Indicator */}
               <div className="pt-4 mt-4 border-t border-white/10 flex items-center justify-between text-xs text-slate-400">
-                <span>Syncbay Engine v2.4 · Cloud Hyper-Plane</span>
-                <span className="text-cyan-400 font-bold">100% Automated</span>
+                <span>Syncbay runner pipeline</span>
+                <span className="text-cyan-400 font-bold">Automated</span>
               </div>
             </div>
           </TiltCard>
