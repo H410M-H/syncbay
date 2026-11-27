@@ -18,7 +18,7 @@ const FEATURES: CapabilityRow[] = [
     name: "Always-on services",
     category: "Compute & Builds",
     syncbay: "Default",
-    detail: "Services keep running, so no cold start; opt-in scale-to-zero wakes on the next request",
+    detail: "Services keep running, so no cold start; opt-in scale-to-zero sleeps idle services until a member wakes them",
     highlight: true,
   },
   {

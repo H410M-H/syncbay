@@ -35,7 +35,7 @@ const FACTS: Fact[] = [
   },
   {
     text:
-      "Services are always-on by default, so they have no cold start. Turn on scale-to-zero per service to save money on idle apps: they sleep after the idle timeout and wake on the next request.",
+      "Services are always-on by default, so they have no cold start. Turn on scale-to-zero per service to save money on idle apps: they sleep after the idle timeout, and a workspace member wakes them with one click.",
     title: "Always-on, or scale-to-zero",
     source: "Per-service setting",
     href: "/docs",

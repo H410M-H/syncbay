@@ -23,7 +23,7 @@ export const FAQS: FAQItem[] = [
     category: "Cold Starts",
     question: "Are there cold starts?",
     answer:
-      "Not for always-on services, which is the default: they keep running between requests. If you turn on scale-to-zero for a service, it sleeps after its idle timeout and wakes on the next request, so that first request waits while the service starts.",
+      "Not for always-on services, which is the default: they keep running between requests. If you turn on scale-to-zero for a service, it sleeps after its idle timeout; visitors then see a Syncbay start-up page until a workspace member wakes it from that page or redeploys, and the service needs time to start again.",
   },
   {
     category: "Databases",
