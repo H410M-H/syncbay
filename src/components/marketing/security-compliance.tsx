@@ -8,7 +8,7 @@ const SECURITY_PILLARS = [
     icon: "🌐",
     title: "Cloudflare in Front, Tunnel Behind",
     description:
-      "Traffic reaches your service through Cloudflare, with TLS on your syncbay.app host and on DNS-verified custom domains. The runner host is reached over a Cloudflare Tunnel, so app ports are never opened to the internet.",
+      "Traffic reaches your service through Cloudflare, with TLS on your syncbay.app host and on DNS-verified custom domains. The runner host is reached over a Cloudflare Tunnel, so your app's own port does not need to be public.",
     badge: "Cloudflare",
     color: "#38BDF8",
     glowColor: "rgba(56, 189, 248, 0.3)",
