@@ -29,7 +29,7 @@ export function LandingFaq() {
           Frequently Asked Questions
         </h2>
         <p className="text-base sm:text-lg font-medium leading-relaxed" style={{ color: "#94a3b8" }}>
-          Everything you need to know about migrating, deploying, and scaling on Syncbay.
+          Straight answers about deploying, running and paying for apps on Syncbay.
         </p>
       </div>
 

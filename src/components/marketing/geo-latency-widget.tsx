@@ -17,7 +17,7 @@ const ROUTING_STEPS: RoutingStep[] = [
   { id: "DNS", name: "Cloudflare DNS & TLS", detail: "Your syncbay.app host or a verified custom domain" },
   { id: "WAF", name: "Syncbay edge rules", detail: "IP, country and path rules; rate limits" },
   { id: "Canary", name: "Optional canary split", detail: "Weighted, pinned by cookie" },
-  { id: "Tunnel", name: "Cloudflare Tunnel", detail: "To the runner host; no open app ports" },
+  { id: "Tunnel", name: "Cloudflare Tunnel", detail: "To the runner host; your app port need not be public" },
   { id: "Health", name: "Health-gated route", detail: "Only versions that answered their health check", gate: true },
   { id: "App", name: "Your container", detail: "On a Syncbay runner or your own server" },
 ];
