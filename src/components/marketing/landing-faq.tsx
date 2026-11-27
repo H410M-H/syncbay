@@ -11,39 +11,39 @@ interface FAQItem {
 const FAQS: FAQItem[] = [
   {
     category: "Architecture",
-    question: "How does Syncbay compare to Vercel and Railway?",
+    question: "Where do my apps actually run?",
     answer:
-      "Unlike Vercel (which is constrained to serverless Lambda functions with cold starts and aggressive timeout limits) and Railway (which isolates each service to a single cloud region), Syncbay deploys full OCI containers simultaneously across 6 global edge POPs with 0ms cold starts, attached serverless PostgreSQL, an in-browser VT100 web terminal shell, and an embedded SQL query studio.",
+      "Syncbay is a hybrid PaaS. The control plane (dashboard, API, scheduling) runs on Vercel; your apps, builds and managed databases run on Syncbay runner hosts — Linux servers running the Syncbay runner daemon — behind Cloudflare. Today there is one runner region. You can also connect your own server by running the runner daemon on it.",
   },
   {
     category: "Builds & Runtimes",
     question: "Do I need to write a Dockerfile to deploy?",
     answer:
-      "No! While custom Dockerfiles are fully supported, Syncbay incorporates the Nixpacks buildpack engine. It automatically detects your codebase (Node.js, Python, Go, Rust, Ruby, PHP, and more), identifies package managers, installs required system packages, and compiles optimized OCI images with smart 4-phase caching in seconds.",
+      "No. If your repo has a Dockerfile, Syncbay uses it. Otherwise the runner detects your stack and generates a Dockerfile for Node (Express, Nest, Next.js, Nuxt, Remix, SvelteKit, Astro), static SPAs (Angular, React/Vite, Vue, Svelte, plain HTML), Python (Flask, FastAPI, Django), Go, Rust, PHP/Laravel, Java, Ruby, Deno or Bun, and falls back to Nixpacks. Your own files are never overwritten.",
+  },
+  {
+    category: "Cold Starts",
+    question: "Are there cold starts?",
+    answer:
+      "Not for always-on services, which is the default: they keep running between requests. If you turn on scale-to-zero for a service, it sleeps after its idle timeout and wakes on the next request, so that first request waits while the service starts.",
   },
   {
     category: "Databases",
-    question: "How do managed PostgreSQL and Redis work?",
+    question: "How do managed PostgreSQL, Redis and MySQL work?",
     answer:
-      "You can provision managed databases in 1 click. Syncbay provisions serverless PostgreSQL instances with integrated connection pooling (pgbouncer) and high-throughput Redis/Valkey caches. Connection strings are automatically encrypted and injected into your services as ${{ databases.main-pg.url }} environment variables, with no manual copy-pasting.",
-  },
-  {
-    category: "Storage & Bandwidth",
-    question: "Are there bandwidth egress fees for Object Storage?",
-    answer:
-      "Zero! Unlike AWS S3 and GCP Cloud Storage which charge punitive egress transfer fees of $0.09/GB, Syncbay Object Storage offers a strict $0 egress policy. You get full S3 API compatibility, presigned upload/download URLs, and global CDN caching with predictable, fair storage pricing.",
+      "Create a database from the dashboard and Syncbay provisions it on the runner: PostgreSQL (optionally with pgvector), Redis or Valkey, or MySQL. DATABASE_URL or REDIS_URL is added to your services and merged in at deploy time without overriding variables you set. You can test the connection and browse tables in the Data view, and run queries in Query Studio, which is read-only by default.",
   },
   {
     category: "Production Reliability",
-    question: "How does blue/green deployment and automated rollback work?",
+    question: "How do zero-downtime releases and rollbacks work?",
     answer:
-      "When a new build completes, Syncbay launches the new container revision alongside your active deployment and runs automated HTTP health probes. Traffic is smoothly shifted only after health probes return 200 OK. If any probe fails or error rates exceed thresholds within the warmup window, traffic is instantly reverted in under 500ms without dropping a single active connection.",
+      "A new deployment builds and starts while the current one keeps serving. Traffic moves only after the new instance answers its health check (/health, then /); a new instance has up to 120 seconds to become healthy. If the build or the check fails, the live version stays up. You can roll back to an earlier build, restart or pause a service from the console, and the health monitor restarts an instance after two failed probes in a row.",
   },
   {
-    category: "Domains & Networking",
-    question: "Can I bring my own custom domains and wildcard subdomains?",
+    category: "Domains & Billing",
+    question: "Custom domains, TLS and pricing?",
     answer:
-      "Yes. Syncbay provides automatic wildcard subdomains (*.syncbay.app) for instant sharing and testing, and full support for apex domains (example.com), subdomains (api.example.com), and wildcards (*.example.com). TLS/SSL certificates are provisioned and renewed automatically via Cloudflare and Let's Encrypt at zero additional charge.",
+      "Every service gets a <service>-<env>.syncbay.app host. Add your own domain, create the DNS records Syncbay shows you, and it is verified and served with TLS through Cloudflare. Billing is usage-based with no per-seat fees — see the pricing page for the rate card — and you can set a monthly spending cap that pauses services when it is reached.",
   },
 ];
 
