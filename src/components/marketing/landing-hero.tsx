@@ -3,23 +3,25 @@
 import React, { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 
+// Sample deploy log, modelled on the lines the runner pipeline prints (runner/src/pipeline.ts).
 const TERMINAL_LOGS = [
-  { text: "$ syncbay up --project cloud-edge", color: "#f8fafc", delay: 0 },
-  { text: "⚡ Analyzing repository structure & runtime...", color: "#38bdf8", delay: 350 },
-  { text: "✔ Detected: Node.js 20 (Next.js 16 App Router)", color: "#4ade80", delay: 800 },
-  { text: "✔ Attached Managed Postgres: ${{ Postgres.URL }}", color: "#4ade80", delay: 1300 },
-  { text: "🚀 Ephemeral build container active (0ms cold start)", color: "#38bdf8", delay: 1750 },
-  { text: "✔ Image pushed: registry.syncbay.edge/cloud-edge:v1", color: "#4ade80", delay: 2200 },
-  { text: "🌍 Routing to 6 POPs: [iad1, sfo1, fra1, lhr1, sin1, syd1]", color: "#c084fc", delay: 2650 },
-  { text: "✔ Healthcheck passed (200 OK, 12ms)", color: "#4ade80", delay: 3100 },
-  { text: "✨ Live at https://cloud-edge.syncbay.app", color: "#facc15", delay: 3500 },
+  { text: "$ git push origin main", color: "#f8fafc", delay: 0 },
+  { text: "[pipeline] Initiating automated build pipeline for job bld_1 (Service: web)", color: "#38bdf8", delay: 350 },
+  { text: "[pipeline] Cloning repository: git clone -- https://github.com/you/web", color: "#94a3b8", delay: 800 },
+  { text: "✔ Detected Next.js; building with the Syncbay node template", color: "#4ade80", delay: 1300 },
+  { text: "✔ Injected DATABASE_URL from your managed PostgreSQL", color: "#4ade80", delay: 1750 },
+  { text: "[pipeline] Assigned dynamic host port (target container port: 3000)", color: "#94a3b8", delay: 2200 },
+  { text: "[health] Probing /health — previous version keeps serving meanwhile", color: "#c084fc", delay: 2650 },
+  { text: "✔ Health check passed — routing traffic to the new version", color: "#4ade80", delay: 3100 },
+  { text: "✨ Live at https://web-production.syncbay.app", color: "#facc15", delay: 3500 },
 ];
 
+// Product constants, not benchmarks: see CLAUDE.md (runner pipeline, health monitor, retention).
 const STATS = [
-  { label: "Global Edge POPs", value: "6", suffix: "regions", color: "#38bdf8" },
-  { label: "Cold Start Time", value: "0", suffix: "ms", color: "#4ade80" },
-  { label: "Deploy Speed", value: "<30", suffix: "sec", color: "#c084fc" },
-  { label: "Uptime SLA", value: "99.99", suffix: "%", color: "#facc15" },
+  { label: "Builds at Once per Runner", value: "2", suffix: "builds", color: "#38bdf8" },
+  { label: "Start-up Window", value: "120", suffix: "sec", color: "#4ade80" },
+  { label: "Restart After", value: "2", suffix: "failed probes", color: "#c084fc" },
+  { label: "Log Retention", value: "30", suffix: "days", color: "#facc15" },
 ];
 
 export function LandingHero() {
@@ -35,7 +37,7 @@ export function LandingHero() {
   }, []);
 
   const copyCmd = () => {
-    navigator.clipboard.writeText("npm i -g syncbay && syncbay up");
+    navigator.clipboard.writeText("git push origin main");
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -58,7 +60,7 @@ export function LandingHero() {
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-80" />
             <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-cyan-400 shadow-[0_0_8px_#22d3ee]" />
           </span>
-          SYNCBAY CLOUD HYPER-PLANE 2.0 — Live Global Edge
+          SYNCBAY HYBRID PAAS — Runner Hosts behind Cloudflare
         </div>
       </div>
 
@@ -71,7 +73,7 @@ export function LandingHero() {
         }}
       >
         <span className="text-white drop-shadow-[0_0_25px_rgba(255,255,255,0.2)]">
-          Deploy in Seconds.
+          Push to Deploy.
         </span>
         <br />
         <span
@@ -83,7 +85,7 @@ export function LandingHero() {
             filter: "drop-shadow(0 0 35px rgba(56,189,248,0.35))",
           }}
         >
-          Scale Without Limits.
+          Stay Live While You Ship.
         </span>
       </h1>
 
@@ -92,8 +94,9 @@ export function LandingHero() {
         className="text-center text-base sm:text-lg md:text-xl max-w-3xl mx-auto mb-12 leading-relaxed"
         style={{ color: "#cbd5e1", textShadow: "0 2px 10px rgba(0,0,0,0.8)" }}
       >
-        The next-generation developer PaaS engineered to surpass Vercel and Railway. Deploy any codebase to 6 global
-        edge POPs with zero cold starts, attached managed PostgreSQL, interactive Web Shell, and real-time SQL Studio.
+        Deploy any GitHub repo — your Dockerfile, a Syncbay-generated one, or Nixpacks — to Syncbay runner hosts behind
+        Cloudflare. Health-checked zero-downtime releases, managed PostgreSQL, Redis and MySQL, an in-browser shell
+        and a read-only-by-default Query Studio.
       </p>
 
       {/* CTA Buttons with 3D Bevels */}
@@ -111,7 +114,7 @@ export function LandingHero() {
               boxShadow: "0 10px 25px rgba(6,182,212,0.4), inset 0 1px 0 rgba(255,255,255,0.4)",
             }}
           >
-            🚀 Launch Free Project — 30 Seconds
+            🚀 Launch a Project
           </div>
         </Link>
 
@@ -127,7 +130,7 @@ export function LandingHero() {
           }}
         >
           <span style={{ color: "#38bdf8", fontWeight: 700 }}>$</span>
-          <code style={{ color: "#f8fafc", fontWeight: 600 }}>npm i -g syncbay && syncbay up</code>
+          <code style={{ color: "#f8fafc", fontWeight: 600 }}>git push origin main</code>
           <button
             type="button"
             onClick={copyCmd}
@@ -208,7 +211,7 @@ export function LandingHero() {
                 className="ml-3 text-xs font-bold font-mono tracking-wide"
                 style={{ color: "#94a3b8" }}
               >
-                syncbay-engine@edge-us-east · OCI Container Fabric
+                syncbay-runner · deploy log (sample)
               </span>
             </div>
             <div className="flex items-center gap-3 text-xs font-mono">
@@ -221,7 +224,7 @@ export function LandingHero() {
                 }}
               >
                 <span className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_6px_#4ade80] animate-pulse" />
-                6 POPs Synchronized
+                Health-Gated Release
               </span>
             </div>
           </div>
@@ -248,7 +251,7 @@ export function LandingHero() {
                   className="inline-block w-2.5 h-5 mr-2.5"
                   style={{ background: "#38bdf8", animation: "blink 1s step-end infinite", boxShadow: "0 0 10px #38bdf8" }}
                 />
-                Active edge ingress listening on port 443 with TLS 1.3 & HTTP/3 QUIC...
+                Serving through Cloudflare with TLS on your syncbay.app host...
               </div>
             )}
           </div>
