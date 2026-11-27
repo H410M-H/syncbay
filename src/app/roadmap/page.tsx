@@ -44,7 +44,7 @@ export default function RoadmapPage() {
           <nav className="hidden md:flex items-center space-x-6 text-xs text-zinc-400 font-medium">
             <Link href="/" className="hover:text-white transition-colors">Platform</Link>
             <Link href="/pricing" className="hover:text-white transition-colors">Pricing</Link>
-            <Link href="/enterprise" className="hover:text-white transition-colors">Enterprise</Link>
+            <Link href="/enterprise" className="hover:text-white transition-colors">Teams</Link>
             <Link href="/templates" className="hover:text-white transition-colors">Templates</Link>
           </nav>
 
@@ -64,26 +64,26 @@ export default function RoadmapPage() {
         <div className="text-center max-w-3xl mx-auto">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-cyan-500/30 bg-cyan-950/30 text-cyan-400 text-xs font-mono mb-6">
             <span>⚡</span>
-            <span>Weekly R&amp;D Sprint Pipeline · Fast Iteration &amp; Zero Regressions</span>
+            <span>Release History · What Is Next</span>
           </div>
 
           <h1 className="text-4xl sm:text-6xl font-black text-white tracking-tight font-sans mb-6">
-            Weekly Feature Drops &amp; <br />
+            What We Shipped &amp; <br />
             <span className="text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 via-indigo-400 to-fuchsia-400">
-              R&amp;D Architecture.
+              What Comes Next.
             </span>
           </h1>
 
           <p className="text-base sm:text-lg text-zinc-400 leading-relaxed font-sans mb-8">
-            Every Tuesday at 10:00 UTC, Syncbay ships production enhancements driven by high-demand developer trends,
-            enterprise security mandates, and edge performance breakthroughs.
+            The releases below mirror the project roadmap: what each version changed for customers, and the work
+            planned next. Planned items are not available yet.
           </p>
         </div>
 
         {/* Weekly Version Pipeline Timeline */}
         <div className="space-y-8 max-w-4xl mx-auto">
           <h2 className="text-xl font-bold font-mono text-white flex items-center gap-2">
-            <span>🗓️</span> Weekly Version Changelog &amp; Release Cadence
+            <span>🗓️</span> Release History
           </h2>
 
           <div className="space-y-6">
@@ -109,7 +109,6 @@ export default function RoadmapPage() {
                     </div>
 
                     <div className="flex items-center gap-2">
-                      <span className="text-xs font-mono text-zinc-500">{drop.releaseDate}</span>
                       <span
                         className={`text-xs font-mono px-2.5 py-0.5 rounded-full font-bold ${
                           isReleased
@@ -138,8 +137,8 @@ export default function RoadmapPage() {
                   </ul>
 
                   <div className="pt-4 border-t border-zinc-800/80 text-xs font-mono text-zinc-400 flex items-center gap-2">
-                    <span className="text-amber-400 font-bold">Benchmark Impact:</span>
-                    <span>{drop.performanceGains}</span>
+                    <span className="text-amber-400 font-bold">Outcome:</span>
+                    <span>{drop.outcome}</span>
                   </div>
                 </div>
               );
@@ -150,7 +149,7 @@ export default function RoadmapPage() {
         {/* Strategic R&D Pillars */}
         <div className="max-w-4xl mx-auto space-y-6">
           <h2 className="text-xl font-bold font-mono text-white flex items-center gap-2">
-            <span>🔬</span> Strategic R&amp;D Differentiators
+            <span>🔬</span> Product Principles
           </h2>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
@@ -163,7 +162,7 @@ export default function RoadmapPage() {
                   <span className="text-xs font-mono px-2 py-0.5 rounded bg-zinc-900 border border-zinc-700 text-cyan-400 font-bold">
                     {ins.pillar}
                   </span>
-                  <span className="text-xs font-mono text-emerald-400">Impact Score: {ins.impactScore}/100</span>
+                  <span className="text-xs font-mono text-emerald-400">{ins.implementationStatus === "ACTIVE" ? "Shipped" : ins.implementationStatus === "PLANNED" ? "Planned" : "Evaluating"}</span>
                 </div>
                 <h4 className="text-base font-bold text-white mb-2">{ins.title}</h4>
                 <p className="text-xs text-zinc-400 leading-relaxed">{ins.strategicRationale}</p>
@@ -175,10 +174,10 @@ export default function RoadmapPage() {
         {/* Community & Enterprise Feature Voting */}
         <div className="max-w-4xl mx-auto p-8 rounded-2xl border border-zinc-800 bg-zinc-950/80 backdrop-blur-xl">
           <h2 className="text-xl font-bold font-mono text-white mb-2 flex items-center gap-2">
-            <span>🗳️</span> Community &amp; Enterprise Feature Priority Queue
+            <span>🗳️</span> Feature Requests
           </h2>
           <p className="text-xs text-zinc-400 mb-6">
-            Vote for the capabilities you want included in upcoming Tuesday version releases.
+            Tell us which planned features matter to you. Votes are counted in memory on the server and reset when it restarts.
           </p>
 
           <div className="space-y-3 font-mono text-xs">
@@ -210,7 +209,7 @@ export default function RoadmapPage() {
 
       {/* Footer */}
       <footer className="border-t border-zinc-800/80 bg-zinc-950/60 py-12 text-center text-xs text-zinc-500 font-mono">
-        <p>Syncbay Technologies Inc. · 548 Market St, Suite 82194, San Francisco, CA 94104, United States</p>
+        <p>Syncbay · Built in Pakistan by MSNS-DEV</p>
       </footer>
     </div>
   );

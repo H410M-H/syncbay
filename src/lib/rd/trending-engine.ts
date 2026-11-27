@@ -7,11 +7,11 @@ import { listTemplates, type CatalogTemplate } from "@/lib/templates/catalog";
 
 export interface WeeklyVersionDrop {
   version: string;
-  releaseDate: string;
   codename: string;
   headline: string;
   features: string[];
-  performanceGains: string;
+  /** What a customer can see or do because of this release. */
+  outcome: string;
   status: "RELEASED" | "UPCOMING" | "IN_RESEARCH";
 }
 
@@ -20,143 +20,134 @@ export interface RDStrategyInsight {
   pillar: "SPEED" | "TRENDING_TECH" | "ENTERPRISE_DEMAND" | "AI_AUTOMATION";
   title: string;
   strategicRationale: string;
-  impactScore: number; // 1-100
   implementationStatus: "ACTIVE" | "PLANNED" | "EVALUATING";
 }
 
-// ─── 1. Weekly Release Pipeline ─────────────────────────────────────────────
+// ─── 1. Release history (mirrors ROADMAP.md) ────────────────────────────────
+
 const WEEKLY_DROPS: WeeklyVersionDrop[] = [
   {
-    version: "v1.0.0",
-    releaseDate: "2026-09-01",
-    codename: "Foundation Matrix",
-    headline: "Core PaaS Engine, Nixpacks Auto-Detection, and Managed PostgreSQL",
+    version: "v1.1",
+    codename: "Backend De-Mocked",
+    headline: "Real deploys, logs, metrics, billing and data services",
     features: [
-      "Dual-driver execution engine (simulated container runtime + edge router)",
-      "Zero-config runtime detector for Node.js, Python, Go, Rust, and Dockerfile",
-      "Managed PostgreSQL and Redis database provisioning with secure URL generation",
-      "Dynamic workspace RBAC (OWNER, ADMIN, MEMBER, VIEWER)",
+      "Health-checked deploys; pause, delete, restart and rollback that really stop and start instances",
+      "Persistent deployment logs, runner CPU/memory metrics, hourly usage metering and spending caps",
+      "DNS-verified custom domains; Stripe cards, top-ups and invoices without card data on Syncbay",
+      "Cloudflare R2 buckets, cron jobs, WAF rules and canary routing; Query Studio read-only by default",
     ],
-    performanceGains: "3.2x faster deployment initialization vs standard container engines",
+    outcome: "Every dashboard action maps to a real operation on the runner, Cloudflare or Stripe",
     status: "RELEASED",
   },
   {
-    version: "v1.1.0",
-    releaseDate: "2026-09-08",
-    codename: "Edge Hyper-Plane",
-    headline: "6 Global Edge POPs, Sub-Second Rollback & Instant WAF",
+    version: "v1.2",
+    codename: "Operations",
+    headline: "Runner preflight, project actions and traffic analytics",
     features: [
-      "Multi-region edge POP routing (San Francisco, Frankfurt, Tokyo, London, São Paulo, Sydney)",
-      "Instant 1-click deployment rollback shifting DNS traffic under 400ms",
-      "Edge POP cache invalidation engine (by tag, path, or all)",
-      "Built-in Layer 7 WAF with DDoS rate-limiting and bad-bot shielding",
+      "Clear errors when the runner is not configured, before anything is created",
+      "Redeploy, pause, resume, rename and delete a whole project",
+      "Per-deployment request counters; canary rollback uses real 5xx data",
+      "Secrets redacted from build and runtime logs",
     ],
-    performanceGains: "Average edge response latency reduced to <18ms globally",
+    outcome: "Live dashboard analytics from recorded traffic, not sample data",
     status: "RELEASED",
   },
   {
-    version: "v1.2.0",
-    releaseDate: "2026-09-15",
-    codename: "Cognitive DevOps",
-    headline: "AI Deploy Diagnostics, Interactive Web Shell & SQL Query Studio",
+    version: "v1.3",
+    codename: "Availability",
+    headline: "Always-on by default and zero-downtime deploys",
     features: [
-      "AI-driven build failure analysis suggesting exact package.json and Dockerfile remedies",
-      "Browser-based interactive Web Shell with container process inspector",
-      "Embedded SQL Query Studio for managed PostgreSQL with visual schema tree",
-      "Automated Vercel CLI configuration migrator with zero manual remapping",
+      "Services stay running unless you turn on scale-to-zero",
+      "The live version keeps serving while a new one builds, and after a failed release",
+      "120-second start-up window with crash output and detection of the port your app really uses",
+      "At most 2 builds at once per runner; readable build failures",
     ],
-    performanceGains: "94% reduction in developer debugging cycle time for failed builds",
+    outcome: "A bad release no longer takes a working service down",
     status: "RELEASED",
   },
   {
-    version: "v1.3.0",
-    releaseDate: "2026-09-22",
-    codename: "Autonomous Ops & Smart Crons",
-    headline: "Smart Scheduled Tasks, Global Geo-DNS & Enterprise US Compliance",
+    version: "v1.4",
+    codename: "Staff Console & Security",
+    headline: "Moderation, abuse reports and security fixes",
     features: [
-      "Autonomous smart cron engine for customer re-engagement & database backup verification",
-      "Automated SSL certificate provisioning and zero-friction DNS CNAME verification",
-      "Full US corporate governance: Syncbay Technologies Inc., San Francisco CA",
-      "Interactive pricing calculator proving massive savings over Vercel and Railway seat fees",
+      "Syncbay session cookies stripped from traffic forwarded to customer apps",
+      "Staff console with reason-gated actions and an append-only staff audit log",
+      "Public abuse reports at /report-abuse",
     ],
-    performanceGains: "Zero-seat-tax pricing model saving fast-growing teams $4,000+/year",
+    outcome: "Customer apps never see Syncbay session cookies",
     status: "RELEASED",
   },
   {
-    version: "v1.4.0",
-    releaseDate: "2026-09-29",
-    codename: "Enterprise Sovereign Mesh",
-    headline: "Private VPC Peering, Real-Time Audit Log Streaming & Canary Deployments",
+    version: "v1.5",
+    codename: "Keep Apps Up, Build Any Stack",
+    headline: "Health monitor, stack templates and the Data view",
     features: [
-      "Weighted Canary traffic splitting (1% - 100%) with automated health check rollbacks",
-      "Cloudflare R2 and S3 object storage bucket manager with presigned upload URLs",
-      "Persistent volume mounting for stateful container workloads",
-      "SIEM-compatible audit log streaming for enterprise compliance (SOC2 Type II / HIPAA)",
+      "Live apps probed every minute and restarted after two failed probes",
+      "Generated Dockerfiles for Node/Next.js, static SPAs, Python, Go, Rust, PHP, Java, Ruby, Deno and Bun",
+      "Data view: test connections and browse databases, buckets and volumes",
+      "Runner auto-updater with status in the dashboard",
     ],
-    performanceGains: "Zero downtime during major canary releases across enterprise clusters",
+    outcome: "Most repositories deploy without writing a Dockerfile",
+    status: "RELEASED",
+  },
+  {
+    version: "Next",
+    codename: "Planned",
+    headline: "Backups, isolation and more runners",
+    features: [
+      "Database backups (scheduled pg_dump to R2) and restore",
+      "Per-environment Docker networks between tenants on one runner",
+      "Encrypt environment variable values and database credentials at rest",
+      "Several runners per workspace, with placement and capacity reporting",
+    ],
+    outcome: "Planned work; not available yet",
     status: "UPCOMING",
-  },
-  {
-    version: "v1.5.0",
-    releaseDate: "2026-10-06",
-    codename: "Agentic Edge MicroVMs",
-    headline: "Ultra-Lightweight MicroVMs with Instant Cold Starts for AI Agents",
-    features: [
-      "Sub-5ms cold starts for Python FastAPI & LangChain AI agent containers",
-      "Integrated vector store acceleration with pgvector and Valkey caching",
-      "Serverless TCP proxying for distributed WebSocket and gRPC microservices",
-    ],
-    performanceGains: "5ms cold start initialization, 10x faster than traditional Kubernetes pods",
-    status: "IN_RESEARCH",
   },
 ];
 
-// ─── 3. R&D Strategic Insights ───────────────────────────────────────────────
+// ─── 3. Product principles ──────────────────────────────────────────────────
+
 const STRATEGIC_INSIGHTS: RDStrategyInsight[] = [
   {
     id: "strat_speed",
     pillar: "SPEED",
-    title: "Zero-Rebuild Instant Traffic Shifting",
+    title: "Rollback Without Waiting",
     strategicRationale:
-      "Vercel and Railway require full image rebuilding or slow container spinning upon rollback. Syncbay keeps the previous healthy container snapshot in warm standby at regional POPs, shifting routing in <400ms.",
-    impactScore: 98,
+      "Rolling back revives the earlier instance from its kept launch spec when the runner still has it, and otherwise redeploys that build — no new commit needed.",
     implementationStatus: "ACTIVE",
   },
   {
     id: "strat_trending_tech",
     pillar: "TRENDING_TECH",
-    title: "First-Class AI Agent Runtime Optimization",
+    title: "Long-Running Containers for AI Apps",
     strategicRationale:
-      "Developers are fleeing legacy serverless platforms due to strict 15s execution timeouts when calling LLMs. Syncbay provides long-lived streaming containers with built-in SSE support and 15-minute background task limits.",
-    impactScore: 95,
+      "Services are ordinary always-on containers, so streaming responses (SSE, WebSockets) and long LLM calls are not cut short by a function timeout. pgvector and Valkey are available as managed services.",
     implementationStatus: "ACTIVE",
   },
   {
     id: "strat_enterprise",
     pillar: "ENTERPRISE_DEMAND",
-    title: "Zero-Seat-Tax Enterprise Model",
+    title: "No Per-Seat Fees",
     strategicRationale:
-      "Enterprise teams hate paying $20/month per developer seat just to view logs or trigger preview builds. Syncbay gives unlimited seats on Pro and Enterprise tiers, monetizing purely on actual compute resources and edge egress.",
-    impactScore: 99,
+      "Billing is usage only — compute, memory and egress from one rate card — so inviting a teammate to read logs or review a preview costs nothing.",
     implementationStatus: "ACTIVE",
   },
   {
     id: "strat_ai_automation",
     pillar: "AI_AUTOMATION",
-    title: "Self-Healing Deployment Diagnostics",
+    title: "Rule-Based Deploy Diagnostics",
     strategicRationale:
-      "80% of deployment failures are caused by missing environment variables, lockfile discrepancies, or missing build scripts. The Syncbay AI diagnostics engine identifies the root cause and suggests 1-click fixes before container startup.",
-    impactScore: 92,
+      "Heuristics read a failed deployment's logs and suggest likely fixes (missing variables, lockfile or build-script problems). They only suggest; nothing is changed automatically.",
     implementationStatus: "ACTIVE",
   },
 ];
 
-// In-memory store for community feature votes
+// In-memory store for community feature votes (per server instance; resets on restart).
 const featureVotesStore: Map<string, number> = new Map([
-  ["Zero-Cold-Start MicroVMs", 342],
-  ["Native Kubernetes Cluster Importer", 289],
-  ["PostgreSQL Branching & Instant Forking", 412],
-  ["SOC2 Type II Automated Audit Vault", 195],
+  ["Database backups and restore", 0],
+  ["Several runners per workspace", 0],
+  ["Volume snapshots", 0],
+  ["Alerts when a service is auto-restarted", 0],
 ]);
 
 export function getWeeklyVersionDrops(): WeeklyVersionDrop[] {
