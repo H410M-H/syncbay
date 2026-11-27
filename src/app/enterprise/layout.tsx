@@ -1,17 +1,16 @@
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Enterprise Sovereign Mesh — Global Edge Infrastructure | Syncbay",
+  title: "Teams & Own Servers",
   description:
-    "Syncbay Enterprise delivers dedicated edge POP clusters, 99.999% SLA, custom VPC peering, SOC 2 compliance, and dedicated 24/7 SRE support for mission-critical workloads.",
+    "Syncbay for teams: workspace roles, an audit log, usage-based billing without per-seat fees and spending caps. Run on Syncbay runner hosts or connect your own Linux server.",
   keywords: [
-    "Enterprise PaaS",
-    "Private Edge Cloud",
-    "Dedicated POP Cluster",
-    "Sovereign Cloud Mesh",
-    "SOC 2 Cloud Platform",
-    "Enterprise Vercel Alternative",
-    "Multi-Cloud Deployment",
+    "PaaS for Teams",
+    "Bring Your Own Server",
+    "Self-Hosted Runner",
+    "Spending Caps",
+    "Usage-Based Billing",
+    "Audit Log",
   ],
   alternates: {
     canonical: "https://www.syncbay.app/enterprise",
@@ -19,24 +18,24 @@ export const metadata: Metadata = {
   openGraph: {
     type: "website",
     siteName: "Syncbay",
-    title: "Syncbay Enterprise — Sovereign Mesh & Dedicated Global Edge",
+    title: "Syncbay for Teams — Our Runners or Yours",
     description:
-      "Enterprise cloud infrastructure at a fraction of hyperscaler lock-in costs. Dedicated POPs, 99.999% SLA, and custom VPC peering.",
+      "Workspace roles, audit log, usage-based billing with spending caps, and the option to connect your own Linux server as the runner.",
     url: "https://www.syncbay.app/enterprise",
     images: [
       {
         url: "https://www.syncbay.app/og-image.png",
         width: 1200,
         height: 630,
-        alt: "Syncbay Enterprise Infrastructure",
+        alt: "Syncbay for Teams",
         type: "image/png",
       },
     ],
   },
   twitter: {
     card: "summary_large_image",
-    title: "Syncbay Enterprise — High-Throughput Edge Infrastructure",
-    description: "Dedicated POPs, 99.999% uptime guarantee, and custom VPC peering.",
+    title: "Syncbay for Teams — Our Runners or Yours",
+    description: "Roles, audit log, spending caps, and your own server as the runner.",
     images: ["https://www.syncbay.app/og-image.png"],
   },
 };
@@ -56,7 +55,7 @@ const enterpriseJsonLd = {
         {
           "@type": "ListItem",
           "position": 2,
-          "name": "Enterprise",
+          "name": "Teams & Own Servers",
           "item": "https://www.syncbay.app/enterprise",
         },
       ],
