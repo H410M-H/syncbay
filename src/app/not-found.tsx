@@ -4,7 +4,7 @@ import { BrandLogo } from "@/components/ui/brand-logo";
 
 export const metadata = {
   title: "404 — Page Not Found | Syncbay",
-  description: "The requested route does not exist on the Syncbay Cloud Hyper-Plane.",
+  description: "The requested page does not exist on Syncbay.",
   robots: {
     index: false,
     follow: true,
@@ -76,15 +76,15 @@ export default function NotFound() {
             marginBottom: "20px",
           }}
         >
-          <span>HTTP 404 Route Unreachable</span>
+          <span>HTTP 404 Not Found</span>
         </div>
 
         <h1 style={{ fontSize: "2.25rem", fontWeight: 800, letterSpacing: "-0.03em", margin: "0 0 12px 0", color: "#ffffff" }}>
-          Lost in the Edge Mesh
+          Nothing Deployed Here
         </h1>
 
         <p style={{ color: "#94a3b8", fontSize: "15px", lineHeight: 1.6, margin: "0 0 32px 0" }}>
-          The deployment route or resource you are looking for has been moved, purged from the edge cache, or does not exist.
+          The page or resource you are looking for has moved or does not exist.
         </p>
 
         <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginBottom: "28px" }}>
@@ -124,7 +124,7 @@ export default function NotFound() {
                 textDecoration: "none",
               }}
             >
-              Pricing & Plans
+              Usage Pricing
             </Link>
             <Link
               href="/templates"
@@ -156,13 +156,13 @@ export default function NotFound() {
             fontFamily: "monospace",
           }}
         >
-          [syncbay-edge-pop] anycast-gateway · 0ms-cold-start-fabric
+          [syncbay] 404 · control plane
         </div>
       </main>
 
       {/* Footer */}
       <footer style={{ fontSize: "12px", color: "#64748b", textAlign: "center" }}>
-        © {new Date().getFullYear()} Syncbay Technologies Inc. · Global Edge Cloud Platform
+        © {new Date().getFullYear()} MSNS-DEV · Syncbay
       </footer>
     </div>
   );
