@@ -33,6 +33,12 @@ export default function sitemap(): MetadataRoute.Sitemap {
       priority: 0.9,
     },
     {
+      url: `${baseUrl}/docs`,
+      lastModified,
+      changeFrequency: "weekly",
+      priority: 0.85,
+    },
+    {
       url: `${baseUrl}/roadmap`,
       lastModified,
       changeFrequency: "weekly",
@@ -49,12 +55,6 @@ export default function sitemap(): MetadataRoute.Sitemap {
       lastModified,
       changeFrequency: "weekly",
       priority: 0.7,
-    },
-    {
-      url: `${baseUrl}/api/geo/locate`,
-      lastModified,
-      changeFrequency: "weekly",
-      priority: 0.6,
     },
   ];
 }
