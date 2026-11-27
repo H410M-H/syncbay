@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "1-Click Full-Stack Templates Catalog | Syncbay",
+  title: "One-Click Templates",
   description:
-    "Deploy production-ready Next.js, Node.js, Python FastAPI, Go, Rust, and PostgreSQL templates with zero configuration on Syncbay's edge cloud.",
+    "Open-source starter apps — Next.js, FastAPI, Go, Rust, Node.js, Django and more — that declare their PostgreSQL, Redis or Valkey in syncbay.json. Syncbay provisions them and deploys the app.",
   keywords: [
     "Full-Stack Templates",
     "Next.js Starter",
@@ -11,7 +11,7 @@ export const metadata: Metadata = {
     "PostgreSQL Starter Kit",
     "Go Web API Template",
     "1-Click Cloud Deploy",
-    "Nixpacks Templates",
+    "Open Source Templates",
   ],
   alternates: {
     canonical: "https://www.syncbay.app/templates",
@@ -19,9 +19,9 @@ export const metadata: Metadata = {
   openGraph: {
     type: "website",
     siteName: "Syncbay",
-    title: "1-Click Full-Stack Templates Catalog — Syncbay Edge Platform",
+    title: "Syncbay One-Click Templates",
     description:
-      "Instant architecture templates for Next.js, FastAPI, Go, and PostgreSQL. Launch in seconds with automated CI/CD and attached storage.",
+      "Open-source starter apps with their databases declared in syncbay.json. Deploy one and Syncbay provisions the databases and builds the app.",
     url: "https://www.syncbay.app/templates",
     images: [
       {
@@ -35,8 +35,8 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "Syncbay 1-Click Templates Catalog",
-    description: "Launch production-grade Next.js, Python, and Go microservices in seconds.",
+    title: "Syncbay One-Click Templates",
+    description: "Open-source Next.js, Python, Go, Rust and Node starters with their databases included.",
     images: ["https://www.syncbay.app/og-image.png"],
   },
 };

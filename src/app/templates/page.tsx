@@ -169,7 +169,7 @@ export default function TemplatesPage() {
 
       {/* Footer */}
       <footer className="border-t border-zinc-800/80 bg-zinc-950/60 py-12 text-center text-xs text-zinc-500 font-mono">
-        <p>Syncbay Technologies Inc. · 548 Market St, Suite 82194, San Francisco, CA 94104, United States</p>
+        <p>Syncbay · Templates are open source at github.com/MSNS-DEV</p>
       </footer>
     </div>
   );
