@@ -1,17 +1,16 @@
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Pricing & Plans — Transparent Edge Cloud Hosting | Syncbay",
+  title: "Usage Pricing",
   description:
-    "Syncbay pricing engineered to surpass Vercel and Railway. Unlimited developer seats, $18/mo Pro plan with 500GB included edge egress, attached PostgreSQL, and zero seat penalties.",
+    "Syncbay bills by usage from one rate card — compute, memory and network egress, invoiced monthly via Stripe — with no per-seat fees and a monthly spending cap you set.",
   keywords: [
     "Syncbay Pricing",
-    "Vercel Pricing Alternative",
-    "Railway Cost Comparison",
-    "PaaS Pricing Calculator",
-    "Cheap Docker Hosting",
-    "Serverless Postgres Pricing",
-    "Developer Cloud Cost",
+    "Usage-Based PaaS Pricing",
+    "Spending Cap",
+    "Docker Hosting Pricing",
+    "Managed Postgres Hosting",
+    "No Per-Seat Fees",
   ],
   alternates: {
     canonical: "https://www.syncbay.app/pricing",
@@ -19,24 +18,24 @@ export const metadata: Metadata = {
   openGraph: {
     type: "website",
     siteName: "Syncbay",
-    title: "Syncbay Pricing — Beat Vercel & Railway on Speed & Cost",
+    title: "Syncbay Pricing — Usage-Based, No Per-Seat Fees",
     description:
-      "Save up to 80% compared to Vercel seat penalties. Unlimited seats, 6 edge POPs, 0ms cold starts, and attached managed Postgres.",
+      "One rate card for compute, memory and egress, invoiced monthly. Set a spending cap: email at 80%, services pause at 100%.",
     url: "https://www.syncbay.app/pricing",
     images: [
       {
         url: "https://www.syncbay.app/og-image.png",
         width: 1200,
         height: 630,
-        alt: "Syncbay Pricing & Plans",
+        alt: "Syncbay Usage Pricing",
         type: "image/png",
       },
     ],
   },
   twitter: {
     card: "summary_large_image",
-    title: "Syncbay Pricing — Transparent, Predictable Developer Cloud",
-    description: "Unlimited seats, 500GB included egress, attached PostgreSQL & Web Shell for $18/mo.",
+    title: "Syncbay Pricing — Usage-Based, No Per-Seat Fees",
+    description: "Compute, memory and egress from one rate card, with a spending cap you set.",
     images: ["https://www.syncbay.app/og-image.png"],
   },
 };
@@ -60,23 +59,6 @@ const pricingJsonLd = {
           "item": "https://www.syncbay.app/pricing",
         },
       ],
-    },
-    {
-      "@type": "Product",
-      "name": "Syncbay Cloud Platform",
-      "description": "Next-Gen developer PaaS with attached PostgreSQL, edge containers, and 0ms cold starts.",
-      "image": "https://www.syncbay.app/brand-logo.png",
-      "brand": {
-        "@type": "Brand",
-        "name": "Syncbay",
-      },
-      "offers": {
-        "@type": "AggregateOffer",
-        "priceCurrency": "USD",
-        "lowPrice": "0",
-        "highPrice": "450",
-        "offerCount": "3",
-      },
     },
   ],
 };

@@ -1,33 +1,37 @@
 "use client";
 
 import React, { useState } from "react";
+import type { UsageResourceType } from "@prisma/client";
 import Link from "next/link";
 import { AsciiBackground } from "@/components/ui/ascii-background";
 import { BrandLogo } from "@/components/ui/brand-logo";
-import { ComparisonTable } from "@/components/marketing/comparison-table";
+import { USAGE_RATE_CARD, estimateCostCents, formatRateDollars } from "@/lib/billing/pricing";
+
+/** Resources the hourly metering job records today (src/lib/usage/metering.ts). */
+const METERED: UsageResourceType[] = ["CPU_ACTIVE_SECONDS", "MEMORY_GIB_HOURS", "EGRESS_GB"];
+
+/** Hours in the month the estimate assumes (an always-on service). */
+const HOURS_PER_MONTH = 730;
 
 export default function PricingPage() {
-  const [billingCycle, setBillingCycle] = useState<"monthly" | "annual">("annual");
+  // Estimator inputs: one always-on service.
+  const [calcVcpu, setCalcVcpu] = useState<number>(0.25);
+  const [calcMemGib, setCalcMemGib] = useState<number>(0.5);
+  const [calcEgressGb, setCalcEgressGb] = useState<number>(20);
 
-  // Calculator states
-  const [calcSeats, setCalcSeats] = useState<number>(5);
-  const [calcServices, setCalcServices] = useState<number>(6);
-  const [calcEgressGb, setCalcEgressGb] = useState<number>(300);
-
-  // Compute estimates:
-  // Syncbay: Pro plan $18 (or $15 annual) includes unlimited seats, 500GB egress. Extra egress: $0.04/GB
-  const syncbayBase = billingCycle === "annual" ? 15 : 18;
-  const syncbayExtraEgress = Math.max(0, calcEgressGb - 500) * 0.04;
-  const syncbayMonthly = syncbayBase + syncbayExtraEgress;
-
-  // Vercel Pro: $20 / seat / month + $0.15 / GB egress over 1TB (or 100GB on standard)
-  const vercelMonthly = calcSeats * 20 + Math.max(0, calcEgressGb - 100) * 0.15;
-
-  // Railway: $5 base + $20/vCPU-mo + $10/GB-RAM + $0.10/GB egress (~$15/service average)
-  const railwayMonthly = 5 + calcServices * 14 + calcEgressGb * 0.10;
-
-  const annualSavingsVercel = Math.max(0, (vercelMonthly - syncbayMonthly) * 12);
-  const annualSavingsRailway = Math.max(0, (railwayMonthly - syncbayMonthly) * 12);
+  const cpuSeconds = calcVcpu * HOURS_PER_MONTH * 3600;
+  const memGibHours = calcMemGib * HOURS_PER_MONTH;
+  const lineCents = {
+    CPU_ACTIVE_SECONDS: estimateCostCents({ CPU_ACTIVE_SECONDS: cpuSeconds }),
+    MEMORY_GIB_HOURS: estimateCostCents({ MEMORY_GIB_HOURS: memGibHours }),
+    EGRESS_GB: estimateCostCents({ EGRESS_GB: calcEgressGb }),
+  };
+  const totalCents = estimateCostCents({
+    CPU_ACTIVE_SECONDS: cpuSeconds,
+    MEMORY_GIB_HOURS: memGibHours,
+    EGRESS_GB: calcEgressGb,
+  });
+  const dollars = (cents: number) => `$${(cents / 100).toFixed(2)}`;
 
   return (
     <div className="min-h-screen bg-black text-white relative selection:bg-cyan-500 selection:text-black">
@@ -42,14 +46,14 @@ export default function PricingPage() {
             <Link href="/" className="hover:text-white transition-colors">
               Platform
             </Link>
-            <a href="#comparison" className="hover:text-white transition-colors">
-              Competitor Breakdown
+            <a href="#rates" className="hover:text-white transition-colors">
+              Rate Card
             </a>
             <a href="#calculator" className="hover:text-white transition-colors">
-              Savings Calculator
+              Cost Estimator
             </a>
-            <a href="#us-company" className="hover:text-white transition-colors">
-              US Headquarters 🇺🇸
+            <a href="#about" className="hover:text-white transition-colors">
+              Who Builds Syncbay
             </a>
           </nav>
 
@@ -75,80 +79,47 @@ export default function PricingPage() {
         {/* Hero Section */}
         <div className="text-center max-w-3xl mx-auto">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-cyan-500/30 bg-cyan-950/30 text-cyan-400 text-xs font-mono mb-6">
-            <span>🇺🇸</span>
-            <span>American Cloud Engineering · Transparent PaaS Economics</span>
+            <span>💳</span>
+            <span>Usage-Based · Spending Caps · Billed Monthly via Stripe</span>
           </div>
 
           <h1 className="text-4xl sm:text-6xl font-black text-white tracking-tight font-sans mb-6">
-            Predictable Cloud Pricing. <br />
+            Pay for What Runs. <br />
             <span className="text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 via-indigo-400 to-fuchsia-400">
-              Zero Seat Taxes.
+              No Per-Seat Fees.
             </span>
           </h1>
 
           <p className="text-base sm:text-lg text-zinc-400 leading-relaxed font-sans mb-8">
-            Why pay $20/month per seat on Vercel or face unpredictable compute spikes on Railway?
-            Syncbay delivers 6 global edge POPs, native managed PostgreSQL &amp; Redis, and automated
-            zero-downtime rollbacks at unmatched value.
+            Syncbay bills by usage from one rate card: compute, memory and network egress, invoiced monthly. Invite your
+            whole team at no extra charge, and set a spending cap so a busy month never surprises you. Built in Pakistan,
+            Syncbay aims to cost less than US providers.
           </p>
-
-          {/* Billing Cycle Toggle */}
-          <div className="inline-flex items-center p-1.5 rounded-xl bg-zinc-900 border border-zinc-800">
-            <button
-              onClick={() => setBillingCycle("monthly")}
-              className={`px-5 py-2 rounded-lg text-xs font-mono font-bold transition-all ${
-                billingCycle === "monthly"
-                  ? "bg-zinc-800 text-white shadow-sm"
-                  : "text-zinc-400 hover:text-zinc-200"
-              }`}
-            >
-              Monthly Billing
-            </button>
-            <button
-              onClick={() => setBillingCycle("annual")}
-              className={`px-5 py-2 rounded-lg text-xs font-mono font-bold transition-all flex items-center gap-2 ${
-                billingCycle === "annual"
-                  ? "bg-cyan-500 text-black shadow-sm"
-                  : "text-zinc-400 hover:text-zinc-200"
-              }`}
-            >
-              <span>Annual Billing</span>
-              <span className="px-1.5 py-0.5 rounded text-[10px] bg-black/20 text-black uppercase font-black">
-                Save 20%
-              </span>
-            </button>
-          </div>
         </div>
 
-        {/* ── PRICING CARDS ── */}
+        {/* ── HOW BILLING WORKS ── */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 font-mono">
-          {/* 1. HOBBY */}
+          {/* 1. SIGN UP */}
           <div className="rounded-2xl border border-zinc-800 bg-zinc-950/80 backdrop-blur-xl p-6 flex flex-col justify-between hover:border-zinc-700 transition-colors">
             <div>
-              <div className="text-xs uppercase tracking-widest text-zinc-400 mb-1">Hobby</div>
-              <div className="text-3xl font-black text-white font-sans mb-2">$0</div>
+              <div className="text-xs uppercase tracking-widest text-zinc-400 mb-1">Sign Up</div>
+              <div className="text-3xl font-black text-white font-sans mb-2">No card</div>
               <p className="text-xs text-zinc-400 font-sans leading-relaxed mb-6">
-                Forever free. Ideal for side projects, personal experiments, and prototypes.
+                Create an account with GitHub, Google or email. A card is only needed when you add credits or pay an invoice.
               </p>
 
               <div className="border-t border-zinc-800/80 pt-6 space-y-3 text-xs text-zinc-300 font-sans">
                 <div className="flex items-center gap-2">
-                  <span className="text-emerald-400">✓</span> 3 Active Services
+                  <span className="text-emerald-400">✓</span> Workspaces with Owner, Admin, Member, Viewer
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-emerald-400">✓</span> 1 Managed PostgreSQL DB (1 GB)
+                  <span className="text-emerald-400">✓</span> No per-seat charge
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-emerald-400">✓</span> 100 GB Edge Network Egress
+                  <span className="text-emerald-400">✓</span> One-click open-source templates
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-emerald-400">✓</span> 6 Global Edge POPs (TLS 1.3)
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-emerald-400">✓</span> Automated SSL &amp; Custom Domains
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-emerald-400">✓</span> Automated Git CI/CD Builds
+                  <span className="text-emerald-400">✓</span> Custom domains with TLS via Cloudflare
                 </div>
               </div>
             </div>
@@ -157,58 +128,40 @@ export default function PricingPage() {
               href="/auth/signin"
               className="mt-8 block text-center py-3 px-4 rounded-xl border border-zinc-700 hover:border-zinc-500 text-white text-xs font-bold transition-colors"
             >
-              Start Free
+              Create Account
             </Link>
           </div>
 
-          {/* 2. PRO (HIGHLIGHTED) */}
+          {/* 2. USAGE (HIGHLIGHTED) */}
           <div className="rounded-2xl border-2 border-cyan-500 bg-gradient-to-b from-cyan-950/40 via-zinc-950/90 to-black backdrop-blur-xl p-6 flex flex-col justify-between shadow-[0_0_35px_rgba(6,182,212,0.25)] relative">
             <div className="absolute -top-3 left-1/2 transform -translate-x-1/2 px-3 py-0.5 rounded-full bg-cyan-400 text-black text-[10px] font-black uppercase tracking-wider shadow-md">
-              Most Popular · Best Value
+              How You Pay
             </div>
 
             <div>
-              <div className="text-xs uppercase tracking-widest text-cyan-400 mb-1">Pro Developer</div>
+              <div className="text-xs uppercase tracking-widest text-cyan-400 mb-1">Usage</div>
               <div className="flex items-baseline gap-1 mb-2">
-                <span className="text-4xl font-black text-white font-sans">
-                  ${billingCycle === "annual" ? "15" : "18"}
-                </span>
-                <span className="text-xs text-zinc-400">/ month</span>
+                <span className="text-4xl font-black text-white font-sans">Metered</span>
+                <span className="text-xs text-zinc-400">/ hour</span>
               </div>
               <p className="text-xs text-zinc-300 font-sans leading-relaxed mb-6">
-                Engineered for serious developers and startups who refuse to pay Vercel&apos;s $20/seat tax.
+                Usage is recorded per service for every completed hour and priced with the rate card below.
               </p>
 
               <div className="border-t border-cyan-500/30 pt-6 space-y-3 text-xs text-zinc-200 font-sans">
-                <div className="flex items-center gap-2 font-bold text-white">
-                  <span className="text-cyan-400">✓</span> Unlimited Services &amp; Projects
-                </div>
-                <div className="flex items-center gap-2 font-bold text-cyan-300">
-                  <span className="text-cyan-400">✓</span> Unlimited Team Seats (Zero Seat Tax!)
+                {METERED.map((type) => (
+                  <div key={type} className="flex items-center gap-2">
+                    <span className="text-cyan-400">✓</span> {USAGE_RATE_CARD[type].label}: {formatRateDollars(type)} / {USAGE_RATE_CARD[type].unit}
+                  </div>
+                ))}
+                <div className="flex items-center gap-2">
+                  <span className="text-cyan-400">✓</span> Prepaid credits are applied first
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-cyan-400">✓</span> 0ms Cold Start Latency (Edge Containers)
+                  <span className="text-cyan-400">✓</span> Monthly Stripe invoice with a hosted receipt
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-cyan-400">✓</span> 500 GB Fast Edge Egress ($0.04/GB)
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-cyan-400">✓</span> Scale-to-Zero Auto-Sleep (0 vCPU idle)
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-cyan-400">✓</span> Attached Managed PostgreSQL + Redis + MySQL
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-cyan-400">✓</span> Interactive Web Shell &amp; SQL Studio
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-cyan-400">✓</span> Ephemeral PR Previews with Env Clones
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-cyan-400">✓</span> Blue/Green Zero-Downtime Rollback
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-cyan-400">✓</span> Automated Edge Crons &amp; Webhooks
+                  <span className="text-cyan-400">✓</span> Paused services stop accruing compute
                 </div>
               </div>
             </div>
@@ -217,69 +170,87 @@ export default function PricingPage() {
               href="/auth/signin"
               className="mt-8 block text-center py-3.5 px-4 rounded-xl bg-cyan-400 hover:bg-cyan-300 text-black text-xs font-extrabold transition-all shadow-[0_0_20px_rgba(6,182,212,0.4)]"
             >
-              Deploy on Pro →
+              Start Deploying →
             </Link>
           </div>
 
-          {/* 3. ENTERPRISE */}
+          {/* 3. SPENDING CAPS */}
           <div className="rounded-2xl border border-zinc-800 bg-zinc-950/80 backdrop-blur-xl p-6 flex flex-col justify-between hover:border-zinc-700 transition-colors">
             <div>
-              <div className="text-xs uppercase tracking-widest text-fuchsia-400 mb-1">Enterprise</div>
+              <div className="text-xs uppercase tracking-widest text-fuchsia-400 mb-1">Spending Cap</div>
               <div className="flex items-baseline gap-1 mb-2">
-                <span className="text-4xl font-black text-white font-sans">
-                  ${billingCycle === "annual" ? "360" : "450"}
-                </span>
-                <span className="text-xs text-zinc-400">/ month</span>
+                <span className="text-4xl font-black text-white font-sans">You set it</span>
               </div>
               <p className="text-xs text-zinc-400 font-sans leading-relaxed mb-6">
-                Isolated infrastructure, custom SLAs, and American regulatory compliance guarantees.
+                A monthly limit per workspace, checked as usage is recorded.
               </p>
 
               <div className="border-t border-zinc-800/80 pt-6 space-y-3 text-xs text-zinc-300 font-sans">
-                <div className="flex items-center gap-2 font-bold text-white">
-                  <span className="text-fuchsia-400">✓</span> Dedicated Isolated Edge POPs
+                <div className="flex items-center gap-2">
+                  <span className="text-fuchsia-400">✓</span> Email to owners and admins at 80%
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-fuchsia-400">✓</span> 99.99% Uptime Guarantee SLA
+                  <span className="text-fuchsia-400">✓</span> Running services pause at 100%
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-fuchsia-400">✓</span> Immutable Audit Log Streaming
+                  <span className="text-fuchsia-400">✓</span> Sleeping services do not wake past the cap
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-fuchsia-400">✓</span> 24/7 Dedicated DevOps Engineer Support
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-fuchsia-400">✓</span> 5,000 GB Edge Network Egress
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-fuchsia-400">✓</span> Custom VPC Peering &amp; Private IP
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-fuchsia-400">✓</span> SOC2 Type II &amp; HIPAA Documents
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-fuchsia-400">✓</span> Invoiced Billing &amp; Custom Spending Caps
+                  <span className="text-fuchsia-400">✓</span> Month-to-date usage in the dashboard
                 </div>
               </div>
             </div>
 
             <a
-              href="mailto:sales@syncbay.app"
+              href="mailto:support@syncbay.app"
               className="mt-8 block text-center py-3 px-4 rounded-xl border border-zinc-700 hover:border-zinc-500 text-white text-xs font-bold transition-colors"
             >
-              Contact Enterprise
+              Questions? Email Us
             </a>
           </div>
         </div>
 
-        {/* ── INTERACTIVE VALUE SAVINGS CALCULATOR ── */}
+        {/* ── RATE CARD ── */}
+        <section id="rates" className="rounded-3xl border border-zinc-800 bg-zinc-950/90 p-8 sm:p-12">
+          <div className="max-w-3xl mb-8">
+            <h2 className="text-2xl sm:text-3xl font-black text-white tracking-tight">Rate Card</h2>
+            <p className="text-xs sm:text-sm text-zinc-400 mt-2">
+              The same rates power invoices, spending caps and the usage page. Rows marked “metered” are recorded today.
+            </p>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs font-mono" style={{ minWidth: "520px" }}>
+              <thead>
+                <tr className="border-b border-zinc-800 text-zinc-400 uppercase">
+                  <th className="py-3 pr-4">Resource</th>
+                  <th className="py-3 pr-4">Price</th>
+                  <th className="py-3">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(Object.keys(USAGE_RATE_CARD) as UsageResourceType[]).map((type) => (
+                  <tr key={type} className="border-b border-zinc-900">
+                    <td className="py-3 pr-4 text-zinc-200">{USAGE_RATE_CARD[type].label}</td>
+                    <td className="py-3 pr-4 text-cyan-300 font-bold">
+                      {formatRateDollars(type)} / {USAGE_RATE_CARD[type].unit}
+                    </td>
+                    <td className="py-3 text-zinc-400">{METERED.includes(type) ? "Metered" : "Not metered yet"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        {/* ── COST ESTIMATOR ── */}
         <section id="calculator" className="rounded-3xl border border-zinc-800 bg-zinc-950/90 p-8 sm:p-12">
           <div className="max-w-3xl mb-10">
             <h2 className="text-2xl sm:text-3xl font-black text-white tracking-tight">
-              Interactive Cost Comparison Calculator
+              Cost Estimator
             </h2>
             <p className="text-xs sm:text-sm text-zinc-400 mt-2">
-              See what your team actually pays on Vercel and Railway vs Syncbay’s transparent edge model.
+              Estimate one always-on service for a {HOURS_PER_MONTH}-hour month with the rate card above. Your bill
+              follows what your service actually uses.
             </p>
           </div>
 
@@ -288,39 +259,41 @@ export default function PricingPage() {
             <div className="space-y-6 font-mono text-xs">
               <div>
                 <div className="flex justify-between text-zinc-300 mb-2">
-                  <span>Team Collaborators:</span>
-                  <strong className="text-cyan-400 text-sm font-sans">{calcSeats} Seats</strong>
+                  <span>Average active vCPU:</span>
+                  <strong className="text-cyan-400 text-sm font-sans">{calcVcpu.toFixed(2)} vCPU</strong>
                 </div>
                 <input
                   type="range"
-                  min={1}
-                  max={40}
-                  value={calcSeats}
-                  onChange={(e) => setCalcSeats(parseInt(e.target.value, 10))}
+                  min={0.05}
+                  max={2}
+                  step={0.05}
+                  value={calcVcpu}
+                  onChange={(e) => setCalcVcpu(parseFloat(e.target.value))}
                   className="w-full accent-cyan-400 cursor-pointer"
                 />
                 <div className="flex justify-between text-[10px] text-zinc-500 mt-1">
-                  <span>1 dev</span>
-                  <span>40 devs</span>
+                  <span>0.05 vCPU</span>
+                  <span>2 vCPU</span>
                 </div>
               </div>
 
               <div>
                 <div className="flex justify-between text-zinc-300 mb-2">
-                  <span>Active Services &amp; APIs:</span>
-                  <strong className="text-cyan-400 text-sm font-sans">{calcServices} Services</strong>
+                  <span>Memory:</span>
+                  <strong className="text-cyan-400 text-sm font-sans">{calcMemGib.toFixed(2)} GiB</strong>
                 </div>
                 <input
                   type="range"
-                  min={1}
-                  max={25}
-                  value={calcServices}
-                  onChange={(e) => setCalcServices(parseInt(e.target.value, 10))}
+                  min={0.125}
+                  max={4}
+                  step={0.125}
+                  value={calcMemGib}
+                  onChange={(e) => setCalcMemGib(parseFloat(e.target.value))}
                   className="w-full accent-cyan-400 cursor-pointer"
                 />
                 <div className="flex justify-between text-[10px] text-zinc-500 mt-1">
-                  <span>1 service</span>
-                  <span>25 services</span>
+                  <span>0.125 GiB</span>
+                  <span>4 GiB</span>
                 </div>
               </div>
 
@@ -331,95 +304,81 @@ export default function PricingPage() {
                 </div>
                 <input
                   type="range"
-                  min={50}
-                  max={2000}
-                  step={50}
+                  min={0}
+                  max={500}
+                  step={5}
                   value={calcEgressGb}
                   onChange={(e) => setCalcEgressGb(parseInt(e.target.value, 10))}
                   className="w-full accent-cyan-400 cursor-pointer"
                 />
                 <div className="flex justify-between text-[10px] text-zinc-500 mt-1">
-                  <span>50 GB</span>
-                  <span>2,000 GB</span>
+                  <span>0 GB</span>
+                  <span>500 GB</span>
                 </div>
               </div>
             </div>
 
-            {/* Live Comparison Output */}
+            {/* Estimate Output */}
             <div className="p-8 rounded-2xl border border-cyan-500/30 bg-cyan-950/20 backdrop-blur-xl space-y-6">
               <div className="grid grid-cols-3 gap-4 text-center">
-                <div className="p-3 rounded-xl bg-zinc-900/80 border border-zinc-800">
-                  <div className="text-[10px] uppercase text-zinc-400 font-mono mb-1">Vercel Pro</div>
-                  <div className="text-xl font-extrabold text-red-400 font-sans">${vercelMonthly.toFixed(0)}</div>
-                  <div className="text-[10px] text-zinc-500">/ mo</div>
-                </div>
-
-                <div className="p-3 rounded-xl bg-zinc-900/80 border border-zinc-800">
-                  <div className="text-[10px] uppercase text-zinc-400 font-mono mb-1">Railway</div>
-                  <div className="text-xl font-extrabold text-amber-400 font-sans">${railwayMonthly.toFixed(0)}</div>
-                  <div className="text-[10px] text-zinc-500">/ mo</div>
-                </div>
-
-                <div className="p-3 rounded-xl bg-cyan-500/10 border-2 border-cyan-400">
-                  <div className="text-[10px] uppercase text-cyan-300 font-mono font-bold mb-1">Syncbay</div>
-                  <div className="text-2xl font-black text-cyan-300 font-sans">${syncbayMonthly.toFixed(0)}</div>
-                  <div className="text-[10px] text-cyan-400 font-bold">/ mo</div>
-                </div>
+                {METERED.map((type) => (
+                  <div key={type} className="p-3 rounded-xl bg-zinc-900/80 border border-zinc-800">
+                    <div className="text-[10px] uppercase text-zinc-400 font-mono mb-1">{USAGE_RATE_CARD[type].unit}</div>
+                    <div className="text-xl font-extrabold text-cyan-300 font-sans">{dollars(lineCents[type as keyof typeof lineCents])}</div>
+                    <div className="text-[10px] text-zinc-500">/ mo</div>
+                  </div>
+                ))}
               </div>
 
               <div className="p-4 rounded-xl bg-emerald-950/30 border border-emerald-500/40 text-center">
                 <div className="text-xs text-emerald-300 font-mono font-bold mb-1">
-                  Estimated Annual Savings with Syncbay:
+                  Estimated monthly total:
                 </div>
                 <div className="text-3xl font-black text-emerald-400 font-sans">
-                  ${annualSavingsVercel.toLocaleString(undefined, { maximumFractionDigits: 0 })} / year
+                  {dollars(totalCents)} / month
                 </div>
                 <div className="text-[11px] text-zinc-400 mt-1 font-sans">
-                  Saved vs Vercel (${(annualSavingsRailway).toLocaleString(undefined, { maximumFractionDigits: 0 })}/yr saved vs Railway)
+                  Computed with the same function invoices use; each line is rounded to whole cents.
                 </div>
               </div>
             </div>
           </div>
         </section>
 
-        {/* ── COMPETITOR FEATURE BREAKDOWN MATRIX ── */}
-        <section id="comparison">
-          <ComparisonTable />
-        </section>
-
-        {/* ── OFFICIAL AMERICAN COMPANY & HEADQUARTERS SECTION ── */}
-        <section id="us-company" className="rounded-3xl border border-zinc-800 bg-zinc-950/90 p-8 sm:p-12 relative overflow-hidden">
+        {/* ── WHO BUILDS SYNCBAY ── */}
+        <section id="about" className="rounded-3xl border border-zinc-800 bg-zinc-950/90 p-8 sm:p-12 relative overflow-hidden">
           <div className="absolute right-0 top-0 bottom-0 w-1/3 bg-gradient-to-l from-cyan-950/20 to-transparent pointer-events-none" />
 
           <div className="max-w-2xl relative z-10">
             <div className="flex items-center gap-2 text-xs font-mono text-cyan-400 mb-4">
-              <span className="text-xl">🇺🇸</span>
-              <span className="font-bold uppercase tracking-wider">Official Corporate Location</span>
+              <span className="text-xl">🇵🇰</span>
+              <span className="font-bold uppercase tracking-wider">Who Builds Syncbay</span>
             </div>
 
             <h2 className="text-3xl font-black text-white tracking-tight mb-4 font-sans">
-              Proudly Engineered in the United States
+              Built in Pakistan by MSNS-DEV
             </h2>
 
             <p className="text-sm text-zinc-300 leading-relaxed font-sans mb-6">
-              Syncbay is developed and operated by <strong>Syncbay Technologies Inc.</strong>, an American corporation
-              headquartered in the heart of San Francisco&apos;s Financial District. Our edge cloud orchestration
-              and container backbones comply with strict US data privacy and SOC2 readiness standards.
+              Syncbay is built by <strong>MSNS-DEV</strong>, a team in Pakistan. We aim to offer lower prices than US
+              providers while keeping the platform honest: the rates on this page are the rates on your invoice.
             </p>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs font-mono">
               <div className="p-4 rounded-xl bg-zinc-900/80 border border-zinc-800">
-                <div className="text-zinc-500 uppercase text-[10px] mb-1">Corporate Headquarters</div>
-                <div className="text-white font-bold">Syncbay Technologies Inc.</div>
-                <div className="text-zinc-400">548 Market St, Suite 82194</div>
-                <div className="text-zinc-400">San Francisco, CA 94104, United States</div>
+                <div className="text-zinc-500 uppercase text-[10px] mb-1">Open Source Templates</div>
+                <a href="https://github.com/MSNS-DEV" target="_blank" rel="noreferrer" className="text-white font-bold hover:text-cyan-300">
+                  github.com/MSNS-DEV ↗
+                </a>
+                <div className="text-zinc-400">Starter apps with syncbay.json</div>
               </div>
 
               <div className="p-4 rounded-xl bg-zinc-900/80 border border-zinc-800">
-                <div className="text-zinc-500 uppercase text-[10px] mb-1">Legal Jurisdiction</div>
-                <div className="text-white font-bold">State of Delaware, USA</div>
-                <div className="text-zinc-400">C-Corporation Registration</div>
-                <div className="text-zinc-400">US Cloud Sovereignty Guaranteed</div>
+                <div className="text-zinc-500 uppercase text-[10px] mb-1">Contact</div>
+                <a href="mailto:support@syncbay.app" className="text-white font-bold hover:text-cyan-300">
+                  support@syncbay.app
+                </a>
+                <div className="text-zinc-400">Billing and account questions</div>
               </div>
             </div>
           </div>
@@ -430,9 +389,9 @@ export default function PricingPage() {
       <footer className="border-t border-zinc-900 bg-black/95 py-12 px-4 sm:px-6">
         <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-6 text-xs text-zinc-500 font-mono">
           <div className="flex flex-col sm:flex-row items-center gap-2 sm:gap-4">
-            <span className="text-white font-bold">SYNCBAY TECHNOLOGIES INC.</span>
-            <span>• San Francisco, CA, USA</span>
-            <span>• Fair Cloud Economics</span>
+            <span className="text-white font-bold">SYNCBAY</span>
+            <span>• Built in Pakistan by MSNS-DEV</span>
+            <span>• Usage-based pricing</span>
           </div>
 
           <div className="flex items-center space-x-6">
@@ -445,10 +404,6 @@ export default function PricingPage() {
             <a href="mailto:support@syncbay.app" className="hover:text-white transition-colors">
               Contact Support
             </a>
-            <span className="text-emerald-400 flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-              6/6 POPs Operational
-            </span>
           </div>
         </div>
       </footer>
