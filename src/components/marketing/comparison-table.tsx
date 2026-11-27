@@ -100,7 +100,7 @@ const FEATURES: CapabilityRow[] = [
     name: "Per-seat fees",
     category: "Cost & Transparency",
     syncbay: "None",
-    detail: "Billing is usage only: compute, memory, disk, egress and storage",
+    detail: "Billing is usage only, from one rate card: compute, memory and network egress",
     highlight: true,
   },
   {

@@ -44,7 +44,7 @@ export function TemplatesCatalog() {
             color: "#c084fc",
           }}
         >
-          ⚡ Instant Architecture
+          ⚡ Open Source Starters
         </div>
         <h2 className="text-3xl sm:text-4xl font-black text-white tracking-tight mb-3">
           1-Click Production Templates
