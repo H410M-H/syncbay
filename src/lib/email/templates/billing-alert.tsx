@@ -60,7 +60,7 @@ export const BillingAlertEmail = ({
             <Section className="mt-8 text-center">
               <Hr className="border-[#27272a] mb-6" />
               <Text className="text-[#71717a] text-xs">
-                Syncbay Technologies Inc., 548 Market St, Suite 82194, San Francisco, CA 94104
+                Syncbay · Built in Pakistan by MSNS-DEV
               </Text>
             </Section>
           </Container>

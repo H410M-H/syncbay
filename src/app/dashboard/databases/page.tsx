@@ -151,8 +151,8 @@ export default function DatabasesPage() {
           </div>
           <h3 style={{ fontSize: "1.25rem", marginBottom: "8px" }}>No Managed Databases</h3>
           <p style={{ color: "var(--text-secondary)", maxWidth: "480px", margin: "0 auto 20px" }}>
-            Provision a high-performance PostgreSQL or Redis instance with automatic daily backups,
-            0ms local latency, and connection string injection into your microservices.
+            Provision PostgreSQL, Redis/Valkey or MySQL on your runner, with the connection string
+            injected into your services.
           </p>
           <Link href="/dashboard/databases/new" className="btn btn-primary">
             Provision Database Cluster

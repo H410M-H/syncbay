@@ -386,10 +386,10 @@ export function DashboardShell({ user, children }: DashboardShellProps) {
             <span style={{ fontWeight: 800 }}>Syncbay</span>
           </Link>
 
-          {/* Official American Company Badge */}
-          <span className="us-badge hide-on-mobile" title="Engineered in San Francisco, California · US Cloud Infrastructure">
-            <span>🇺🇸</span>
-            <span>US Cloud</span>
+          {/* Maker Badge */}
+          <span className="us-badge hide-on-mobile" title="Built in Pakistan by MSNS-DEV">
+            <span>🇵🇰</span>
+            <span>MSNS-DEV</span>
           </span>
 
           {/* Dynamic Workspace Switcher Dropdown in Topbar */}
