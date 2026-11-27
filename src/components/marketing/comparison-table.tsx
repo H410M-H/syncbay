@@ -4,107 +4,119 @@ import React from "react";
 import Image from "next/image";
 import { TiltCard } from "@/components/ui/tilt-card";
 
-interface ComparisonFeature {
+interface CapabilityRow {
   name: string;
   category: string;
   syncbay: string;
-  vercel: string;
-  railway: string;
+  detail: string;
   highlight?: boolean;
 }
 
-const FEATURES: ComparisonFeature[] = [
+// Only what the code does today; no competitor figures.
+const FEATURES: CapabilityRow[] = [
   {
-    name: "Container Cold Starts",
-    category: "Compute & Architecture",
-    syncbay: "0 ms (Edge Containers)",
-    vercel: "250 – 800 ms (Serverless)",
-    railway: "2,000 – 5,000 ms (Spin-up)",
+    name: "Always-on services",
+    category: "Compute & Builds",
+    syncbay: "Default",
+    detail: "Services keep running, so no cold start; opt-in scale-to-zero wakes on the next request",
     highlight: true,
   },
   {
-    name: "Multi-Region Edge Failover",
-    category: "Compute & Architecture",
-    syncbay: "6 Tier-1 Global Edge POPs",
-    vercel: "Serverless Edge Functions only",
-    railway: "Single region per service",
-    highlight: true,
+    name: "Build strategies",
+    category: "Compute & Builds",
+    syncbay: "Dockerfile · template · Nixpacks",
+    detail: "Your Dockerfile first, then a Syncbay-generated Dockerfile for the detected stack, then Nixpacks",
   },
   {
-    name: "Managed Serverless PostgreSQL",
+    name: "Bring your own server",
+    category: "Compute & Builds",
+    syncbay: "Supported",
+    detail: "Run the Syncbay runner daemon on your own Linux host and connect it to the control plane",
+  },
+  {
+    name: "Managed PostgreSQL (pgvector)",
     category: "Databases & Storage",
-    syncbay: "Built-in, 1-Click Provisioning",
-    vercel: "Third-party Neon Add-on",
-    railway: "Raw Docker Container",
+    syncbay: "Built in",
+    detail: "Provisioned on the runner; DATABASE_URL injected into your services",
   },
   {
-    name: "Managed Redis / Valkey Cache",
+    name: "Redis / Valkey and MySQL",
     category: "Databases & Storage",
-    syncbay: "Built-in with Connection Helpers",
-    vercel: "Third-party Upstash Add-on",
-    railway: "Separate Service Billing",
+    syncbay: "Built in",
+    detail: "Provisioned on the runner and health-checked",
   },
   {
-    name: "Interactive Web Terminal Shell",
+    name: "Buckets and volumes",
+    category: "Databases & Storage",
+    syncbay: "Cloudflare R2 · volumes",
+    detail: "Private R2 buckets with presigned links; persistent volumes mounted into services",
+  },
+  {
+    name: "In-browser shell",
     category: "Developer Experience",
-    syncbay: "Full VT100 Interactive Shell",
-    vercel: "Not Available",
-    railway: "CLI Only (No Web Shell)",
+    syncbay: "Built in",
+    detail: "A shell inside the running container; secret values masked in the output",
     highlight: true,
   },
   {
-    name: "Built-in SQL Query Studio",
+    name: "Query Studio and Data view",
     category: "Developer Experience",
-    syncbay: "Visual Query Studio + Schema Tree",
-    vercel: "Third-party Dashboard",
-    railway: "Basic Table View",
+    syncbay: "Read-only by default",
+    detail: "Test connections, browse tables, keys, bucket folders and volume files",
   },
   {
-    name: "Blue/Green Instant Rollbacks",
+    name: "Zero-downtime releases",
     category: "DevOps & Reliability",
-    syncbay: "Sub-Second Traffic Shift",
-    vercel: "Instant (Serverless only)",
-    railway: "Full Rebuild Required (~3 min)",
+    syncbay: "Health-gated",
+    detail: "The live version serves until the new one answers /health; failed releases leave it up",
     highlight: true,
   },
   {
-    name: "Build Engine",
+    name: "Rollback, restart, pause",
     category: "DevOps & Reliability",
-    syncbay: "Nixpacks + Dockerfile Auto-Detect",
-    vercel: "Proprietary Build Framework",
-    railway: "Nixpacks only",
+    syncbay: "One click",
+    detail: "Roll back to an earlier build; restart in place; pause and resume",
   },
   {
-    name: "Subdomain SSL Routing",
-    category: "Edge Networking",
-    syncbay: "Wildcard TLS 1.3 & HTTP/3 QUIC",
-    vercel: "Let's Encrypt Wildcard",
-    railway: "Standard Let's Encrypt",
+    name: "Automatic restarts",
+    category: "DevOps & Reliability",
+    syncbay: "Health monitor",
+    detail: "Probed every minute; restarted after two consecutive failures",
+  },
+  {
+    name: "Custom domains and TLS",
+    category: "Edge & Security",
+    syncbay: "Via Cloudflare",
+    detail: "DNS-verified domains with TLS; every service also gets a syncbay.app host",
     highlight: true,
   },
   {
-    name: "Team Collaborator Seats",
+    name: "WAF rules, rate limits, canaries",
+    category: "Edge & Security",
+    syncbay: "Built in",
+    detail: "IP/CIDR, country and path rules; per-IP rate limits; weighted canary releases",
+  },
+  {
+    name: "Per-seat fees",
     category: "Cost & Transparency",
-    syncbay: "Unlimited Seats (Free on Pro)",
-    vercel: "$20 / seat / month tax",
-    railway: "$20 / seat on Pro",
+    syncbay: "None",
+    detail: "Billing is usage only: compute, memory, disk, egress and storage",
     highlight: true,
   },
   {
-    name: "Egress Bandwidth Pricing",
+    name: "Spending caps",
     category: "Cost & Transparency",
-    syncbay: "Included Free (0 egress fees)",
-    vercel: "$0.15 / GB overage",
-    railway: "$0.10 / GB overage",
+    syncbay: "Built in",
+    detail: "Email at 80% of your cap; running services pause at 100%",
   },
 ];
 
 const CATEGORIES = [
-  "Compute & Architecture",
+  "Compute & Builds",
   "Databases & Storage",
   "Developer Experience",
   "DevOps & Reliability",
-  "Edge Networking",
+  "Edge & Security",
   "Cost & Transparency",
 ];
 
@@ -121,13 +133,13 @@ export function ComparisonTable() {
             color: "#38bdf8",
           }}
         >
-          ⚔ Platform Comparison
+          ✔ Capability Matrix
         </div>
         <h2 className="text-3xl sm:text-4xl font-black text-white tracking-tight mb-3">
-          Engineered to Outperform Vercel & Railway
+          What Syncbay Does Today
         </h2>
         <p className="text-sm font-medium" style={{ color: "#94a3b8" }}>
-          A side-by-side technical breakdown. Built for modern developers and engineering teams.
+          Every row is a shipped feature, with a line on how it works. No benchmark numbers we cannot back up.
         </p>
       </div>
 
@@ -154,7 +166,7 @@ export function ComparisonTable() {
                 Platform Capability Matrix
               </h3>
               <p className="text-xs mt-1 font-semibold" style={{ color: "#94a3b8" }}>
-                Feature-by-feature architectural comparison
+                Feature by feature, as built
               </p>
             </div>
             <span
@@ -165,7 +177,7 @@ export function ComparisonTable() {
                 border: "1px solid rgba(6, 182, 212, 0.3)",
               }}
             >
-              Syncbay PaaS 2.0
+              Syncbay
             </span>
           </div>
 
@@ -174,13 +186,13 @@ export function ComparisonTable() {
               <thead>
                 <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.12)" }}>
                   <th
-                    className="py-4 px-6 font-bold w-2/5"
+                    className="py-4 px-6 font-bold w-1/4"
                     style={{ color: "#cbd5e1", fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.06em" }}
                   >
-                    Feature
+                    Capability
                   </th>
                   <th
-                    className="py-4 px-6 font-black w-1/5"
+                    className="py-4 px-6 font-black w-1/4"
                     style={{
                       color: "#38bdf8",
                       background: "rgba(6,182,212,0.08)",
@@ -193,11 +205,8 @@ export function ComparisonTable() {
                       <span>Syncbay</span>
                     </span>
                   </th>
-                  <th className="py-4 px-6 font-bold w-1/5" style={{ color: "#94a3b8" }}>
-                    ▲ Vercel
-                  </th>
-                  <th className="py-4 px-6 font-bold w-1/5" style={{ color: "#94a3b8" }}>
-                    🚂 Railway
+                  <th className="py-4 px-6 font-bold w-1/2" style={{ color: "#94a3b8" }}>
+                    How it works
                   </th>
                 </tr>
               </thead>
@@ -213,7 +222,7 @@ export function ComparisonTable() {
                         }}
                       >
                         <td
-                          colSpan={4}
+                          colSpan={3}
                           className="py-2.5 px-6 font-mono font-bold text-[11px] uppercase tracking-wider"
                           style={{ color: "#38bdf8" }}
                         >
@@ -246,8 +255,7 @@ export function ComparisonTable() {
                               {feat.syncbay}
                             </span>
                           </td>
-                          <td className="py-3.5 px-6 text-slate-400 font-medium">{feat.vercel}</td>
-                          <td className="py-3.5 px-6 text-slate-400 font-medium">{feat.railway}</td>
+                          <td className="py-3.5 px-6 text-slate-400 font-medium">{feat.detail}</td>
                         </tr>
                       ))}
                     </React.Fragment>
