@@ -805,9 +805,9 @@ export default function UsagePage() {
           <h4 style={{ fontSize: "1.05rem" }}>Syncbay Scale-to-Zero Architecture</h4>
         </div>
         <p style={{ fontSize: "0.875rem", color: "var(--text-secondary)" }}>
-          Services with <code>scaleToZero: true</code> automatically power down to 0 active replicas when idle for
-          over 300 seconds. When idle, CPU and memory usage drops to zero, saving up to 85% on your monthly bill.
-          Incoming HTTPS requests wake containers up in ~250ms via Cloudflare container routing.
+          Services with <code>scaleToZero: true</code> are stopped after their idle timeout (30 minutes by default),
+          so they stop accruing compute and memory. Visitors then see a start-up page until a workspace member wakes the
+          service. Services are always-on unless you turn this on.
         </p>
       </div>
 

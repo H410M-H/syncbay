@@ -85,7 +85,7 @@ export default function ServicesPage() {
         <div>
           <h1 className="page-title">Edge Microservices</h1>
           <p className="page-subtitle">
-            Containerized web services, APIs, and background workers running with 0ms cold starts.
+            Containerized web services and APIs, always-on by default.
           </p>
         </div>
         <Link href="/dashboard/services/new" className="btn btn-primary">
@@ -209,7 +209,7 @@ export default function ServicesPage() {
                       >
                         <span>Project: {svc.environment?.project?.name || "Default"}</span>
                         <span>•</span>
-                        <span>Scaling: {svc.scaleToZero ? "0ms Cold-Start" : "Always-On"}</span>
+                        <span>Scaling: {svc.scaleToZero ? "Scale-to-Zero" : "Always-On"}</span>
                         <span>•</span>
                         <span>Type: {svc.instanceType || "lite"}</span>
                       </div>

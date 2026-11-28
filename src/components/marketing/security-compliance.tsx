@@ -5,38 +5,38 @@ import { TiltCard } from "@/components/ui/tilt-card";
 
 const SECURITY_PILLARS = [
   {
-    icon: "🔒",
-    title: "SOC 2 Type II & US Infrastructure",
+    icon: "🌐",
+    title: "Cloudflare in Front, Tunnel Behind",
     description:
-      "Engineered on Tier-1 American data centers in San Francisco, N. Virginia, and Frankfurt. Full data isolation, strict hardware boundaries, and automated compliance auditing.",
-    badge: "SOC 2 Ready",
+      "Traffic reaches your service through Cloudflare, with TLS on your syncbay.app host and on DNS-verified custom domains. The runner host is reached over a Cloudflare Tunnel, so your app's own port does not need to be public.",
+    badge: "Cloudflare",
     color: "#38BDF8",
     glowColor: "rgba(56, 189, 248, 0.3)",
   },
   {
     icon: "🛡️",
-    title: "Cloudflare Enterprise DDoS & WAF",
+    title: "Edge Rules & Rate Limits",
     description:
-      "Layer 3, 4, and 7 DDoS protection built-in by default. Intelligent Web Application Firewall blocks botnets, SQL injections, and zero-day exploits before reaching your containers.",
-    badge: "Layer 7 Shield",
+      "Per-service WAF rules evaluated by the Syncbay edge proxy: IP allow and block lists (IPv4/IPv6 CIDR), country blocks, path blocks and per-IP rate limits, answering 403 or 429 before a request reaches your app.",
+    badge: "WAF Rules",
     color: "#8B5CF6",
     glowColor: "rgba(139, 92, 246, 0.3)",
   },
   {
     icon: "🔐",
-    title: "End-to-End Encryption & KMS",
+    title: "Secrets Stay Out of Logs",
     description:
-      "All environment variables and database credentials are encrypted at rest with AES-256-GCM. Traffic in-transit is enforced with TLS 1.3 and automatic certificate rotation.",
-    badge: "AES-256-GCM",
+      "Environment values never appear on a command line or in a build log, credentials in URLs and GitHub tokens are redacted from every log line, and the web shell masks secret values. Control plane and runner talk over HMAC-signed, single-use requests.",
+    badge: "Redacted",
     color: "#10B981",
     glowColor: "rgba(16, 185, 129, 0.3)",
   },
   {
     icon: "👥",
-    title: "Granular RBAC & Audit Trails",
+    title: "Roles & Audit Log",
     description:
-      "Fine-grained permissions for Owners, Members, and Viewers. Immutable audit logging records every deployment, secret mutation, database query, and terminal session.",
-    badge: "Audit Stream",
+      "Owner, Admin, Member and Viewer roles per workspace. Viewers cannot run queries or see database passwords. The workspace audit log records invites, role changes, API tokens, rollbacks and automatic restarts.",
+    badge: "Audit Log",
     color: "#F59E0B",
     glowColor: "rgba(245, 158, 11, 0.3)",
   },
@@ -59,10 +59,10 @@ export function SecurityCompliance() {
           <span>🛡️ Trust & Security</span>
         </div>
         <h2 className="text-3xl sm:text-4xl md:text-5xl font-black text-white tracking-tight mb-4">
-          Enterprise Security without the Enterprise Bloat
+          Security Built Into the Platform
         </h2>
         <p className="text-base sm:text-lg font-medium leading-relaxed" style={{ color: "#94a3b8" }}>
-          Built for security-conscious engineering teams. Rest easy with encrypted secret stores, zero-trust container sandboxes, and 99.99% uptime guarantees.
+          What Syncbay does to protect your apps and credentials today — no certifications or uptime guarantees we cannot back up.
         </p>
       </div>
 
@@ -111,10 +111,10 @@ export function SecurityCompliance() {
               </div>
 
               <div className="mt-6 pt-4 border-t border-white/10 flex items-center justify-between text-xs font-mono">
-                <span className="text-slate-400">Strict Isolation</span>
+                <span className="text-slate-400">Shipped</span>
                 <span className="text-emerald-400 font-bold flex items-center gap-1.5">
                   <span className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_#34d399]" />
-                  Active Enforcement
+                  In the product
                 </span>
               </div>
             </div>
@@ -137,10 +137,10 @@ export function SecurityCompliance() {
           </div>
           <div>
             <h4 className="text-base font-black text-white mb-1">
-              99.99% Financial Uptime Service Level Agreement (SLA)
+              Spending Caps Instead of Surprise Bills
             </h4>
             <p className="text-xs text-slate-300 font-medium">
-              We stand behind our multi-region edge mesh with contractually backed financial service credits.
+              Set a monthly cap: owners and admins get an email at 80%, and running services pause at 100%.
             </p>
           </div>
         </div>
@@ -154,7 +154,7 @@ export function SecurityCompliance() {
             boxShadow: "0 0 20px rgba(6, 182, 212, 0.3)",
           }}
         >
-          View Enterprise Terms →
+          See Usage Pricing →
         </a>
       </div>
     </section>

@@ -7,14 +7,14 @@ import { SignInForm } from "./signin-form";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "Sign In — Syncbay Cloud Hyper-Plane",
-  description: "Sign in to your Syncbay account. Access your global edge container deployments, managed PostgreSQL databases, and interactive web shell.",
+  title: "Sign In",
+  description: "Sign in to Syncbay with GitHub, Google or email to manage your services, deployments, managed databases and web shell.",
   alternates: {
     canonical: "https://www.syncbay.app/auth/signin",
   },
   openGraph: {
-    title: "Sign In to Syncbay — The Cloud Hyper-Plane for Developers",
-    description: "Manage high-performance edge containers, serverless Postgres, and instant preview deployments.",
+    title: "Sign In to Syncbay",
+    description: "Manage your services, managed databases and PR preview deployments.",
     url: "https://www.syncbay.app/auth/signin",
   },
 };

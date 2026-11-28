@@ -9,7 +9,7 @@ export async function GET() {
       title: "Syncbay PaaS Public API",
       version: "1.0.0",
       description:
-        "Public REST API for automating deployments, managing services, and querying infrastructure on the Syncbay Cloud Hyper-Plane.",
+        "Public REST API for automating deployments, managing projects and services, and listing managed databases on Syncbay.",
       contact: {
         name: "Syncbay Platform Engineering",
         url: "https://www.syncbay.app",

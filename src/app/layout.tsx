@@ -26,36 +26,33 @@ function getBaseUrl() {
 
 export const metadata: Metadata = {
   title: {
-    default: "Syncbay — The Cloud Hyper-Plane for Developers | Next-Gen PaaS",
-    template: "%s — Syncbay PaaS",
+    default: "Syncbay — Hybrid PaaS: Deploy GitHub Repos with Zero-Downtime Releases",
+    template: "%s — Syncbay",
   },
   description:
-    "Syncbay is the developer PaaS engineered to surpass Vercel and Railway. Deploy any Dockerfile or Nixpacks app to 6 global edge POPs with 0ms cold starts, attached managed PostgreSQL, interactive Web Shell, and SQL Query Studio.",
+    "Syncbay is a hybrid PaaS by MSNS-DEV. Deploy GitHub repos (Dockerfile, Syncbay-generated Dockerfiles or Nixpacks) to Syncbay runner hosts behind Cloudflare, with health-checked zero-downtime releases, managed PostgreSQL, Redis and MySQL, Cloudflare R2 buckets, an in-browser shell and Query Studio.",
   keywords: [
     "PaaS",
-    "Cloud Platform",
-    "Vercel Alternative",
-    "Railway Alternative",
-    "Render Alternative",
-    "Fly.io Alternative",
-    "Heroku Alternative",
+    "Hybrid PaaS",
     "Docker Deployment",
+    "Deploy from GitHub",
+    "Nixpacks",
     "Managed PostgreSQL",
-    "Serverless Containers",
-    "Edge Containers",
-    "Nixpacks Cloud",
-    "Developer Cloud",
-    "Zero Cold Starts",
-    "Cloud Hyper-Plane",
-    "Interactive Web Shell",
+    "pgvector",
+    "Managed Redis",
+    "Valkey",
+    "Managed MySQL",
+    "Cloudflare R2",
+    "PR Preview Environments",
+    "Zero-Downtime Deploys",
+    "Web Shell",
     "SQL Query Studio",
     "Next.js Hosting",
-    "Fast Cloud Deployment",
-    "Edge Anycast Mesh",
+    "Bring Your Own Server",
   ],
-  authors: [{ name: "Syncbay Engineering", url: "https://www.syncbay.app" }],
-  creator: "Syncbay Technologies Inc.",
-  publisher: "Syncbay Technologies Inc.",
+  authors: [{ name: "MSNS-DEV", url: "https://github.com/MSNS-DEV" }],
+  creator: "MSNS-DEV",
+  publisher: "MSNS-DEV",
   metadataBase: new URL(getBaseUrl()),
   alternates: {
     canonical: "https://www.syncbay.app",
@@ -79,16 +76,16 @@ export const metadata: Metadata = {
     type: "website",
     locale: "en_US",
     url: "https://www.syncbay.app",
-    title: "Syncbay — The Cloud Hyper-Plane for Modern Developers",
+    title: "Syncbay — Hybrid PaaS for GitHub Deploys",
     description:
-      "Deploy any repo to 6 global edge POPs in seconds. Managed PostgreSQL, Redis cache, live web terminal shell, and embedded SQL query studio.",
+      "Push to deploy on Syncbay runner hosts behind Cloudflare. Health-checked zero-downtime releases, managed PostgreSQL, Redis and MySQL, R2 buckets, web shell and Query Studio.",
     siteName: "Syncbay",
     images: [
       {
         url: "https://www.syncbay.app/og-image.png",
         width: 1200,
         height: 630,
-        alt: "Syncbay — The Cloud Hyper-Plane for Modern Developers",
+        alt: "Syncbay — Hybrid PaaS for GitHub Deploys",
         type: "image/png",
       },
       {
@@ -102,11 +99,9 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    site: "@syncbayapp",
-    creator: "@syncbayapp",
-    title: "Syncbay — The Cloud Hyper-Plane for Modern Developers",
+    title: "Syncbay — Hybrid PaaS for GitHub Deploys",
     description:
-      "Next-Gen PaaS competing with Vercel and Railway. 0ms cold starts, multi-region edge containers, managed Postgres & interactive Web Shell.",
+      "Push to deploy on runner hosts behind Cloudflare: zero-downtime releases, managed Postgres, Redis and MySQL, R2 buckets and an in-browser shell.",
     images: ["https://www.syncbay.app/og-image.png"],
   },
   robots: {
@@ -126,6 +121,7 @@ export const metadata: Metadata = {
 };
 
 import { GlobalSpaceBackground } from "@/components/ui/global-space-background";
+import { FAQS } from "@/components/marketing/faq-data";
 
 const jsonLd = {
   "@context": "https://schema.org",
@@ -133,27 +129,19 @@ const jsonLd = {
     {
       "@type": "Organization",
       "@id": "https://www.syncbay.app/#organization",
-      "name": "Syncbay Technologies Inc.",
-      "url": "https://www.syncbay.app",
+      "name": "MSNS-DEV",
+      "url": "https://github.com/MSNS-DEV",
       "logo": "https://www.syncbay.app/brand-logo.png",
       "image": "https://www.syncbay.app/syncbay-avatar.png",
-      "slogan": "The Cloud Hyper-Plane for Modern Developers",
       "brand": {
         "@type": "Brand",
         "name": "Syncbay",
         "logo": "https://www.syncbay.app/brand-icon.png"
       },
-      "sameAs": [
-        "https://github.com/H410M-H/syncbay",
-        "https://twitter.com/syncbayapp"
-      ],
+      "sameAs": ["https://github.com/MSNS-DEV"],
       "address": {
         "@type": "PostalAddress",
-        "streetAddress": "548 Market St, Suite 82194",
-        "addressLocality": "San Francisco",
-        "addressRegion": "CA",
-        "postalCode": "94104",
-        "addressCountry": "US"
+        "addressCountry": "PK"
       }
     },
     {
@@ -161,111 +149,39 @@ const jsonLd = {
       "@id": "https://www.syncbay.app/#website",
       "url": "https://www.syncbay.app",
       "name": "Syncbay",
-      "description": "The Cloud Hyper-Plane for Modern Developers",
-      "publisher": { "@id": "https://www.syncbay.app/#organization" },
-      "potentialAction": {
-        "@type": "SearchAction",
-        "target": "https://www.syncbay.app/templates?q={search_term_string}",
-        "query-input": "required name=search_term_string"
-      }
+      "description": "Hybrid PaaS for GitHub deploys",
+      "publisher": { "@id": "https://www.syncbay.app/#organization" }
     },
     {
       "@type": "SoftwareApplication",
       "@id": "https://www.syncbay.app/#application",
-      "name": "Syncbay PaaS",
+      "name": "Syncbay",
       "applicationCategory": "DeveloperApplication",
-      "operatingSystem": "Cloud / Linux",
-      "description": "Next-Gen developer PaaS with 6 global edge POPs, 0ms cold starts, attached managed PostgreSQL, interactive Web Shell, and SQL Query Studio.",
+      "operatingSystem": "Linux (runner hosts), web dashboard",
+      "description": "Syncbay is a hybrid PaaS by MSNS-DEV. Deploy GitHub repos (Dockerfile, Syncbay-generated Dockerfiles or Nixpacks) to Syncbay runner hosts behind Cloudflare, with health-checked zero-downtime releases, managed PostgreSQL, Redis and MySQL, Cloudflare R2 buckets, an in-browser shell and Query Studio.",
       "image": "https://www.syncbay.app/og-image.png",
       "screenshot": "https://www.syncbay.app/og-image.png",
-      "offers": [
-        {
-          "@type": "Offer",
-          "price": "0",
-          "priceCurrency": "USD",
-          "name": "Hobby Plan"
-        },
-        {
-          "@type": "Offer",
-          "price": "18",
-          "priceCurrency": "USD",
-          "name": "Pro Plan"
-        },
-        {
-          "@type": "Offer",
-          "price": "450",
-          "priceCurrency": "USD",
-          "name": "Enterprise Plan"
-        }
-      ],
-      "aggregateRating": {
-        "@type": "AggregateRating",
-        "ratingValue": "4.9",
-        "ratingCount": "1420"
-      },
+      "publisher": { "@id": "https://www.syncbay.app/#organization" },
       "featureList": [
-        "6 Global Edge POPs with Sub-15ms Anycast Routing",
-        "0ms Cold Starts via Direct Edge Container Fabric",
-        "Built-in Attached PostgreSQL and Redis Cache",
-        "Interactive Full VT100 Browser Web Shell",
-        "Visual SQL Query Studio and Schema Inspector",
-        "Automated GitHub CI/CD and Ephemeral Previews",
-        "Cloudflare Enterprise WAF and DDoS Protection"
+        "Deploy from GitHub with Dockerfile, Syncbay-generated Dockerfiles or Nixpacks",
+        "Health-checked zero-downtime releases, instant rollback, restart and pause",
+        "Always-on services by default; opt-in scale-to-zero",
+        "PR preview environments",
+        "Managed PostgreSQL (pgvector), Redis/Valkey and MySQL",
+        "Cloudflare R2 buckets and persistent volumes",
+        "In-browser web shell and read-only-by-default Query Studio",
+        "Custom domains with TLS via Cloudflare, WAF rules, rate limits and canary releases",
+        "Usage-based billing with spending caps"
       ]
     },
     {
       "@type": "FAQPage",
       "@id": "https://www.syncbay.app/#faq",
-      "mainEntity": [
-        {
-          "@type": "Question",
-          "name": "How does Syncbay compare to Vercel and Railway?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "Unlike Vercel (which is constrained to serverless Lambda functions with cold starts and aggressive timeout limits) and Railway (which isolates each service to a single cloud region), Syncbay deploys full OCI containers simultaneously across 6 global edge POPs with 0ms cold starts, attached serverless PostgreSQL, an in-browser VT100 web terminal shell, and an embedded SQL query studio."
-          }
-        },
-        {
-          "@type": "Question",
-          "name": "Do I need to write a Dockerfile to deploy?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "No! While custom Dockerfiles are fully supported, Syncbay incorporates the Nixpacks buildpack engine. It automatically detects your codebase (Node.js, Python, Go, Rust, Ruby, PHP, and more), identifies package managers, installs required system packages, and compiles optimized OCI images with smart 4-phase caching in seconds."
-          }
-        },
-        {
-          "@type": "Question",
-          "name": "How do managed PostgreSQL and Redis work?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "You can provision managed databases in 1 click. Syncbay provisions serverless PostgreSQL instances with integrated connection pooling (pgbouncer) and high-throughput Redis/Valkey caches. Connection strings are automatically encrypted and injected into your services as environment variables."
-          }
-        },
-        {
-          "@type": "Question",
-          "name": "Are there bandwidth egress fees for Object Storage?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "Zero! Unlike AWS S3 and GCP Cloud Storage which charge punitive egress transfer fees of $0.09/GB, Syncbay Object Storage offers a strict $0 egress policy with full S3 API compatibility."
-          }
-        },
-        {
-          "@type": "Question",
-          "name": "How does blue/green deployment and automated rollback work?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "When a new build completes, Syncbay launches the new container revision alongside your active deployment and runs automated HTTP health probes. If any probe fails, traffic is instantly reverted in under 500ms without dropping active connections."
-          }
-        },
-        {
-          "@type": "Question",
-          "name": "Can I bring my own custom domains and wildcard subdomains?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "Yes. Syncbay provides automatic wildcard subdomains (*.syncbay.app) for instant sharing and testing, and full support for apex domains, subdomains, and wildcards with automated TLS/SSL certificates."
-          }
-        }
-      ]
+      "mainEntity": FAQS.map((faq) => ({
+        "@type": "Question",
+        "name": faq.question,
+        "acceptedAnswer": { "@type": "Answer", "text": faq.answer }
+      }))
     }
   ]
 };

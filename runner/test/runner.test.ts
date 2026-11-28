@@ -502,3 +502,5 @@ import "./launch.test.ts";
 import "./volume-files.test.ts";
 // Stack detection + generated Dockerfiles (runner/src/stacks/)
 import "./stacks.test.ts";
+// Managed-database images: pgvector, Valkey (runner/src/services.ts)
+import "./db-images.test.ts";

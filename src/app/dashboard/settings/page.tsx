@@ -757,44 +757,43 @@ export default function SettingsPage() {
       <div className="card" style={{ marginBottom: "28px" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            <span style={{ fontSize: "20px" }}>🇺🇸</span>
-            <h3 style={{ margin: 0 }}>Corporate Identity &amp; US Compliance</h3>
+            <span style={{ fontSize: "20px" }}>🇵🇰</span>
+            <h3 style={{ margin: 0 }}>Who Builds Syncbay</h3>
           </div>
           <span className="badge badge-active" style={{ fontSize: "0.7rem" }}>
-            US Infrastructure
+            MSNS-DEV
           </span>
         </div>
 
         <p style={{ fontSize: "0.875rem", color: "var(--text-secondary)", marginBottom: "16px" }}>
-          Syncbay is an American cloud platform operated by <strong>Syncbay Technologies Inc.</strong> All control-plane
-          metadata, database instances, and user access policies are protected under United States data privacy and SOC2
-          regulatory standards.
+          Syncbay is built in Pakistan by <strong>MSNS-DEV</strong>. The control plane runs on Vercel; your apps and
+          managed databases run on Syncbay runner hosts behind Cloudflare. Syncbay holds no compliance certifications.
         </p>
 
         <div className="grid-2" style={{ gap: "12px", marginBottom: "16px" }}>
           <div style={{ padding: "12px", background: "var(--bg-overlay)", borderRadius: "var(--radius-md)", border: "1px solid var(--border-subtle)" }}>
             <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", textTransform: "uppercase", marginBottom: "4px" }}>
-              Corporate Headquarters
+              Maker
             </div>
             <div style={{ fontWeight: 700, fontSize: "0.875rem", color: "var(--text-primary)" }}>
-              Syncbay Technologies Inc.
+              MSNS-DEV
             </div>
             <div style={{ fontSize: "0.8125rem", color: "var(--text-secondary)" }}>
-              548 Market St, Suite 82194<br />
-              San Francisco, CA 94104, United States
+              Pakistan<br />
+              github.com/MSNS-DEV
             </div>
           </div>
 
           <div style={{ padding: "12px", background: "var(--bg-overlay)", borderRadius: "var(--radius-md)", border: "1px solid var(--border-subtle)" }}>
             <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", textTransform: "uppercase", marginBottom: "4px" }}>
-              Legal Jurisdiction &amp; Governance
+              Where Your Apps Run
             </div>
             <div style={{ fontWeight: 700, fontSize: "0.875rem", color: "var(--text-primary)" }}>
-              State of Delaware (C-Corp)
+              Syncbay runner hosts
             </div>
             <div style={{ fontSize: "0.8125rem", color: "var(--text-secondary)" }}>
-              US Data Sovereignty · Cloudflare Edge Backbone<br />
-              Zero-Cloud-Tax Guarantee
+              Behind Cloudflare · one runner region today<br />
+              support@syncbay.app
             </div>
           </div>
         </div>

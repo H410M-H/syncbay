@@ -5,17 +5,16 @@ import React, { useEffect, useRef } from "react";
 interface GlobePoint {
   lat: number;
   lng: number;
-  label: string;
-  id: string;
 }
 
-const EDGE_POPS: GlobePoint[] = [
-  { lat: 38.9, lng: -77.4, label: "IAD1", id: "iad1" },
-  { lat: 37.7, lng: -122.4, label: "SFO1", id: "sfo1" },
-  { lat: 50.1, lng: 8.7, label: "FRA1", id: "fra1" },
-  { lat: 51.5, lng: -0.1, label: "LHR1", id: "lhr1" },
-  { lat: 1.3, lng: 103.8, label: "SIN1", id: "sin1" },
-  { lat: -33.9, lng: 151.2, label: "SYD1", id: "syd1" },
+// Decorative points only: they do not represent Syncbay regions or POPs.
+const GLOBE_POINTS: GlobePoint[] = [
+  { lat: 38.9, lng: -77.4 },
+  { lat: 37.7, lng: -122.4 },
+  { lat: 50.1, lng: 8.7 },
+  { lat: 51.5, lng: -0.1 },
+  { lat: 1.3, lng: 103.8 },
+  { lat: -33.9, lng: 151.2 },
 ];
 
 const CONNECTIONS = [
@@ -112,8 +111,8 @@ export function Globe3D({ size = 400, className = "" }: { size?: number; classNa
 
       // Draw connections (arcs)
       for (const [i, j] of CONNECTIONS) {
-        const p1 = EDGE_POPS[i];
-        const p2 = EDGE_POPS[j];
+        const p1 = GLOBE_POINTS[i];
+        const p2 = GLOBE_POINTS[j];
         ctx.beginPath();
         ctx.strokeStyle = "rgba(6, 182, 212, 0.35)";
         ctx.lineWidth = 1.5;
@@ -161,7 +160,7 @@ export function Globe3D({ size = 400, className = "" }: { size?: number; classNa
       }
 
       // Draw POP nodes
-      for (const pop of EDGE_POPS) {
+      for (const pop of GLOBE_POINTS) {
         let [px, py, pz] = latLngTo3D(pop.lat, pop.lng, radius);
         [px, py, pz] = rotateY(px, py, pz, rotYAngle);
         [px, py, pz] = rotateX(px, py, pz, tiltX);
@@ -177,7 +176,7 @@ export function Globe3D({ size = 400, className = "" }: { size?: number; classNa
           ctx.fill();
 
           // Pulsing ring
-          const pulseSize = 6 + Math.sin(time * 4 + EDGE_POPS.indexOf(pop)) * 2;
+          const pulseSize = 6 + Math.sin(time * 4 + GLOBE_POINTS.indexOf(pop)) * 2;
           ctx.beginPath();
           ctx.arc(sx, sy, pulseSize * sc, 0, Math.PI * 2);
           ctx.strokeStyle = "rgba(6, 182, 212, 0.4)";
@@ -190,11 +189,6 @@ export function Globe3D({ size = 400, className = "" }: { size?: number; classNa
           ctx.fillStyle = "#06B6D4";
           ctx.fill();
 
-          // Label
-          ctx.font = `bold ${Math.max(9, 11 * sc)}px monospace`;
-          ctx.fillStyle = "rgba(6, 182, 212, 0.9)";
-          ctx.textAlign = "center";
-          ctx.fillText(pop.label, sx, sy - 14 * sc);
         }
       }
 

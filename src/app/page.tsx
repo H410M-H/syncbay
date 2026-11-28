@@ -59,7 +59,7 @@ export default function HomePage() {
               Developer CLI
             </a>
             <a href="#latency" className="hover:text-white transition-colors">
-              Edge Network
+              Routing
             </a>
             <a href="#comparison" className="hover:text-white transition-colors">
               Compare
@@ -68,7 +68,7 @@ export default function HomePage() {
               Templates
             </Link>
             <Link href="/enterprise" className="hover:text-white transition-colors">
-              Enterprise
+              Teams
             </Link>
             <Link href="/roadmap" className="hover:text-white transition-colors">
               R&amp;D Roadmap
@@ -117,7 +117,7 @@ export default function HomePage() {
                     boxShadow: "0 0 20px rgba(6,182,212,0.35)",
                   }}
                 >
-                  Deploy Free
+                  Start Deploying
                 </Link>
               </>
             )}
@@ -169,12 +169,12 @@ export default function HomePage() {
                   { href: "#services", label: "Featured Services" },
                   { href: "#workflow", label: "How It Works" },
                   { href: "#cli-manifest", label: "Developer CLI" },
-                  { href: "#latency", label: "Edge Network" },
+                  { href: "#latency", label: "Routing" },
                   { href: "#comparison", label: "Compare" },
                   { href: "/templates", label: "Templates" },
-                  { href: "/enterprise", label: "Enterprise" },
+                  { href: "/enterprise", label: "Teams" },
                   { href: "/roadmap", label: "R&D Roadmap" },
-                  { href: "/pricing", label: "Plans & Pricing" },
+                  { href: "/pricing", label: "Pricing" },
                   { href: "#faq", label: "FAQ" },
                 ].map((item) => (
                   <a
@@ -221,7 +221,7 @@ export default function HomePage() {
                         background: "linear-gradient(135deg, #06B6D4, #3B82F6)",
                       }}
                     >
-                      Deploy Free
+                      Start Deploying
                     </Link>
                   </>
                 )}
@@ -253,12 +253,12 @@ export default function HomePage() {
           <CliManifestShowcase />
         </div>
 
-        {/* 5. Global Anycast Edge Network & Geo Latency Telemetry */}
+        {/* 5. Request Routing through Cloudflare */}
         <div id="latency" className="border-b border-white/5 py-24 sm:py-32 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto">
           <GeoLatencyWidget />
         </div>
 
-        {/* 6. Platform Comparison Matrix */}
+        {/* 6. Capability Matrix */}
         <div id="comparison" className="border-b border-white/5 py-24 sm:py-32 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto" style={{ background: "linear-gradient(180deg, rgba(8, 8, 20, 0.4) 0%, rgba(5, 5, 16, 0.8) 100%)" }}>
           <ComparisonTable />
         </div>
@@ -268,12 +268,12 @@ export default function HomePage() {
           <TemplatesCatalog />
         </div>
 
-        {/* 8. Enterprise Security, Compliance & Governance */}
+        {/* 8. Security */}
         <div className="border-b border-white/5" style={{ background: "linear-gradient(180deg, rgba(5, 5, 16, 0.8) 0%, rgba(8, 8, 20, 0.4) 100%)" }}>
           <SecurityCompliance />
         </div>
 
-        {/* 9. Engineer Stories & Platform Scale Metrics */}
+        {/* 9. What You Get & Product Constants */}
         <div className="border-b border-white/5">
           <SocialProof />
         </div>
@@ -311,21 +311,21 @@ export default function HomePage() {
                   color: "#38bdf8",
                 }}
               >
-                <span>⚡ Zero Lock-in · No Credit Card Required</span>
+                <span>⚡ Your Repo · No Card Needed to Sign Up</span>
               </div>
 
               <h2
                 className="text-4xl sm:text-5xl md:text-6xl font-black tracking-tight mb-4 text-white drop-shadow-md"
                 style={{ fontFamily: "'Inter', system-ui, sans-serif" }}
               >
-                Ready to Own the Cloud?
+                Ready to Ship?
               </h2>
               <p
                 className="text-base sm:text-lg max-w-2xl mx-auto mb-10 leading-relaxed font-medium"
                 style={{ color: "#cbd5e1" }}
               >
-                Join thousands of engineers deploying without limits. 6 global POPs, zero cold starts,
-                attached serverless Postgres, and interactive shell terminals.
+                Connect a GitHub repo or pick a template. Always-on services, managed PostgreSQL, Redis and MySQL,
+                health-checked releases and an in-browser shell — billed by usage, with a spending cap you set.
               </p>
 
               <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
@@ -338,7 +338,7 @@ export default function HomePage() {
                     boxShadow: "0 10px 30px rgba(6,182,212,0.45), inset 0 1px 0 rgba(255,255,255,0.4)",
                   }}
                 >
-                  🚀 Get Started Free in 30s
+                  🚀 Get Started
                 </Link>
                 <Link
                   href="/pricing"
@@ -349,7 +349,7 @@ export default function HomePage() {
                     color: "#f8fafc",
                   }}
                 >
-                  View Plans & Pricing →
+                  View Usage Pricing →
                 </Link>
               </div>
             </div>
@@ -367,25 +367,18 @@ export default function HomePage() {
           __html: JSON.stringify({
             "@context": "https://schema.org",
             "@type": "SoftwareApplication",
-            name: "Syncbay PaaS",
-            applicationCategory: "DevOpsApplication",
-            operatingSystem: "Cloud, Linux Edge",
-            offers: { "@type": "Offer", price: "0.00", priceCurrency: "USD" },
+            name: "Syncbay",
+            applicationCategory: "DeveloperApplication",
+            operatingSystem: "Linux (runner hosts), web dashboard",
+            url: "https://www.syncbay.app",
             publisher: {
               "@type": "Organization",
-              name: "Syncbay Technologies Inc.",
-              url: "https://www.syncbay.app",
-              address: {
-                "@type": "PostalAddress",
-                streetAddress: "548 Market St, Suite 82194",
-                addressLocality: "San Francisco",
-                addressRegion: "CA",
-                postalCode: "94104",
-                addressCountry: "US",
-              },
+              name: "MSNS-DEV",
+              url: "https://github.com/MSNS-DEV",
+              address: { "@type": "PostalAddress", addressCountry: "PK" },
             },
             description:
-              "The Cloud Hyper-Plane for Modern Developers. Next-Gen PaaS with 6 global edge POPs, managed PostgreSQL, web shell, and SQL Query Studio.",
+              "Hybrid PaaS: deploy GitHub repos to Syncbay runner hosts behind Cloudflare with health-checked zero-downtime releases, managed PostgreSQL, Redis and MySQL, Cloudflare R2 buckets, an in-browser shell and Query Studio. Usage-based billing with spending caps.",
           }),
         }}
       />

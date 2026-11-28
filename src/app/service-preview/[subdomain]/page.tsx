@@ -447,10 +447,10 @@ export default async function ServicePreviewPage({
 
             <div>
               <div style={{ fontSize: "11px", color: "#71717a", textTransform: "uppercase", fontWeight: 600 }}>
-                Edge Ingress POP
+                Routed Through
               </div>
               <div style={{ fontSize: "14px", fontWeight: 600, color: "#22c55e", marginTop: "4px" }}>
-                {routing.activeRegion.name} ({routing.activeRegion.id.toUpperCase()})
+                Cloudflare → Syncbay runner
               </div>
             </div>
 
@@ -468,16 +468,16 @@ export default async function ServicePreviewPage({
                 TLS Termination
               </div>
               <div style={{ fontSize: "14px", fontWeight: 600, color: "#f4f4f5", marginTop: "4px" }}>
-                TLSv1.3 (Wildcard SSL)
+                Cloudflare
               </div>
             </div>
 
             <div>
               <div style={{ fontSize: "11px", color: "#71717a", textTransform: "uppercase", fontWeight: 600 }}>
-                Estimated Latency
+                Health Check
               </div>
               <div style={{ fontSize: "14px", fontWeight: 600, color: "#22c55e", marginTop: "4px" }}>
-                ~{routing.estimatedLatencyMs} ms
+                Traffic after /health passes
               </div>
             </div>
           </div>
@@ -677,7 +677,7 @@ export default async function ServicePreviewPage({
             [syncbay-edge] Request Trace
           </div>
           <div>Client Location: {routing.detectedCity}, {routing.detectedCountry} ({routing.clientIp})</div>
-          <div>Routed POP: {routing.activeRegion.provider} [{routing.activeRegion.id}]</div>
+          <div>Route: Cloudflare → Syncbay edge → runner host</div>
           <div id="edge-trace-status">Status: {badgeConfig.subtext}</div>
         </div>
       </main>
@@ -692,7 +692,7 @@ export default async function ServicePreviewPage({
           color: "#71717a",
         }}
       >
-        Syncbay PaaS — Next-Gen Cloud Platform · Powered by Cloudflare Containers & Edge POP Fabric
+        Syncbay — apps on Syncbay runner hosts behind Cloudflare
       </footer>
 
       {/* Client-Side Live Log Streaming & Health Probe Automation Script */}

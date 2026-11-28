@@ -7,80 +7,54 @@ const CODE_EXAMPLES = {
   manifest: {
     filename: "syncbay.json",
     language: "json",
-    description: "Declarative infrastructure-as-code for microservices, managed databases, persistent volumes, and scaling rules.",
+    description: "The syncbay.json v1 manifest a one-click template repo carries: the app's port, its health-check path, the databases to provision and the variables to ask for or generate.",
     code: `{
-  "$schema": "https://syncbay.app/schema/v1.json",
-  "name": "ecommerce-edge",
+  "name": "FastAPI & Redis",
+  "port": 8000,
+  "healthcheckPath": "/health",
   "services": [
-    {
-      "name": "api",
-      "runtime": "node20",
-      "buildCommand": "pnpm build",
-      "startCommand": "node dist/server.js",
-      "port": 3000,
-      "scaleToZero": false,
-      "regions": ["iad1", "sfo1", "fra1", "sin1"],
-      "env": {
-        "DATABASE_URL": "\${{ databases.main-pg.url }}",
-        "REDIS_URL": "\${{ databases.cache-redis.url }}",
-        "BUCKET_NAME": "\${{ buckets.media-uploads.name }}"
-      }
-    }
+    { "type": "postgres", "env": "DATABASE_URL", "extensions": ["vector"] },
+    { "type": "redis", "env": "REDIS_URL" }
   ],
-  "databases": [
-    {
-      "name": "main-pg",
-      "provider": "POSTGRES",
-      "version": "16",
-      "pooling": true
-    },
-    {
-      "name": "cache-redis",
-      "provider": "REDIS",
-      "eviction": "allkeys-lru"
-    }
+  "env": [
+    { "key": "JWT_SECRET", "secret": true, "generate": "secret" },
+    { "key": "LOG_LEVEL", "default": "info" },
+    { "key": "OPENAI_API_KEY", "required": true, "secret": true }
   ]
 }`,
   },
   cli: {
-    filename: "terminal — syncbay cli",
+    filename: "terminal — REST API",
     language: "bash",
-    description: "High-speed developer CLI to provision resources, stream live logs, launch interactive web shells, and manage deployments.",
-    code: `# Install Syncbay CLI globally
-$ npm install -g syncbay
+    description: "Every deploy can also be triggered over the token-authenticated REST API (OpenAPI spec at /api/v1/openapi.json) — from CI or your own scripts.",
+    code: `# Create an API token in the dashboard, then:
+$ export SYNCBAY_API_TOKEN=...
 
-# Log in with your developer token or GitHub account
-$ syncbay login
+# List your projects
+$ curl -H "Authorization: Bearer $SYNCBAY_API_TOKEN" \\
+    https://www.syncbay.app/api/v1/projects
 
-# Validate local manifest and initialize workspace
-$ syncbay validate
-
-# Deploy current directory straight to 6 global edge POPs
-$ syncbay up --env production
-
-# Stream live real-time logs across all active edge containers
-$ syncbay logs -f --service api
-
-# SSH into running container with an interactive VT100 shell
-$ syncbay shell --service api --region iad1`,
+# Trigger a deployment of a service (202 = queued)
+$ curl -X POST -H "Authorization: Bearer $SYNCBAY_API_TOKEN" \\
+    -H "Content-Type: application/json" \\
+    -d '{"serviceId":"<service-id>"}' \\
+    https://www.syncbay.app/api/v1/deployments`,
   },
   env: {
-    filename: ".env.production (auto-injected)",
+    filename: "service variables",
     language: "env",
-    description: "Inter-service variable resolution. Database credentials and bucket endpoints are encrypted and injected at runtime.",
-    code: `# Auto-injected at container startup via secure enclave
-DATABASE_URL="postgres://syncbay_usr:x89aF2...p@pg-iad1.syncbay.internal:5432/main?sslmode=require"
-REDIS_URL="rediss://default:m92Kx0...q@redis-sfo1.syncbay.internal:6379"
+    description: "Reference other resources with ${{ ref }} variables; they are resolved at deploy time. Managed database URLs are injected automatically without overriding keys you set yourself.",
+    code: `# Injected when you attach a managed database
+DATABASE_URL="postgres://<user>:<password>@<runner-host>:<port>/<db>"
+REDIS_URL="redis://default:<password>@<runner-host>:<port>"
 
-# S3-compatible zero-egress bucket credentials
-S3_ENDPOINT="https://storage.syncbay.edge"
-S3_BUCKET="media-uploads"
-S3_REGION="auto"
+# References resolved at deploy time
+API_DATABASE_HOST="\${{ Postgres.HOST }}"
+MEDIA_BUCKET="\${{ media.NAME }}"
+BACKEND_URL="\${{ api.URL }}"
 
-# Global Edge Mesh Environment
-SYNCBAY_POP_ID="iad1"
-SYNCBAY_DEPLOYMENT_ID="dep_8192a8b940"
-PORT="3000"`,
+# Set by the runner
+PORT="<the port your app listens on>"`,
   },
 };
 
@@ -112,10 +86,10 @@ export function CliManifestShowcase() {
           <span>💻 Developer-First Experience</span>
         </div>
         <h2 className="text-3xl sm:text-4xl md:text-5xl font-black text-white tracking-tight mb-4">
-          Declarative by Design. Terminal Native.
+          Declarative Templates. Scriptable Deploys.
         </h2>
         <p className="text-base sm:text-lg font-medium leading-relaxed" style={{ color: "#94a3b8" }}>
-          Everything you love about GitOps: describe your multi-container topology in `syncbay.json` and deploy with a single terminal command.
+          Templates describe their port, health check, databases and variables in `syncbay.json`; everything else is a git push or one REST call away.
         </p>
       </div>
 
@@ -155,7 +129,7 @@ export function CliManifestShowcase() {
                 }}
               >
                 <span>⚡</span>
-                <span>syncbay CLI</span>
+                <span>REST API</span>
               </button>
               <button
                 onClick={() => setActiveTab("env")}
@@ -209,16 +183,16 @@ export function CliManifestShowcase() {
           <div className="mt-6 pt-4 border-t border-white/10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 text-xs text-slate-400 font-sans">
             <div className="flex flex-wrap items-center gap-4">
               <span className="flex items-center gap-1.5">
-                <span className="text-cyan-400">✔</span> Zero lock-in
+                <span className="text-cyan-400">✔</span> Your repo, your Dockerfile
               </span>
               <span className="flex items-center gap-1.5">
-                <span className="text-cyan-400">✔</span> OCI compliant
+                <span className="text-cyan-400">✔</span> Standard Docker images
               </span>
               <span className="flex items-center gap-1.5">
-                <span className="text-cyan-400">✔</span> JSON schema validated
+                <span className="text-cyan-400">✔</span> Manifest validated on import
               </span>
             </div>
-            <span className="font-mono text-cyan-400 font-bold">syncbay-spec v1.4</span>
+            <span className="font-mono text-cyan-400 font-bold">syncbay.json v1</span>
           </div>
         </div>
       </TiltCard>

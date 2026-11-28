@@ -18,7 +18,7 @@ export const rdRouter = createTRPCRouter({
   }),
 
   /**
-   * Get trending developer stacks & templates (Next.js 16, Python FastAPI, Rust Axum, Go Gin, etc.)
+   * Developer stacks with a one-click template (the template catalog, templates/index.json)
    */
   getTrendingStacks: publicProcedure
     .input(z.object({ category: z.string().optional() }).optional())

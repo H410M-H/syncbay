@@ -154,7 +154,7 @@ export default function ServiceDetailsPage(props: { params: Promise<{ id: string
 
             <div>
               <div style={{ color: "var(--text-muted)", fontSize: "0.875rem", marginBottom: "4px" }}>Instance Type</div>
-              <div>{service.instanceType} ({service.scaleToZero ? "0ms Cold-Start" : "Always-On"})</div>
+              <div>{service.instanceType} ({service.scaleToZero ? "Scale-to-Zero" : "Always-On"})</div>
             </div>
 
             <div>

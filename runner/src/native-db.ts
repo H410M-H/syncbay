@@ -4,7 +4,8 @@
  * Used by RunnerServices when Docker is unavailable but the database binaries
  * exist on the host (or RUNNER_DB_MODE=native):
  *   POSTGRES  initdb (scram-sha-256, password via a 0600 pwfile) + pg_ctl start,
- *             data dir `<state>/databases/<id>/pgdata`, then CREATE DATABASE main.
+ *             data dir `<state>/databases/<id>/pgdata`, then CREATE DATABASE main and
+ *             CREATE EXTENSION for requested extensions (pgvector must be installed on the host).
  *   REDIS     redis-server with a 0600 config file (port, bind, dir, requirepass,
  *             appendonly), data dir `<state>/databases/<id>`.
  * Health uses pg_isready / redis-cli ping (password via REDISCLI_AUTH, never argv).
@@ -184,11 +185,13 @@ export class NativeDatabaseManager {
     host: string;
     listen: string;
     password: string;
+    /** Postgres extensions to create in `main` (e.g. "vector"); they must be installed on the host. */
+    extensions?: string[];
   }): Promise<NativeDbMeta> {
     return params.provider === "POSTGRES" ? this.provisionPostgres(params) : this.provisionRedis(params);
   }
 
-  private async provisionPostgres(p: { id: string; port: number; host: string; listen: string; password: string }): Promise<NativeDbMeta> {
+  private async provisionPostgres(p: { id: string; port: number; host: string; listen: string; password: string; extensions?: string[] }): Promise<NativeDbMeta> {
     const binDir = findPgBinDir();
     if (!binDir) throw new Error("initdb/pg_ctl not found (set RUNNER_PG_BIN_DIR)");
     const runAs = await this.resolveRunAs();
@@ -244,6 +247,21 @@ export class NativeDatabaseManager {
     });
     if (create.code !== 0 && !/already exists/.test(create.stderr)) {
       throw new Error(`CREATE DATABASE failed: ${create.stderr.trim().slice(0, 300)}`);
+    }
+
+    for (const ext of p.extensions || []) {
+      const created = await exec(
+        pgBin(binDir, "psql"),
+        ["-h", dir, "-p", String(p.port), "-U", "postgres", "-d", "main", "-v", "ON_ERROR_STOP=1", "-c", `CREATE EXTENSION IF NOT EXISTS "${ext.replace(/"/g, "")}"`],
+        { env, runAs, timeoutMs: 30000, cwd: dir }
+      );
+      if (created.code !== 0) {
+        const detail = created.stderr.trim().slice(0, 300);
+        const hint = ext === "vector" && /control file|not available/i.test(detail)
+          ? " pgvector is not installed on this runner host: install it (e.g. the postgresql-<version>-pgvector package) or run the runner with Docker."
+          : "";
+        throw new Error(`CREATE EXTENSION ${ext} failed: ${detail}.${hint}`);
+      }
     }
 
     const meta: NativeDbMeta = {

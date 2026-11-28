@@ -3,64 +3,67 @@
 import React from "react";
 import { TiltCard } from "@/components/ui/tilt-card";
 
-interface Testimonial {
-  quote: string;
-  name: string;
-  role: string;
-  company: string;
+interface Fact {
+  text: string;
+  title: string;
+  source: string;
+  /** Where to read more (a page on this site or a public repository). */
+  href: string;
   avatar: string;
   highlight: string;
 }
 
-const TESTIMONIALS: Testimonial[] = [
+// "What you get": each card is a shipped behaviour, with where it lives.
+const FACTS: Fact[] = [
   {
-    quote:
-      "We cut our cloud bill by 65% while dropping international API latency from 180ms down to 24ms. Having attached PostgreSQL and Redis with zero connection configuration was a breath of fresh air.",
-    name: "Alex Thorne",
-    role: "Chief Technology Officer",
-    company: "Loomis Pay",
-    avatar: "👨‍💻",
-    highlight: "-65% Cloud Spend · 24ms Global",
+    text:
+      "A new release starts next to the live one and only takes traffic once it answers its health check. If the build or the check fails, the live version keeps serving and the error stays on the deployment.",
+    title: "Zero-downtime releases",
+    source: "Deploy engine",
+    href: "/docs",
+    avatar: "🚦",
+    highlight: "Health-Gated Releases",
   },
   {
-    quote:
-      "Syncbay replaced our entire staging and preview pipeline. Ephemeral PR previews spin up in under 30 seconds with isolated databases, and our engineers love having the in-browser VT100 shell.",
-    name: "Sarah Chen",
-    role: "VP of Engineering",
-    company: "Hyperion AI",
-    avatar: "👩‍💻",
-    highlight: "<30s Ephemeral Previews",
+    text:
+      "Every live instance is probed once a minute through the same path your visitors use. After two failures in a row Syncbay restarts it — or redeploys the same build — and records it in your audit log.",
+    title: "Health monitor",
+    source: "Runs every minute",
+    href: "/docs",
+    avatar: "🩺",
+    highlight: "Auto-Restart",
   },
   {
-    quote:
-      "Blue/green deployments with automatic sub-second health rollbacks saved us on two critical Friday afternoon deployments. The platform detects HTTP 500 spikes and reverts traffic before users notice.",
-    name: "Marcus Brody",
-    role: "Lead DevOps Architect",
-    company: "Kinetix Cloud",
-    avatar: "🚀",
-    highlight: "Zero-Downtime Blue/Green",
-  },
-  {
-    quote:
-      "The Nixpacks engine is magical. We pushed a complex polyglot repo with Python FastAPI backend and Next.js frontend, and Syncbay just built and scaled both containers without a single Dockerfile error.",
-    name: "Elena Rostova",
-    role: "Founding Engineer",
-    company: "Pulse Analytics",
+    text:
+      "Services are always-on by default, so they have no cold start. Turn on scale-to-zero per service to save money on idle apps: they sleep after the idle timeout, and a workspace member wakes them with one click.",
+    title: "Always-on, or scale-to-zero",
+    source: "Per-service setting",
+    href: "/docs",
     avatar: "⚡",
-    highlight: "Zero-Dockerfile Nixpacks",
+    highlight: "Your Choice per Service",
+  },
+  {
+    text:
+      "Nine open-source starter apps — Next.js, FastAPI, Go, Rust, Node, Django and more — each with a syncbay.json that declares its databases. Read the code, fork it, or deploy it in one click.",
+    title: "Open-source templates",
+    source: "github.com/MSNS-DEV",
+    href: "https://github.com/MSNS-DEV",
+    avatar: "📦",
+    highlight: "9 Templates on GitHub",
   },
 ];
 
+// Product constants (see CLAUDE.md), not measurements.
 const METRICS = [
-  { value: "99.99%", label: "Uptime SLA", desc: "Contractually backed multi-region mesh" },
-  { value: "0 ms", label: "Cold Start Time", desc: "Persistent active-active edge containers" },
-  { value: "<30 sec", label: "Average Deploy", desc: "4-phase cached Nixpacks compilation" },
-  { value: "6 POPs", label: "Anycast Mesh", desc: "US, Europe, Asia-Pacific coverage" },
+  { value: "120 s", label: "Start-up Window", desc: "Time a new instance has to become healthy" },
+  { value: "1 min", label: "Health Probe", desc: "Restart after two consecutive failures" },
+  { value: "2", label: "Builds at Once", desc: "Concurrent builds per runner host" },
+  { value: "30 days", label: "Log Retention", desc: "Build and runtime logs kept per deployment" },
 ];
 
 export function SocialProof() {
   return (
-    <section id="testimonials" className="relative py-24 sm:py-32 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto">
+    <section id="what-you-get" className="relative py-24 sm:py-32 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto">
       {/* Platform Scale Metrics */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-6 mb-20">
         {METRICS.map((metric) => (
@@ -105,20 +108,20 @@ export function SocialProof() {
             boxShadow: "0 0 20px rgba(236, 72, 153, 0.15)",
           }}
         >
-          <span>💬 Engineer Stories</span>
+          <span>✅ What You Get</span>
         </div>
         <h2 className="text-3xl sm:text-4xl md:text-5xl font-black text-white tracking-tight mb-4">
-          Trusted by Developers Who Refuse Cloud Lock-In
+          Built by MSNS-DEV in Pakistan
         </h2>
         <p className="text-base sm:text-lg font-medium leading-relaxed" style={{ color: "#94a3b8" }}>
-          See why fast-growing software companies and indie founders are switching from legacy platforms to Syncbay.
+          Syncbay aims to offer lower prices than US providers. Here is what you get when you deploy — and where each behaviour comes from.
         </p>
       </div>
 
       {/* Testimonials Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-        {TESTIMONIALS.map((t) => (
-          <TiltCard key={t.name} glowColor="rgba(6, 182, 212, 0.25)" intensity={8}>
+        {FACTS.map((t) => (
+          <TiltCard key={t.title} glowColor="rgba(6, 182, 212, 0.25)" intensity={8}>
             <div
               className="p-8 rounded-3xl h-full flex flex-col justify-between"
               style={{
@@ -133,8 +136,8 @@ export function SocialProof() {
                   ★ {t.highlight}
                 </div>
 
-                <p className="text-sm sm:text-base font-medium leading-relaxed text-slate-200 mb-8 italic">
-                  &ldquo;{t.quote}&rdquo;
+                <p className="text-sm sm:text-base font-medium leading-relaxed text-slate-200 mb-8">
+                  {t.text}
                 </p>
               </div>
 
@@ -145,10 +148,13 @@ export function SocialProof() {
                 </div>
                 <div>
                   <h4 className="text-sm font-black text-white leading-tight">
-                    {t.name}
+                    {t.title}
                   </h4>
                   <p className="text-xs text-slate-400 font-medium">
-                    {t.role} · <span className="text-cyan-400 font-semibold">{t.company}</span>
+                    {t.source} ·{" "}
+                    <a href={t.href} className="text-cyan-400 font-semibold hover:text-white transition-colors">
+                      Learn more
+                    </a>
                   </p>
                 </div>
               </div>

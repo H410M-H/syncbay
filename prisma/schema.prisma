@@ -273,6 +273,8 @@ model Service {
   // The app's own listening port (inside its container). The host port a runner assigns to an
   // instance is stored per deployment (`Deployment.assignedPort`).
   port               Int?
+  // Path the engine probes after a deploy (default /health, then /); set from a template's syncbay.json.
+  healthCheckUrl     String?
   instanceType       String    @default("lite") // Cloudflare Containers instance type
   // Always-on unless the user opts in; PR previews opt in (pr-manager).
   scaleToZero        Boolean   @default(false)
@@ -416,6 +418,8 @@ model DatabaseInstance {
   host             String?
   port             Int?
   containerId      String? // runner-managed container (managed DB on a Syncbay runner)
+  // Postgres extensions installed at provisioning (e.g. "vector" = pgvector image + CREATE EXTENSION)
+  extensions       String[]         @default([])
   createdAt        DateTime         @default(now())
   updatedAt        DateTime         @updatedAt
 

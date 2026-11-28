@@ -1,15 +1,15 @@
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "R&D Weekly Roadmap & Community Feature Voting | Syncbay",
+  title: "Roadmap & Release History",
   description:
-    "Explore Syncbay's public product roadmap, weekly version drops, edge engine milestones, and cast your vote on upcoming cloud developer primitives.",
+    "What each Syncbay release changed for customers, the work planned next, and a place to vote for planned features.",
   keywords: [
     "Syncbay Roadmap",
     "PaaS Public Roadmap",
     "Developer Feature Voting",
-    "Edge Compute Changelog",
-    "Cloud Release Notes",
+    "Syncbay Changelog",
+    "PaaS Release Notes",
   ],
   alternates: {
     canonical: "https://www.syncbay.app/roadmap",
@@ -17,24 +17,24 @@ export const metadata: Metadata = {
   openGraph: {
     type: "website",
     siteName: "Syncbay",
-    title: "Syncbay Public R&D Roadmap & Feature Voting",
+    title: "Syncbay Roadmap & Release History",
     description:
-      "See what we are building next. Vote on upcoming edge primitives, database enhancements, and developer tooling.",
+      "What shipped in each release and what is planned next: backups, tenant isolation, more runners.",
     url: "https://www.syncbay.app/roadmap",
     images: [
       {
         url: "https://www.syncbay.app/og-image.png",
         width: 1200,
         height: 630,
-        alt: "Syncbay R&D Roadmap",
+        alt: "Syncbay Roadmap",
         type: "image/png",
       },
     ],
   },
   twitter: {
     card: "summary_large_image",
-    title: "Syncbay Public R&D Roadmap",
-    description: "Weekly version drops, runtime telemetry, and community feature voting.",
+    title: "Syncbay Roadmap",
+    description: "Release history, planned work and feature voting.",
     images: ["https://www.syncbay.app/og-image.png"],
   },
 };
