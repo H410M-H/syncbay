@@ -267,6 +267,7 @@ export async function executeDeployment(
       dockerfile: service?.dockerImage || undefined,
       port: service?.port || 3000,
       targetPort: service?.port || 3000,
+      healthCheckPath: service?.healthCheckUrl || undefined,
       cleanBuild: options.cleanBuild,
       environmentVariables: envMap,
       volumes: await loadServiceVolumes(serviceId),

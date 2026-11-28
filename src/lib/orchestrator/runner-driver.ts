@@ -81,6 +81,8 @@ export interface BuildDispatchParams {
   hostPort?: number;
   containerPort?: number;
   targetPort?: number;
+  /** Path the runner's start-up probe checks (the service's health check path; default /health). */
+  healthCheckPath?: string;
   cleanBuild?: boolean;
   environmentVariables?: Record<string, string>;
   /** Team E: Volume rows mounted by the runner (named Docker volume or native bind dir). */
@@ -613,6 +615,7 @@ export class WebhookRunnerDriver implements RunnerDriver {
       startCommand: params.startCommand,
       dockerfile: params.dockerfile,
       port: params.port,
+      healthCheckPath: params.healthCheckPath,
       cleanBuild: params.cleanBuild,
       environmentVariables: params.environmentVariables,
       volumes: params.volumes,
@@ -1429,6 +1432,7 @@ export class LocalRunnerDriver implements RunnerDriver {
         startCommand: params.startCommand,
         dockerfile: params.dockerfile,
         targetPort: params.targetPort || params.port || 3000,
+        healthCheckPath: params.healthCheckPath,
         cleanBuild: params.cleanBuild,
         environmentVariables: params.environmentVariables,
         volumes: params.volumes,

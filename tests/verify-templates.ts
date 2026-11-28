@@ -318,6 +318,11 @@ async function partB() {
     }),
   });
   fakeRepos.set(`MSNS-DEV/plain${RUN}`, { branch: "main", manifest: null });
+  // REDIS_URL declared for the second Redis-compatible service: injection alone would bind it to the first.
+  fakeRepos.set(`MSNS-DEV/swapped${RUN}`, {
+    branch: "main",
+    manifest: JSON.stringify({ services: [{ type: "redis", env: "CACHE_URL" }, { type: "valkey", env: "REDIS_URL" }] }),
+  });
   fakeRepos.set(`MSNS-DEV/broken${RUN}`, { branch: "main", manifest: '{"services":[{"type":"mongo"}]}' });
 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "sb-templates-"));
@@ -474,6 +479,21 @@ async function partB() {
     const injected = await prisma.environmentVariable.findMany({ where: { serviceId: plainSvc.serviceId } });
     assert.deepStrictEqual(injected.map((x) => x.key).sort(), ["CACHE_URL", "REDIS_URL"]);
     ok("a repository without syncbay.json becomes a plain service; database.create still provisions and injects");
+
+    console.log("\n[B6] Manifest keys bind to the declared database");
+    const swapped = await asOwner.project.create({ workspaceId: workspace.id, name: `swapped-${RUN}` });
+    const swappedEnv = swapped.environments[0].id;
+    const sw = await asOwner.template.provision({ environmentId: swappedEnv, source: `MSNS-DEV/swapped${RUN}`, env: {} });
+    const swDbs = await prisma.databaseInstance.findMany({ where: { environmentId: swappedEnv }, orderBy: { createdAt: "asc" } });
+    dbIds.push(...swDbs.map((d) => d.id));
+    const [swRedis, swValkey] = swDbs;
+    const swVars = Object.fromEntries((await prisma.environmentVariable.findMany({ where: { serviceId: sw.serviceId } })).map((x) => [x.key, x.value]));
+    assert.strictEqual(swVars.REDIS_URL, swValkey.connectionUrl, "REDIS_URL is the valkey database the manifest names");
+    assert.strictEqual(swVars.CACHE_URL, swRedis.connectionUrl, "CACHE_URL is the redis database");
+    const swRetry = await asOwner.template.provision({ environmentId: swappedEnv, source: `MSNS-DEV/swapped${RUN}`, env: {} });
+    const swAfter = await prisma.environmentVariable.findFirstOrThrow({ where: { serviceId: swRetry.serviceId, key: "REDIS_URL" } });
+    assert.strictEqual(swAfter.value, swValkey.connectionUrl, "stable across a retry");
+    ok("a manifest mapping REDIS_URL to its second Redis-compatible service gets that database, also after a retry");
   } finally {
     await cleanup();
   }

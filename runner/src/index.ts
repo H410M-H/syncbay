@@ -85,6 +85,12 @@ const APP_UNAVAILABLE_PAGE = `<!doctype html><html lang="en"><head><meta charset
 main{max-width:30rem;padding:2rem;text-align:center}h1{font-size:1.4rem;margin:0 0 .5rem}p{color:#9aa3b2;line-height:1.5}</style></head>
 <body><main><h1>This app is restarting</h1><p>It did not answer just now. Syncbay restarts apps that stop responding automatically; this page reloads every 15 seconds.</p></main></body></html>`;
 
+/** A start-up probe path from the build request: "/" followed by URL path characters, at most 200; else the default. */
+export function sanitizeHealthPath(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  return /^\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]{0,199}$/.test(value) ? value : undefined;
+}
+
 export class RunnerDaemon {
   public readonly port: number;
   public readonly host: string;
@@ -639,6 +645,7 @@ export class RunnerDaemon {
         startCommand: params.startCommand,
         dockerfile: params.dockerfile,
         targetPort: params.targetPort || params.port || 3000,
+        healthCheckPath: sanitizeHealthPath(params.healthCheckPath),
         cleanBuild: params.cleanBuild,
         environmentVariables: params.environmentVariables,
         volumes: sanitizeVolumes(params.volumes),
