@@ -11,7 +11,7 @@ import type { AddressInfo } from "node:net";
 import test from "node:test";
 import { PortManager } from "../src/port-manager.ts";
 import { BuildPipeline, MockPipelineExecutor } from "../src/pipeline.ts";
-import { RunnerDaemon } from "../src/index.ts";
+import { RunnerDaemon, sanitizeHealthPath } from "../src/index.ts";
 import {
   TrafficStats,
   getDefaultTrafficStats,
@@ -211,5 +211,13 @@ test("RunnerDaemon: traffic to a job's port is attributed to its deployment; ups
     );
   } finally {
     await daemon.stop();
+  }
+});
+
+test("sanitizeHealthPath: keeps URL paths from the build request, drops anything else", () => {
+  assert.strictEqual(sanitizeHealthPath("/healthz"), "/healthz");
+  assert.strictEqual(sanitizeHealthPath("/api/v1/health?full=0".split("?")[0]), "/api/v1/health");
+  for (const bad of [undefined, 42, "", "health", "http://evil/", "/a b", "/x\n", "/" + "a".repeat(250)]) {
+    assert.strictEqual(sanitizeHealthPath(bad), undefined, String(bad));
   }
 });

@@ -119,6 +119,7 @@ export async function provisionTemplate(client: Client, params: ProvisionTemplat
 
   // 3. Databases, before the first deploy; injection writes their URLs into the service
   const databases: ProvisionTemplateResult["databases"] = [];
+  const boundUrls: Array<{ key: string; name: string; provider: (typeof SERVICE_PROVIDER)[keyof typeof SERVICE_PROVIDER]; url: string }> = [];
   const usedNames = new Set<string>();
   for (const svc of manifest?.services || []) {
     let name: string = svc.type;
@@ -139,14 +140,26 @@ export async function provisionTemplate(client: Client, params: ProvisionTemplat
     }
     databases.push({ id: instance.id, name, provider, status: instance.status, extensions: instance.extensions, reused });
 
-    // The manifest may want the URL under another key than the injected ones.
-    if (!getDatabaseEnvKeys(name, provider).includes(svc.env)) {
-      const existing = await client.environmentVariable.findFirst({ where: { serviceId, key: svc.env } });
-      if (!existing) {
-        await client.environmentVariable.create({
-          data: { serviceId, key: svc.env, value: instance.connectionUrl, isSecret: true, isReference: true },
-        });
-      }
+    boundUrls.push({ key: svc.env, name, provider, url: instance.connectionUrl });
+  }
+
+  // Bind each manifest key to its own database. Injection fills the shared DATABASE_URL / REDIS_URL
+  // with the first database of that provider and never overwrites a key, so a manifest that maps
+  // REDIS_URL to its second Redis-compatible database (e.g. Valkey) needs the value set explicitly.
+  // Only the per-database `<NAME>_URL` key is always right on its own.
+  const managedUrls = new Set(boundUrls.map((b) => b.url));
+  for (const bound of boundUrls) {
+    const ownKey = getDatabaseEnvKeys(bound.name, bound.provider)[0];
+    if (bound.key === ownKey) continue;
+    const existing = await client.environmentVariable.findFirst({ where: { serviceId, key: bound.key } });
+    if (!existing) {
+      await client.environmentVariable.create({
+        data: { serviceId, key: bound.key, value: bound.url, isSecret: true, isReference: true },
+      });
+    } else if (!reusedService && existing.value !== bound.url && managedUrls.has(existing.value)) {
+      // Injected moments ago from another database of this template: point it at the declared one.
+      // Only while creating the service: on a retry the value may be the user's own choice.
+      await client.environmentVariable.update({ where: { id: existing.id }, data: { value: bound.url, isSecret: true } });
     }
   }
 
