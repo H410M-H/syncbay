@@ -493,7 +493,12 @@ async function partB() {
     const swRetry = await asOwner.template.provision({ environmentId: swappedEnv, source: `MSNS-DEV/swapped${RUN}`, env: {} });
     const swAfter = await prisma.environmentVariable.findFirstOrThrow({ where: { serviceId: swRetry.serviceId, key: "REDIS_URL" } });
     assert.strictEqual(swAfter.value, swValkey.connectionUrl, "stable across a retry");
-    ok("a manifest mapping REDIS_URL to its second Redis-compatible service gets that database, also after a retry");
+    // A user who repoints REDIS_URL at the other database keeps that choice across a retry.
+    await prisma.environmentVariable.update({ where: { id: swAfter.id }, data: { value: swRedis.connectionUrl } });
+    await asOwner.template.provision({ environmentId: swappedEnv, source: `MSNS-DEV/swapped${RUN}`, env: {} });
+    const userChoice = await prisma.environmentVariable.findFirstOrThrow({ where: { id: swAfter.id } });
+    assert.strictEqual(userChoice.value, swRedis.connectionUrl, "a retry keeps the user's edit");
+    ok("a manifest mapping REDIS_URL to its second Redis-compatible service gets that database; a retry keeps it and keeps a user's later edit");
   } finally {
     await cleanup();
   }

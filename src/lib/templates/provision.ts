@@ -156,8 +156,9 @@ export async function provisionTemplate(client: Client, params: ProvisionTemplat
       await client.environmentVariable.create({
         data: { serviceId, key: bound.key, value: bound.url, isSecret: true, isReference: true },
       });
-    } else if (existing.value !== bound.url && managedUrls.has(existing.value)) {
-      // Injected from another database of this template: point it at the declared one.
+    } else if (!reusedService && existing.value !== bound.url && managedUrls.has(existing.value)) {
+      // Injected moments ago from another database of this template: point it at the declared one.
+      // Only while creating the service: on a retry the value may be the user's own choice.
       await client.environmentVariable.update({ where: { id: existing.id }, data: { value: bound.url, isSecret: true } });
     }
   }
